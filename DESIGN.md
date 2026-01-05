@@ -20,6 +20,7 @@ Rather than thinking in terms of "agents" communicating, we model **subsystems o
 | System | Biological Analog | Function |
 |--------|-------------------|----------|
 | **Senses** | Sensory organs + early processing | Transform raw signals into percepts (intensity, recency) |
+| **Effectors** | Muscles, voice | Execute actions in the world (send messages, API calls) |
 | **Reflexes** | Spinal/brainstem reflexes | Fast conditioned responses, no deliberation, can spawn awareness |
 | **Attention** | Spotlight of consciousness | Select which thread to focus on based on computed salience |
 | **Working Memory** | Prefrontal/parietal workspace | Threads: active (1), paused (few), frozen (many) |
@@ -99,12 +100,25 @@ Threads are trains of thought. They live in working memory and have **computed s
 │   → Percepts   │   → Percepts   │   → Percepts          │
 │   (intensity,  │   (intensity,  │   (intensity,         │
 │    recency)    │    recency)    │    recency)           │
+├────────────────┼────────────────┼───────────────────────┤
+│   EFFECTOR     │   EFFECTOR     │   EFFECTOR            │
+│   (Discord)    │   (GitHub)     │   (Calendar)          │
+│                │                │                       │
+│   ← Outbox     │   ← Outbox     │   ← Outbox            │
+│   send_message │   comment,     │   create_event        │
+│   react        │   create_issue │                       │
 └────────────────┴────────────────┴───────────────────────┘
 
         ↕ CONSOLIDATION (offline, runs during idle time) ↕
           Cull frozen threads, extract learnings, store
           Model: Sonnet (batch processing)
 ```
+
+**Data flow:**
+- Senses → percepts.json (pool)
+- Threads write → outbox.jsonl
+- Effectors read outbox → execute → mark done
+- All activity → events.jsonl (audit)
 
 ## The Flow
 
@@ -193,6 +207,8 @@ Higher layers don't "call" lower layers. They:
 ## Deep Dives
 
 - [Attention Mechanism](notes/attention.md) - percepts, threads, salience, interruption, consolidation
+- [Effectors](notes/effectors.md) - output channels, outbox pattern, action lifecycle
+- [Storage Architecture](notes/storage.md) - events.jsonl, mutable state files, proposed structure
 
 ## Open Questions
 
