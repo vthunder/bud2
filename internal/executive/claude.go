@@ -180,6 +180,8 @@ type StreamEvent struct {
 	Message    json.RawMessage `json:"message,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	SubType    string          `json:"subtype,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	Error      string          `json:"error,omitempty"`
 	CostUSD    float64         `json:"costUSD,omitempty"`
 	TotalCost  float64         `json:"totalCost,omitempty"`
 }
@@ -194,6 +196,10 @@ type ToolUse struct {
 func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 	switch event.Type {
 	case "assistant":
+		// Check for error first
+		if event.Error != "" {
+			log.Printf("[claude] Assistant error: %s", event.Error)
+		}
 		// Assistant message with text content
 		if event.Message != nil {
 			// Try to extract text from message content
@@ -205,8 +211,14 @@ func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 			}
 			if err := json.Unmarshal(event.Message, &msg); err == nil {
 				for _, block := range msg.Content {
-					if block.Type == "text" && block.Text != "" && c.onOutput != nil {
-						c.onOutput(block.Text)
+					if block.Type == "text" && block.Text != "" {
+						// Check if it's an error message
+						if event.Error != "" || strings.Contains(block.Text, "balance is too low") {
+							log.Printf("[claude] Error message: %s", block.Text)
+						}
+						if c.onOutput != nil {
+							c.onOutput(block.Text)
+						}
 					}
 				}
 			}
@@ -232,6 +244,10 @@ func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 			if err := json.Unmarshal(event.Result, &result); err == nil && result != "" {
 				if c.onOutput != nil {
 					c.onOutput(result)
+				}
+				// Check for error results
+				if event.SubType == "error" || strings.Contains(result, "balance is too low") {
+					log.Printf("[claude] Error result: %s", result)
 				}
 			}
 		}
