@@ -156,11 +156,15 @@ func (c *ClaudeSession) processStreamJSON(r io.Reader) {
 
 // StreamEvent represents a Claude stream-json event
 type StreamEvent struct {
-	Type    string          `json:"type"`
-	Content json.RawMessage `json:"content,omitempty"`
-	Tool    *ToolUse        `json:"tool,omitempty"`
-	Text    string          `json:"text,omitempty"`
-	Message *MessageEvent   `json:"message,omitempty"`
+	Type       string          `json:"type"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	Tool       *ToolUse        `json:"tool,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Message    json.RawMessage `json:"message,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	SubType    string          `json:"subtype,omitempty"`
+	CostUSD    float64         `json:"costUSD,omitempty"`
+	TotalCost  float64         `json:"totalCost,omitempty"`
 }
 
 // ToolUse represents a tool call
@@ -170,18 +174,25 @@ type ToolUse struct {
 	ID    string         `json:"id"`
 }
 
-// MessageEvent represents message-related events
-type MessageEvent struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 	switch event.Type {
 	case "assistant":
-		// Text output from Claude
-		if event.Text != "" && c.onOutput != nil {
-			c.onOutput(event.Text)
+		// Assistant message with text content
+		if event.Message != nil {
+			// Try to extract text from message content
+			var msg struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(event.Message, &msg); err == nil {
+				for _, block := range msg.Content {
+					if block.Type == "text" && block.Text != "" && c.onOutput != nil {
+						c.onOutput(block.Text)
+					}
+				}
+			}
 		}
 
 	case "tool_use":
@@ -197,6 +208,17 @@ func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 			// Note: In stream mode, tool results are handled by Claude CLI internally
 		}
 
+	case "result":
+		// Final result with text
+		if event.Result != nil {
+			var result string
+			if err := json.Unmarshal(event.Result, &result); err == nil && result != "" {
+				if c.onOutput != nil {
+					c.onOutput(result)
+				}
+			}
+		}
+
 	case "content_block_delta":
 		// Streaming text delta
 		var delta struct {
@@ -210,8 +232,12 @@ func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 			}
 		}
 
-	case "message_start", "message_stop", "content_block_start", "content_block_stop":
+	case "message_start", "message_stop", "content_block_start", "content_block_stop", "system", "user":
 		// Lifecycle events, ignore
+
+	default:
+		// Log unknown events for debugging
+		log.Printf("[claude] Unknown event type: %s", event.Type)
 	}
 }
 
