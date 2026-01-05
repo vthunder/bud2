@@ -100,12 +100,15 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 
 	log.Printf("[claude] Starting session %s with prompt: %s", c.sessionID, truncatePrompt(prompt, 100))
 
+	log.Printf("[claude] Running: claude %v", args)
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 
 	// Process output in background
 	var wg sync.WaitGroup
+	var stderrBuf strings.Builder
 	wg.Add(2)
 
 	go func() {
@@ -115,12 +118,15 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 
 	go func() {
 		defer wg.Done()
-		c.processStderr(stderr)
+		c.processStderr(stderr, &stderrBuf)
 	}()
 
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
+		if stderrBuf.Len() > 0 {
+			return fmt.Errorf("claude exited with error: %w\nstderr: %s", err, stderrBuf.String())
+		}
 		return fmt.Errorf("claude exited with error: %w", err)
 	}
 
@@ -241,12 +247,16 @@ func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
 	}
 }
 
-func (c *ClaudeSession) processStderr(r io.Reader) {
+func (c *ClaudeSession) processStderr(r io.Reader, buf *strings.Builder) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line != "" {
 			log.Printf("[claude stderr] %s", line)
+			if buf != nil {
+				buf.WriteString(line)
+				buf.WriteString("\n")
+			}
 		}
 	}
 }
