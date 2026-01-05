@@ -76,6 +76,7 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		"-p", prompt,
 		"--session-id", c.sessionID,
 		"--output-format", "stream-json",
+		"--verbose",
 	}
 
 	if cfg.Model != "" {
