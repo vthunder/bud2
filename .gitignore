@@ -6,6 +6,10 @@ state/*.jsonl
 /bud2
 *.exe
 
+# Environment
+.env
+.env.local
+
 # IDE
 .idea/
 .vscode/

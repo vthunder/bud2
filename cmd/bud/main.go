@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/attention"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/memory"
@@ -17,6 +18,13 @@ import (
 func main() {
 	log.Println("bud2 - subsumption-inspired agent")
 	log.Println("==================================")
+
+	// Load .env file (optional - won't error if missing)
+	if err := godotenv.Load(); err != nil {
+		log.Println("[config] No .env file found, using environment variables")
+	} else {
+		log.Println("[config] Loaded .env file")
+	}
 
 	// Config from environment
 	discordToken := os.Getenv("DISCORD_TOKEN")
@@ -81,9 +89,12 @@ func main() {
 	}
 
 	// Initialize Discord effector (shares session with sense)
-	// Note: In production we'd share the session, for now effector creates its own
-	// discordEffector := effectors.NewDiscordEffector(...)
-	_ = effectors.NewDiscordEffector // placeholder to avoid unused import
+	discordEffector := effectors.NewDiscordEffector(
+		discordSense.Session(),
+		func() []*types.Action { return outbox.GetPending() },
+		func(id string) { outbox.MarkComplete(id) },
+	)
+	discordEffector.Start()
 
 	// Start attention
 	attn.Start()
@@ -99,6 +110,7 @@ func main() {
 
 	// Stop subsystems
 	attn.Stop()
+	discordEffector.Stop()
 	discordSense.Stop()
 
 	// Persist state

@@ -67,6 +67,11 @@ func (d *DiscordSense) Stop() error {
 	return d.session.Close()
 }
 
+// Session returns the underlying Discord session (for sharing with effector)
+func (d *DiscordSense) Session() *discordgo.Session {
+	return d.session
+}
+
 // handleMessage processes incoming Discord messages
 func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore messages from self
