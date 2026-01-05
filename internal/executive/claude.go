@@ -1,0 +1,291 @@
+package executive
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+)
+
+// ClaudeSession manages a Claude Code session for a thread
+type ClaudeSession struct {
+	threadID  string
+	sessionID string
+	tmux      *Tmux
+	mu        sync.Mutex
+
+	// Callbacks
+	onToolCall func(name string, args map[string]any) (string, error)
+	onOutput   func(text string)
+}
+
+// ClaudeConfig holds configuration for Claude sessions
+type ClaudeConfig struct {
+	// Model to use (default: claude-sonnet-4-20250514)
+	Model string
+	// Working directory for Claude
+	WorkDir string
+	// Whether to show in tmux (for debugging)
+	ShowInTmux bool
+}
+
+// NewClaudeSession creates a session for a thread
+func NewClaudeSession(threadID string, tmux *Tmux) *ClaudeSession {
+	return &ClaudeSession{
+		threadID:  threadID,
+		sessionID: fmt.Sprintf("bud2-thread-%s", threadID),
+		tmux:      tmux,
+	}
+}
+
+// OnToolCall sets the callback for tool calls
+func (c *ClaudeSession) OnToolCall(fn func(name string, args map[string]any) (string, error)) {
+	c.onToolCall = fn
+}
+
+// OnOutput sets the callback for Claude's text output
+func (c *ClaudeSession) OnOutput(fn func(text string)) {
+	c.onOutput = fn
+}
+
+// SendPrompt sends a prompt to Claude and waits for response
+// This uses claude -p (print mode) for programmatic interaction
+func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg ClaudeConfig) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	args := []string{
+		"-p", prompt,
+		"--session-id", c.sessionID,
+		"--output-format", "stream-json",
+	}
+
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	if cfg.WorkDir != "" {
+		cmd.Dir = cfg.WorkDir
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
+
+	log.Printf("[claude] Starting session %s with prompt: %s", c.sessionID, truncatePrompt(prompt, 100))
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start claude: %w", err)
+	}
+
+	// Process output in background
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		c.processStreamJSON(stdout)
+	}()
+
+	go func() {
+		defer wg.Done()
+		c.processStderr(stderr)
+	}()
+
+	wg.Wait()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("claude exited with error: %w", err)
+	}
+
+	return nil
+}
+
+// processStreamJSON parses Claude's stream-json output
+func (c *ClaudeSession) processStreamJSON(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	// Increase buffer size for large outputs
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var event StreamEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			log.Printf("[claude] Failed to parse event: %v", err)
+			continue
+		}
+
+		c.handleStreamEvent(event)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("[claude] Scanner error: %v", err)
+	}
+}
+
+// StreamEvent represents a Claude stream-json event
+type StreamEvent struct {
+	Type    string          `json:"type"`
+	Content json.RawMessage `json:"content,omitempty"`
+	Tool    *ToolUse        `json:"tool,omitempty"`
+	Text    string          `json:"text,omitempty"`
+	Message *MessageEvent   `json:"message,omitempty"`
+}
+
+// ToolUse represents a tool call
+type ToolUse struct {
+	Name  string         `json:"name"`
+	Args  map[string]any `json:"args"`
+	ID    string         `json:"id"`
+}
+
+// MessageEvent represents message-related events
+type MessageEvent struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func (c *ClaudeSession) handleStreamEvent(event StreamEvent) {
+	switch event.Type {
+	case "assistant":
+		// Text output from Claude
+		if event.Text != "" && c.onOutput != nil {
+			c.onOutput(event.Text)
+		}
+
+	case "tool_use":
+		// Claude wants to use a tool
+		if event.Tool != nil && c.onToolCall != nil {
+			log.Printf("[claude] Tool call: %s", event.Tool.Name)
+			result, err := c.onToolCall(event.Tool.Name, event.Tool.Args)
+			if err != nil {
+				log.Printf("[claude] Tool error: %v", err)
+			} else {
+				log.Printf("[claude] Tool result: %s", truncatePrompt(result, 100))
+			}
+			// Note: In stream mode, tool results are handled by Claude CLI internally
+		}
+
+	case "content_block_delta":
+		// Streaming text delta
+		var delta struct {
+			Delta struct {
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal(event.Content, &delta); err == nil {
+			if delta.Delta.Text != "" && c.onOutput != nil {
+				c.onOutput(delta.Delta.Text)
+			}
+		}
+
+	case "message_start", "message_stop", "content_block_start", "content_block_stop":
+		// Lifecycle events, ignore
+	}
+}
+
+func (c *ClaudeSession) processStderr(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line != "" {
+			log.Printf("[claude stderr] %s", line)
+		}
+	}
+}
+
+// SendPromptInteractive runs Claude interactively in a tmux window
+// This is for visual debugging - you can attach to the tmux session
+func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	windowName := fmt.Sprintf("thread-%s", c.threadID)
+
+	// Ensure tmux session exists
+	if err := c.tmux.EnsureSession(); err != nil {
+		return fmt.Errorf("failed to ensure tmux session: %w", err)
+	}
+
+	// Check if window already exists (resuming session)
+	if !c.tmux.WindowExists(windowName) {
+		// Create window and start Claude
+		if err := c.tmux.CreateWindow(windowName); err != nil {
+			return fmt.Errorf("failed to create window: %w", err)
+		}
+
+		// Start Claude in the window
+		claudeCmd := fmt.Sprintf("claude --session-id %s", c.sessionID)
+		if cfg.Model != "" {
+			claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
+		}
+
+		// Small delay then start Claude
+		time.Sleep(100 * time.Millisecond)
+		if err := c.tmux.SendKeys(windowName, claudeCmd); err != nil {
+			return fmt.Errorf("failed to start claude: %w", err)
+		}
+
+		// Wait for Claude to start
+		time.Sleep(2 * time.Second)
+	}
+
+	// Send the prompt
+	log.Printf("[claude] Sending interactive prompt to window %s: %s", windowName, truncatePrompt(prompt, 100))
+
+	// Send prompt character by character to handle special chars
+	if err := c.tmux.SendKeysLiteral(windowName, prompt); err != nil {
+		return fmt.Errorf("failed to send prompt: %w", err)
+	}
+
+	// Press enter to submit
+	if err := c.tmux.SendKeys(windowName, ""); err != nil {
+		return fmt.Errorf("failed to submit prompt: %w", err)
+	}
+
+	return nil
+}
+
+// GetWindowOutput captures recent output from the tmux window
+func (c *ClaudeSession) GetWindowOutput(lines int) (string, error) {
+	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	return c.tmux.CapturePane(windowName, lines)
+}
+
+// Interrupt sends Ctrl+C to stop Claude
+func (c *ClaudeSession) Interrupt() error {
+	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	return c.tmux.SendInterrupt(windowName)
+}
+
+// Close destroys the tmux window for this session
+func (c *ClaudeSession) Close() error {
+	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	return c.tmux.KillWindow(windowName)
+}
+
+func truncatePrompt(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/attention"
 	"github.com/vthunder/bud2/internal/effectors"
+	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/types"
@@ -34,6 +36,8 @@ func main() {
 	if statePath == "" {
 		statePath = "state"
 	}
+	claudeModel := os.Getenv("CLAUDE_MODEL")
+	useInteractive := os.Getenv("EXECUTIVE_INTERACTIVE") == "true"
 
 	if discordToken == "" {
 		log.Fatal("DISCORD_TOKEN environment variable required")
@@ -58,10 +62,24 @@ func main() {
 		log.Printf("Warning: failed to load outbox: %v", err)
 	}
 
+	// Initialize executive
+	exec := executive.New(perceptPool, threadPool, outbox, executive.ExecutiveConfig{
+		Model:          claudeModel,
+		WorkDir:        ".",
+		UseInteractive: useInteractive,
+	})
+	if err := exec.Start(); err != nil {
+		log.Fatalf("Failed to start executive: %v", err)
+	}
+
 	// Initialize attention
 	attn := attention.New(perceptPool, threadPool, func(thread *types.Thread) {
 		log.Printf("[main] Active thread changed: %s - %s", thread.ID, thread.Goal)
-		// TODO: This is where we'd invoke the executive (Claude) to process the thread
+		// Invoke executive to process the thread
+		ctx := context.Background()
+		if err := exec.ProcessThread(ctx, thread); err != nil {
+			log.Printf("[main] Executive error: %v", err)
+		}
 	})
 
 	// Initialize Discord sense
