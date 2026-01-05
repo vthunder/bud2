@@ -294,7 +294,9 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	// Sanitize thread ID for tmux window name (replace dots with dashes)
+	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
+	windowName := fmt.Sprintf("thread-%s", safeThreadID)
 
 	// Ensure tmux session exists
 	if err := c.tmux.EnsureSession(); err != nil {
@@ -342,19 +344,22 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 
 // GetWindowOutput captures recent output from the tmux window
 func (c *ClaudeSession) GetWindowOutput(lines int) (string, error) {
-	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
+	windowName := fmt.Sprintf("thread-%s", safeThreadID)
 	return c.tmux.CapturePane(windowName, lines)
 }
 
 // Interrupt sends Ctrl+C to stop Claude
 func (c *ClaudeSession) Interrupt() error {
-	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
+	windowName := fmt.Sprintf("thread-%s", safeThreadID)
 	return c.tmux.SendInterrupt(windowName)
 }
 
 // Close destroys the tmux window for this session
 func (c *ClaudeSession) Close() error {
-	windowName := fmt.Sprintf("thread-%s", c.threadID)
+	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
+	windowName := fmt.Sprintf("thread-%s", safeThreadID)
 	return c.tmux.KillWindow(windowName)
 }
 
