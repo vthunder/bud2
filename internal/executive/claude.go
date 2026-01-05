@@ -73,7 +73,7 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	defer c.mu.Unlock()
 
 	args := []string{
-		"-p", prompt,
+		"--print",
 		"--session-id", c.sessionID,
 		"--output-format", "stream-json",
 		"--verbose",
@@ -88,6 +88,12 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		cmd.Dir = cfg.WorkDir
 	}
 
+	// Use stdin for prompt (handles newlines better)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get stdout pipe: %w", err)
@@ -99,12 +105,17 @@ func (c *ClaudeSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	}
 
 	log.Printf("[claude] Starting session %s with prompt: %s", c.sessionID, truncatePrompt(prompt, 100))
-
-	log.Printf("[claude] Running: claude %v", args)
+	log.Printf("[claude] Running: claude %v (prompt via stdin)", args)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
+
+	// Write prompt to stdin and close
+	go func() {
+		defer stdin.Close()
+		io.WriteString(stdin, prompt)
+	}()
 
 	// Process output in background
 	var wg sync.WaitGroup
