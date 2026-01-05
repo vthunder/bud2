@@ -45,7 +45,7 @@ This is the "memory" that consolidation can learn from.
 
 ## percepts.json (Mutable Pool)
 
-Current percepts, updated as they decay or get assigned:
+Current percepts. Percepts are independent - they don't know about threads.
 
 ```json
 {
@@ -56,8 +56,8 @@ Current percepts, updated as they decay or get assigned:
       "type": "message",
       "intensity": 0.9,
       "timestamp": "2024-01-05T10:00:00Z",
-      "thread_id": "t-456",
-      "data": { ... }
+      "tags": ["from:owner"],
+      "data": { "channel_id": "...", "content": "...", "author": "..." }
     },
     {
       "id": "p-124",
@@ -65,8 +65,8 @@ Current percepts, updated as they decay or get assigned:
       "type": "notification",
       "intensity": 0.3,
       "timestamp": "2024-01-05T09:55:00Z",
-      "thread_id": null,
-      "data": { ... }
+      "tags": ["routine"],
+      "data": { "repo": "...", "type": "..." }
     }
   ]
 }
@@ -74,13 +74,15 @@ Current percepts, updated as they decay or get assigned:
 
 **Operations:**
 - Add percept
-- Assign to thread (`thread_id`)
-- Remove (decayed or processed)
-- Query by thread_id, source, age
+- Remove (expired by age)
+- Query by id, source, age, tags
+- Get by IDs (for thread salience computation)
+
+**Note:** No `thread_id` field - percepts don't track who references them. Threads hold references to percepts (many-to-many).
 
 ## threads.json (Mutable Pool)
 
-Current threads with state:
+Current threads with state. Threads reference percepts (many-to-many).
 
 ```json
 {
@@ -90,10 +92,10 @@ Current threads with state:
       "goal": "respond to user question",
       "status": "active",
       "salience": 0.8,
-      "percepts": ["p-123"],
+      "percept_refs": ["p-123", "p-125"],
       "state": {
         "phase": "drafting",
-        "context": { ... },
+        "context": { "user_asked": "...", "draft": "..." },
         "next_step": "send response"
       },
       "created_at": "2024-01-05T10:00:00Z",
@@ -104,16 +106,21 @@ Current threads with state:
       "goal": "review PR",
       "status": "paused",
       "salience": 0.4,
-      ...
+      "percept_refs": ["p-123", "p-124"],
+      "state": { ... },
+      "created_at": "...",
+      "last_active": "..."
     }
   ]
 }
 ```
 
+**Note:** `percept_refs` is a list of percept IDs. Multiple threads can reference the same percept (p-123 appears in both threads above). Percept refs are looked up at salience computation time - expired percepts just return nothing.
+
 **Operations:**
 - Create thread
 - Update status (active/paused/frozen/complete)
-- Update salience
+- Recompute salience (looks up referenced percepts)
 - Add percept reference
 - Update state
 - Delete (after consolidation)

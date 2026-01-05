@@ -1,0 +1,12 @@
+# Runtime state (regenerated)
+state/*.json
+state/*.jsonl
+
+# Go build artifacts
+/bud2
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp

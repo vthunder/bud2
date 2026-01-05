@@ -57,6 +57,31 @@ Threads are trains of thought. They live in working memory and have **computed s
 | Source importance | User > system |
 | Thread age | Old paused threads decay |
 
+### Percept-Thread Relationship (Many-to-Many)
+
+Percepts don't "belong" to threads. They exist independently in the pool with their automatic properties. Threads **reference** percepts that are relevant to their goal.
+
+```
+Percept Pool:                    Thread Pool:
+┌─────────────┐                  ┌─────────────────────────┐
+│ p-1: "msg"  │◄─────────────────│ Thread A: [p-1, p-3]    │
+│ p-2: "notif"│                  │ goal: "respond to user" │
+│ p-3: "msg"  │◄────────┐        └─────────────────────────┘
+└─────────────┘         │        ┌─────────────────────────┐
+      ▲                 └────────│ Thread B: [p-1, p-3]    │
+      │                          │ goal: "review PR"       │
+      │                          └─────────────────────────┘
+      │
+  (same percept can be
+   relevant to multiple threads)
+```
+
+Why many-to-many:
+- A message like "check the PR and remind me about the meeting" is relevant to multiple threads
+- Threads don't "own" percepts, they just care about them
+- Percepts decay/expire based on age, independent of thread assignment
+- Simplifies lifecycle - no "unassigned" state needed
+
 ### Thread States
 
 | State | In Context? | Description |
@@ -128,21 +153,25 @@ Sense (raw input)
   ▼
 Percept (intensity, recency) ← automatic, no judgment
   │
-  ▼
-Reflex check ─── MATCH ──→ Execute action (automatic)
-  │                              │
-  │                              ▼
-  │                       Spawn awareness?
-  │                         YES → New percept "I just did X"
-  │                         NO  → (done, invisible)
+  ├──────────────────────────────────────┐
+  │                                      ▼
+  ▼                              Reflex check
+Percept Pool                       │
+  │                          MATCH ──→ Execute action
+  │                            │            │
+  │                            │            ▼
+  │                            │      Spawn awareness?
+  │                            │        YES → New percept
+  │                            │        NO  → (invisible)
+  │                            │
+  │                       NO MATCH
+  │                            │
+  ▼                            ▼
+Threads scan pool for relevant percepts
   │
-  NO MATCH
-  │
-  ▼
-Thread assignment
-  ├── Related to existing thread? → Assign percept, boost salience
-  ├── New topic? → Create new thread
-  └── Noise? → Sit unassigned, decay
+  ├── Existing thread finds relevance? → Add percept ref, recompute salience
+  ├── New topic detected? → Create new thread with percept ref
+  └── No thread cares? → Percept sits in pool, decays naturally
   │
   ▼
 Thread salience computed ← judgment happens HERE
@@ -240,15 +269,53 @@ When two threads turn out to be related:
 - Inject B's context (summarized) into A?
 - Both?
 
+## Implementation
+
+**Language: Go**
+
+Why Go:
+- Goroutines for concurrent subsystems (senses, attention, effectors all running)
+- Single binary deployment
+- Good Discord library (`discordgo`)
+- "Systems" feel matches subsumption architecture
+- No runtime dependencies
+
+**Project Structure:**
+```
+bud2/
+├── cmd/
+│   └── bud/main.go       # Entry point, wires subsystems
+├── internal/
+│   ├── senses/
+│   │   └── discord.go    # Discord sense (produces percepts)
+│   ├── effectors/
+│   │   └── discord.go    # Discord effector (reads outbox)
+│   ├── attention/
+│   │   └── attention.go  # Thread selection, salience
+│   ├── memory/
+│   │   ├── percepts.go   # Percept pool
+│   │   └── threads.go    # Thread pool
+│   └── types/
+│       └── types.go      # Percept, Thread, Action types
+├── state/                # Runtime state (gitignored)
+│   ├── events.jsonl
+│   ├── percepts.json
+│   ├── threads.json
+│   └── outbox.jsonl
+├── go.mod
+└── go.sum
+```
+
 ## Next Steps
 
-1. **Prototype a sense** - Discord (event-driven, familiar)
-2. **Define percept format** - intensity, recency, tags
-3. **Prototype thread pool** - active/paused/frozen states
-4. **Simple attention** - salience scoring, thread selection
-5. **Add reflexes** - pattern → action rules
-6. **Add consolidation** - cull threads, extract learnings
-7. **Iterate**
+1. **Scaffold Go project** - module, basic structure
+2. **Define types** - Percept, Thread, Action
+3. **Discord sense** - produces percepts from messages
+4. **Percept pool** - store/query percepts
+5. **Thread pool** - manage thread states
+6. **Simple attention** - salience scoring, thread selection
+7. **Discord effector** - read outbox, send messages
+8. **Iterate**
 
 ## Relationship to Bud1
 

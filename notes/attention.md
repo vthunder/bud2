@@ -8,22 +8,27 @@ Attention doesn't just pick percepts - it picks which **thread** to focus on.
 ┌─────────────────────────────────────────────────────────┐
 │  ACTIVE (1, maybe few)     ← in context, running        │
 │    Thread A: "respond to user"   salience: 0.8          │
+│              refs: [p-1, p-3]                           │
 ├─────────────────────────────────────────────────────────┤
 │  PAUSED (unlimited)        ← listed/summarized          │
 │    Thread B: "review PR"         salience: 0.4          │
+│              refs: [p-1, p-2]                           │
 │    Thread C: "process inbox"     salience: 0.2          │
 ├─────────────────────────────────────────────────────────┤
 │  FROZEN (many, old)        ← just count mentioned       │
 │    "7 frozen threads awaiting consolidation"            │
 └─────────────────────────────────────────────────────────┘
          ▲
-         │ percepts get assigned to threads
+         │ threads REFERENCE percepts (many-to-many)
+         │ same percept can be relevant to multiple threads
          │
 ┌─────────────────────────────────────────────────────────┐
-│  PERCEPT POOL                                           │
+│  PERCEPT POOL (independent, decays by age)              │
 │                                                         │
-│  [msg.789] intensity: 0.9, recency: 2s   → Thread A     │
-│  [notif.1] intensity: 0.3, recency: 45s  → unassigned   │
+│  [p-1] intensity: 0.9, recency: 2s    ← Thread A, B     │
+│  [p-2] intensity: 0.5, recency: 30s   ← Thread B        │
+│  [p-3] intensity: 0.3, recency: 45s   ← Thread A        │
+│  [p-4] intensity: 0.2, recency: 2min  ← (no refs yet)   │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -36,21 +41,25 @@ Sense (raw input)
   ▼
 Percept (intensity, recency) ← automatic, no judgment
   │
-  ▼
-Reflex check ─── MATCH ──→ Execute action (automatic, immediate)
-  │                              │
-  │                              ▼
-  │                       Spawn awareness?
-  │                         YES → Create percept "I just did X"
-  │                         NO  → (done, invisible action)
+  ├──────────────────────────────────────┐
+  │                                      ▼
+  ▼                              Reflex check
+Percept Pool                       │
+  │                          MATCH ──→ Execute action
+  │                            │            │
+  │                            │            ▼
+  │                            │      Spawn awareness?
+  │                            │        YES → New percept
+  │                            │        NO  → (invisible)
+  │                            │
+  │                       NO MATCH
+  │                            │
+  ▼                            ▼
+Threads scan pool for relevant percepts (many-to-many)
   │
-  NO MATCH
-  │
-  ▼
-Thread assignment
-  ├── Related to existing thread? → Assign percept to thread
-  ├── New topic? → Create new thread
-  └── Noise? → Sit unassigned, decay
+  ├── Thread finds relevant percept? → Add ref, recompute salience
+  ├── New topic detected? → Create thread with percept ref
+  └── No thread cares? → Percept sits in pool, decays by age
   │
   ▼
 Thread salience computed ← judgment happens HERE
@@ -84,10 +93,10 @@ Thread runs until: complete | interrupted | blocked
 **Percept lifecycle:**
 1. Created by sense (with intensity, recency, tags)
 2. Checked against reflexes
-3. Assigned to thread (or not)
-4. Processed by thread (or decays)
+3. Sits in pool - threads may reference it (many-to-many)
+4. Decays naturally based on age (regardless of references)
 
-**Decay:** Unassigned percepts decay. Assigned percepts are held by their thread.
+**Decay:** All percepts decay based on age. Threads hold references, not ownership. When a percept expires, threads lose that reference but keep any derived context/state.
 
 ## Threads
 
@@ -101,18 +110,20 @@ Thread runs until: complete | interrupted | blocked
 Thread {
   id: "thread-abc"
   goal: "respond to user question about X"
-  percepts: ["msg.123", "msg.456"]
+  percept_refs: ["p-1", "p-3"]   // references, not ownership (many-to-many)
   state: {
     phase: "drafting response"
-    context: { ... }
+    context: { ... }            // accumulated understanding
     next_step: "finish draft and send"
   }
-  salience: 0.8  // COMPUTED from percepts + relevance + importance
+  salience: 0.8  // COMPUTED from referenced percepts + relevance + importance
   status: "active" | "paused" | "frozen" | "complete"
   created_at: timestamp
   last_active: timestamp
 }
 ```
+
+**Note:** Multiple threads can reference the same percept. When computing salience, we look up the current percepts by ID - if a percept has expired, that reference just returns nothing.
 
 **Thread salience** (computed, involves judgment):
 
@@ -151,20 +162,13 @@ Thread {
 
 When two threads turn out to be related:
 
-**Option A: Reassign percepts**
-- Move percepts from thread B to thread A
-- Delete thread B
-- Thread A now has more context
+With many-to-many, merging is simpler:
 
-**Option B: Inject context**
-- Summarize thread B
-- Add summary to thread A's context
-- Thread B can be deleted or kept as reference
+1. **Copy percept refs** from thread B to thread A (they're just references)
+2. **Inject B's context** (summarized state, accumulated understanding)
+3. **Delete thread B**
 
-**Maybe both?**
-- Reassign percepts (they belong to A now)
-- AND inject B's accumulated context/state (summarized)
-- Delete B
+Since percepts exist independently in the pool, there's no "reassignment" - we just add B's refs to A's list. The percepts themselves don't change.
 
 This is like: "Oh, these are the same thing. Let me combine what I was thinking."
 
@@ -258,7 +262,7 @@ Delete thread
 
 ## Open Questions
 
-1. **Percept-thread matching** - how do we decide if a percept relates to an existing thread? Keywords? Embeddings? Rules?
+1. **Percept relevance detection** - how does a thread decide if a percept is relevant to its goal? Keywords? Embeddings? Rules per sense type?
 
 2. **Blocked threads** - what does "blocked" mean? Waiting for external input? How does it unblock?
 
