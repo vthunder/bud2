@@ -304,7 +304,8 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	}
 
 	// Check if window already exists (resuming session)
-	if !c.tmux.WindowExists(windowName) {
+	isNewWindow := !c.tmux.WindowExists(windowName)
+	if isNewWindow {
 		// Create window and start Claude
 		if err := c.tmux.CreateWindow(windowName); err != nil {
 			return fmt.Errorf("failed to create window: %w", err)
@@ -322,21 +323,22 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 			return fmt.Errorf("failed to start claude: %w", err)
 		}
 
-		// Wait for Claude to start
-		time.Sleep(2 * time.Second)
+		// Wait for Claude to fully initialize (OAuth, plugins, etc.)
+		log.Printf("[claude] Waiting for Claude to initialize in window %s...", windowName)
+		time.Sleep(5 * time.Second)
 	}
 
 	// Send the prompt
 	log.Printf("[claude] Sending interactive prompt to window %s: %s", windowName, truncatePrompt(prompt, 100))
 
-	// Send prompt character by character to handle special chars
-	if err := c.tmux.SendKeysLiteral(windowName, prompt); err != nil {
-		return fmt.Errorf("failed to send prompt: %w", err)
-	}
+	// For multiline prompts, collapse to single line for interactive mode
+	singleLinePrompt := strings.ReplaceAll(prompt, "\n", " ")
 
-	// Press enter to submit
-	if err := c.tmux.SendKeys(windowName, ""); err != nil {
-		return fmt.Errorf("failed to submit prompt: %w", err)
+	// Use send-keys with the prompt text directly
+	target := fmt.Sprintf("%s:%s", c.tmux.session, windowName)
+	cmd := exec.Command("tmux", "send-keys", "-t", target, singleLinePrompt, "Enter")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to send prompt: %w", err)
 	}
 
 	return nil
