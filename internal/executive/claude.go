@@ -334,11 +334,18 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	// For multiline prompts, collapse to single line for interactive mode
 	singleLinePrompt := strings.ReplaceAll(prompt, "\n", " ")
 
-	// Use send-keys with the prompt text directly
 	target := fmt.Sprintf("%s:%s", c.tmux.session, windowName)
-	cmd := exec.Command("tmux", "send-keys", "-t", target, singleLinePrompt, "Enter")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to send prompt: %w", err)
+
+	// Send the prompt text literally (without interpreting special chars)
+	cmdText := exec.Command("tmux", "send-keys", "-t", target, "-l", singleLinePrompt)
+	if err := cmdText.Run(); err != nil {
+		return fmt.Errorf("failed to send prompt text: %w", err)
+	}
+
+	// Send Enter key separately
+	cmdEnter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+	if err := cmdEnter.Run(); err != nil {
+		return fmt.Errorf("failed to send enter: %w", err)
 	}
 
 	return nil
