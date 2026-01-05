@@ -238,6 +238,8 @@ Higher layers don't "call" lower layers. They:
 - [Attention Mechanism](notes/attention.md) - percepts, threads, salience, interruption, consolidation
 - [Effectors](notes/effectors.md) - output channels, outbox pattern, action lifecycle
 - [Storage Architecture](notes/storage.md) - events.jsonl, mutable state files, proposed structure
+- [Memory Architecture](notes/memory.md) - activation-based memory, layers, tools as memory
+- [Executive Architecture](notes/executive.md) - tmux + Claude Code, thread types, tools
 
 ## Open Questions
 
