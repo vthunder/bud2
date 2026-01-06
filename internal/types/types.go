@@ -114,9 +114,27 @@ type Trace struct {
 	IsCore     bool      `json:"is_core"`    // core identity traces (always activated)
 	CreatedAt  time.Time `json:"created_at"`
 	LastAccess time.Time `json:"last_access"`
+
+	// Biological memory mechanisms
+	Inhibits   []string   `json:"inhibits,omitempty"`    // IDs of traces this one suppresses
+	LabileUntil *time.Time `json:"labile_until,omitempty"` // trace is modifiable until this time
 }
 
 // Recency returns seconds since trace was last accessed
 func (t *Trace) Recency() float64 {
 	return time.Since(t.LastAccess).Seconds()
+}
+
+// IsLabile returns true if the trace is in its reconsolidation window
+func (t *Trace) IsLabile() bool {
+	if t.LabileUntil == nil {
+		return false
+	}
+	return time.Now().Before(*t.LabileUntil)
+}
+
+// MakeLabile sets the trace's labile window (reconsolidation period)
+func (t *Trace) MakeLabile(duration time.Duration) {
+	until := time.Now().Add(duration)
+	t.LabileUntil = &until
 }

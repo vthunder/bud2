@@ -617,10 +617,14 @@ func (a *Attention) ConsolidateAll() int {
 }
 
 // consolidatePercepts clusters and summarizes percepts into traces
+// Implements biological memory mechanisms:
+// - Reconsolidation: if labile trace + correction language, update in place
+// - Inhibition: if similar but no explicit correction, new trace inhibits old
 func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 	const (
-		clusterThreshold   = 0.7 // how similar percepts must be to cluster
-		reinforceThreshold = 0.8 // similarity to reinforce existing trace
+		clusterThreshold    = 0.7 // how similar percepts must be to cluster
+		reinforceThreshold  = 0.8 // similarity to reinforce existing trace
+		labileMatchThreshold = 0.6 // similarity to match labile trace for correction
 	)
 
 	if len(candidates) == 0 {
@@ -630,11 +634,48 @@ func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 	consolidated := 0
 	var forClustering []*types.Percept
 
-	// First pass: check if any percept reinforces an existing trace
+	// First pass: check for reconsolidation opportunities (correction of labile trace)
 	for _, percept := range candidates {
+		content := ""
+		if c, ok := percept.Data["content"].(string); ok {
+			content = c
+		}
+
+		// Check for correction language
+		if hasCorrection(content) && len(percept.Embedding) > 0 {
+			// Find labile traces similar to this percept
+			labileMatches := a.findLabileTraces(percept.Embedding, labileMatchThreshold)
+			if len(labileMatches) > 0 {
+				// RECONSOLIDATION: Update the labile trace in place
+				// Pick the most similar labile trace
+				bestTrace := labileMatches[0]
+				bestSim := embedding.CosineSimilarity(percept.Embedding, bestTrace.Embedding)
+				for _, t := range labileMatches[1:] {
+					sim := embedding.CosineSimilarity(percept.Embedding, t.Embedding)
+					if sim > bestSim {
+						bestTrace = t
+						bestSim = sim
+					}
+				}
+
+				// Update the trace with corrected content
+				bestTrace.Sources = append(bestTrace.Sources, percept.ID)
+				bestTrace.Embedding = embedding.UpdateCentroid(bestTrace.Embedding, percept.Embedding, 0.5) // higher weight for correction
+				bestTrace.LastAccess = time.Now()
+
+				// Re-summarize with the correction
+				a.resummarizeTrace(bestTrace)
+
+				log.Printf("[consolidate] RECONSOLIDATION: Updated trace %s with correction", bestTrace.ID)
+				consolidated++
+				continue // handled, don't cluster
+			}
+		}
+
+		// No reconsolidation - check for regular reinforcement
 		similar := a.traces.FindSimilar(percept.Embedding, reinforceThreshold)
 		if len(similar) > 0 {
-			// Reinforce the most similar trace
+			// Find the best matching trace
 			bestTrace := similar[0]
 			bestSim := embedding.CosineSimilarity(percept.Embedding, bestTrace.Embedding)
 			for _, t := range similar[1:] {
@@ -644,6 +685,22 @@ func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 					bestSim = sim
 				}
 			}
+
+			// Check if this is an implicit correction (similar content, labile trace, but no correction language)
+			if bestTrace.IsLabile() && !bestTrace.IsCore {
+				// INHIBITION: Create new trace that inhibits the old one
+				// The old info might be outdated
+				forClustering = append(forClustering, percept)
+				// Mark that the new cluster should inhibit this trace
+				if percept.Features == nil {
+					percept.Features = make(map[string]any)
+				}
+				percept.Features["inhibits_trace"] = bestTrace.ID
+				log.Printf("[consolidate] Will create inhibiting trace for labile trace %s", bestTrace.ID)
+				continue
+			}
+
+			// Regular reinforcement (non-labile trace)
 			a.traces.Reinforce(bestTrace.ID, 0.3)
 			bestTrace.Embedding = embedding.UpdateCentroid(bestTrace.Embedding, percept.Embedding, 0.2)
 			bestTrace.Sources = append(bestTrace.Sources, percept.ID)
@@ -729,10 +786,12 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 		return nil
 	}
 
-	// Collect content fragments and source IDs
+	// Collect content fragments, source IDs, and inhibition targets
 	var fragments []string
 	var sources []string
 	var embeddings [][]float64
+	var inhibits []string
+	inhibitSet := make(map[string]bool)
 
 	for _, p := range cluster {
 		sources = append(sources, p.ID)
@@ -746,6 +805,16 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 				speaker = author
 			}
 			fragments = append(fragments, fmt.Sprintf("%s: %s", speaker, content))
+		}
+
+		// Check for inhibition marker
+		if p.Features != nil {
+			if inhibitID, ok := p.Features["inhibits_trace"].(string); ok {
+				if !inhibitSet[inhibitID] {
+					inhibits = append(inhibits, inhibitID)
+					inhibitSet[inhibitID] = true
+				}
+			}
 		}
 	}
 
@@ -766,7 +835,7 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 	// Compute cluster centroid embedding
 	centroid := embedding.AverageEmbeddings(embeddings)
 
-	return &types.Trace{
+	trace := &types.Trace{
 		ID:         generateTraceID(),
 		Content:    summary,
 		Embedding:  centroid,
@@ -776,6 +845,14 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 		CreatedAt:  time.Now(),
 		LastAccess: time.Now(),
 	}
+
+	// Set inhibition links if any
+	if len(inhibits) > 0 {
+		trace.Inhibits = inhibits
+		log.Printf("[consolidate] INHIBITION: New trace %s inhibits traces: %v", trace.ID, inhibits)
+	}
+
+	return trace
 }
 
 // resummarizeTrace updates a trace's content based on all its sources
@@ -823,8 +900,65 @@ func joinFragments(fragments []string) string {
 	return result
 }
 
+// correctionPatterns are phrases that indicate a correction/update to previous information
+var correctionPatterns = []string{
+	"actually",
+	"actually,",
+	"correction",
+	"correction:",
+	"i was wrong",
+	"i made a mistake",
+	"that's wrong",
+	"that was wrong",
+	"not really",
+	"no wait",
+	"no, wait",
+	"scratch that",
+	"forget what i said",
+	"let me correct",
+	"to correct",
+	"the correct",
+	"should be",
+	"is actually",
+	"it's actually",
+	"meant to say",
+	"i meant",
+}
+
+// hasCorrection checks if content contains correction language
+func hasCorrection(content string) bool {
+	lower := strings.ToLower(content)
+	for _, pattern := range correctionPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// findLabileTraces finds traces that are currently labile and similar to the given embedding
+func (a *Attention) findLabileTraces(emb []float64, threshold float64) []*types.Trace {
+	allTraces := a.traces.All()
+	var labile []*types.Trace
+
+	for _, t := range allTraces {
+		if !t.IsLabile() || t.IsCore {
+			continue
+		}
+		if len(t.Embedding) > 0 && len(emb) > 0 {
+			sim := embedding.CosineSimilarity(emb, t.Embedding)
+			if sim >= threshold {
+				labile = append(labile, t)
+			}
+		}
+	}
+
+	return labile
+}
+
 // GetActivatedTraces returns traces that are currently activated
 // excludeSources filters out traces that contain any of the given source IDs
+// Marks returned traces as labile (open for reconsolidation) for 5 minutes
 func (a *Attention) GetActivatedTraces(limit int, excludeSources []string) []*types.Trace {
 	traces := a.traces.GetActivated(0.1, 0) // low threshold, get all activated
 
@@ -834,9 +968,15 @@ func (a *Attention) GetActivatedTraces(limit int, excludeSources []string) []*ty
 		excludeSet[src] = true
 	}
 
-	// Filter out traces sourced from excluded percepts
+	// Filter out traces sourced from excluded percepts AND inhibited traces
 	var filtered []*types.Trace
+	activatedIDs := make(map[string]bool)
 	for _, t := range traces {
+		activatedIDs[t.ID] = true
+	}
+
+	for _, t := range traces {
+		// Skip if sourced from excluded percepts
 		excluded := false
 		for _, src := range t.Sources {
 			if excludeSet[src] {
@@ -844,11 +984,45 @@ func (a *Attention) GetActivatedTraces(limit int, excludeSources []string) []*ty
 				break
 			}
 		}
-		if !excluded {
-			filtered = append(filtered, t)
-			if limit > 0 && len(filtered) >= limit {
+		if excluded {
+			continue
+		}
+
+		// Skip if inhibited by another activated trace
+		inhibited := false
+		for _, other := range traces {
+			if other.ID == t.ID {
+				continue
+			}
+			for _, inhibitedID := range other.Inhibits {
+				if inhibitedID == t.ID && activatedIDs[other.ID] {
+					// This trace is inhibited by another activated trace
+					// Only suppress if the inhibitor is stronger
+					if other.Strength >= t.Strength {
+						inhibited = true
+						break
+					}
+				}
+			}
+			if inhibited {
 				break
 			}
+		}
+		if inhibited {
+			continue
+		}
+
+		filtered = append(filtered, t)
+		if limit > 0 && len(filtered) >= limit {
+			break
+		}
+	}
+
+	// Mark filtered traces as labile (reconsolidation window)
+	const labileWindow = 5 * time.Minute
+	for _, t := range filtered {
+		if !t.IsCore { // core traces are immutable
+			t.MakeLabile(labileWindow)
 		}
 	}
 
