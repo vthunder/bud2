@@ -286,6 +286,23 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Required: []string{"content"},
 			},
 		},
+		{
+			Name:        "signal_done",
+			Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"session_id": {
+						Type:        "string",
+						Description: "The current session ID (if known)",
+					},
+					"summary": {
+						Type:        "string",
+						Description: "Brief summary of what was accomplished (optional)",
+					},
+				},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

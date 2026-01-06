@@ -4,7 +4,7 @@
       "args": [],
       "command": "/Users/thunder/src/bud2/bin/bud-mcp",
       "env": {
-        "BUD_STATE_PATH": "/tmp/bud2-test-short-recall"
+        "BUD_STATE_PATH": "/tmp/bud2-test-structured-data"
       },
       "type": "stdio"
     }

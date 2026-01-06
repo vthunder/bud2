@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/types"
 )
@@ -34,6 +35,7 @@ type ExecutiveConfig struct {
 	UseInteractive  bool                                                // Use tmux interactive mode (for debugging)
 	GetActiveTraces func(limit int, excludeSources []string) []*types.Trace // function to get activated memory traces
 	GetCoreTraces   func() []*types.Trace                               // function to get core identity traces
+	SessionTracker  *budget.SessionTracker                              // tracks thinking time
 }
 
 // New creates a new Executive
@@ -112,6 +114,11 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 	}
 
 	if e.config.UseInteractive {
+		// Track session start for thinking time budget
+		if e.config.SessionTracker != nil {
+			e.config.SessionTracker.StartSession(session.sessionID, thread.ID)
+		}
+
 		// Interactive mode - shows in tmux
 		if err := session.SendPromptInteractive(prompt, claudeCfg); err != nil {
 			return fmt.Errorf("interactive prompt failed: %w", err)
@@ -124,15 +131,25 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 		now := time.Now()
 		thread.ProcessedAt = &now
 		// In interactive mode, we don't wait for completion
-		// User can monitor in tmux
-		log.Printf("[executive] Sent prompt to thread %s (interactive mode)", thread.ID)
+		// Claude will call signal_done when finished
+		log.Printf("[executive] Sent prompt to thread %s (interactive mode, session %s)", thread.ID, session.sessionID)
 		return nil
 	}
 
-	// Programmatic mode
+	// Programmatic mode - track session
+	if e.config.SessionTracker != nil {
+		e.config.SessionTracker.StartSession(session.sessionID, thread.ID)
+	}
+
 	if err := session.SendPrompt(ctx, prompt, claudeCfg); err != nil {
 		return fmt.Errorf("prompt failed: %w", err)
 	}
+
+	// Programmatic mode completes synchronously, so mark done
+	if e.config.SessionTracker != nil {
+		e.config.SessionTracker.CompleteSession(session.sessionID)
+	}
+
 	// Mark first message sent
 	session.MarkFirstMessageSent()
 	// Mark percepts as seen
@@ -374,6 +391,27 @@ func (e *Executive) ListSessions() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// GetSessionTracker returns the session tracker (for external signal processing)
+func (e *Executive) GetSessionTracker() *budget.SessionTracker {
+	return e.config.SessionTracker
+}
+
+// TodayThinkingMinutes returns total thinking time today
+func (e *Executive) TodayThinkingMinutes() float64 {
+	if e.config.SessionTracker == nil {
+		return 0
+	}
+	return e.config.SessionTracker.TodayThinkingMinutes()
+}
+
+// HasActiveSessions returns true if any Claude sessions are still running
+func (e *Executive) HasActiveSessions() bool {
+	if e.config.SessionTracker == nil {
+		return false
+	}
+	return e.config.SessionTracker.HasActiveSessions()
 }
 
 func truncate(s string, maxLen int) string {

@@ -182,6 +182,35 @@ func main() {
 		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
 	})
 
+	// Register signal_done tool (signal that Claude is done thinking)
+	server.RegisterTool("signal_done", func(ctx any, args map[string]any) (string, error) {
+		sessionID, _ := args["session_id"].(string)
+		summary, _ := args["summary"].(string)
+
+		signal := map[string]any{
+			"type":       "session_done",
+			"session_id": sessionID,
+			"summary":    summary,
+			"timestamp":  time.Now().Format(time.RFC3339),
+		}
+
+		// Write to signals file (picked up by main bud process)
+		signalsPath := filepath.Join(statePath, "signals.jsonl")
+		f, err := os.OpenFile(signalsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open signals file: %w", err)
+		}
+		defer f.Close()
+
+		data, _ := json.Marshal(signal)
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return "", fmt.Errorf("failed to write signal: %w", err)
+		}
+
+		log.Printf("Session done signal: session=%s summary=%s", sessionID, truncate(summary, 50))
+		return "Done signal recorded. Ready for new prompts.", nil
+	})
+
 	// Register create_core tool (create a new core trace directly)
 	server.RegisterTool("create_core", func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)
