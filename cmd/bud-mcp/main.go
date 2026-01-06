@@ -146,6 +146,42 @@ func main() {
 		return fmt.Sprintf("Trace %s %s. Changes will take effect on next bud restart.", traceID, action), nil
 	})
 
+	// Register save_thought tool (save a thought to memory via inbox)
+	server.RegisterTool("save_thought", func(ctx any, args map[string]any) (string, error) {
+		content, ok := args["content"].(string)
+		if !ok || content == "" {
+			return "", fmt.Errorf("content is required")
+		}
+
+		// Write thought to inbox as a special message type
+		thought := map[string]any{
+			"id":        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
+			"type":      "thought",
+			"content":   content,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"status":    "pending",
+		}
+
+		// Append to inbox file
+		f, err := os.OpenFile(filepath.Join(statePath, "inbox.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open inbox: %w", err)
+		}
+		defer f.Close()
+
+		data, err := json.Marshal(thought)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal thought: %w", err)
+		}
+
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return "", fmt.Errorf("failed to write thought: %w", err)
+		}
+
+		log.Printf("Saved thought: %s", truncate(content, 50))
+		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
+	})
+
 	// Register create_core tool (create a new core trace directly)
 	server.RegisterTool("create_core", func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)

@@ -15,6 +15,7 @@ import (
 // InboxMessage represents a message written to the inbox
 type InboxMessage struct {
 	ID        string         `json:"id"`
+	Type      string         `json:"type,omitempty"`    // message (default), thought
 	Content   string         `json:"content"`
 	ChannelID string         `json:"channel_id"`
 	AuthorID  string         `json:"author_id,omitempty"`
@@ -91,18 +92,31 @@ func (msg *InboxMessage) ToPercept() *types.Percept {
 	timeBucket := msg.Timestamp.Unix() / 300 // 5-minute buckets
 	conversationID := fmt.Sprintf("%s-%d", channelID, timeBucket)
 
+	// Handle different message types
+	source := "inbox"
+	msgType := "message"
+	intensity := 0.8
+	author := msg.Author
+
+	if msg.Type == "thought" {
+		source = "bud"
+		msgType = "thought"
+		intensity = 0.9 // thoughts are high priority for memory
+		author = "Bud"
+	}
+
 	return &types.Percept{
 		ID:        fmt.Sprintf("inbox-%s", msg.ID),
-		Source:    "inbox",
-		Type:      "message",
-		Intensity: 0.8, // treat inbox messages as high priority
+		Source:    source,
+		Type:      msgType,
+		Intensity: intensity,
 		Timestamp: msg.Timestamp,
-		Tags:      []string{"inbox"},
+		Tags:      []string{source},
 		Data: map[string]any{
 			"channel_id":  channelID,
 			"message_id":  msg.ID,
 			"author_id":   msg.AuthorID,
-			"author_name": msg.Author,
+			"author":      author,
 			"content":     msg.Content,
 		},
 		Features: map[string]any{

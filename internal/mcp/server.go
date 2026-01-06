@@ -259,6 +259,20 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 			},
 		},
 		{
+			Name:        "save_thought",
+			Description: "Save a thought or observation to memory. Use this to remember decisions, observations, or anything worth recalling later. These get consolidated with other memories over time.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"content": {
+						Type:        "string",
+						Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')",
+					},
+				},
+				Required: []string{"content"},
+			},
+		},
+		{
 			Name:        "create_core",
 			Description: "Create a new core identity trace directly. Use this to add new identity information that should always be present.",
 			InputSchema: inputSchema{
