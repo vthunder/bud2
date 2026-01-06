@@ -159,17 +159,20 @@ func (c *Client) Summarize(fragments []string) (string, error) {
 		return fragments[0], nil
 	}
 
-	// Build prompt
-	prompt := `Summarize the following conversation fragments into a single coherent memory.
-Focus on key facts, names, and context. Be concise (1-2 sentences max).
-Do not add commentary - just output the summary.
+	// Build prompt with Bud's perspective
+	prompt := `You are Bud, an AI assistant. Summarize this conversation as a memory from your perspective.
+- Refer to the human as "the user" or "my owner"
+- Use first person for your own statements ("I told them...", "I remembered...")
+- Focus on key facts and what's worth remembering
+- Be concise (1-2 sentences max)
+- Output only the summary, no commentary
 
-Fragments:
+Conversation:
 `
 	for _, f := range fragments {
-		prompt += "- " + f + "\n"
+		prompt += f + "\n"
 	}
-	prompt += "\nSummary:"
+	prompt += "\nMemory:"
 
 	return c.Generate(prompt)
 }

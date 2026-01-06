@@ -738,7 +738,14 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 		sources = append(sources, p.ID)
 		embeddings = append(embeddings, p.Embedding)
 		if content, ok := p.Data["content"].(string); ok && content != "" {
-			fragments = append(fragments, content)
+			// Include speaker context for better summarization
+			speaker := "user"
+			if p.Source == "bud" {
+				speaker = "Bud"
+			} else if author, ok := p.Data["author"].(string); ok && author != "" {
+				speaker = author
+			}
+			fragments = append(fragments, fmt.Sprintf("%s: %s", speaker, content))
 		}
 	}
 
@@ -773,12 +780,19 @@ func (a *Attention) createTraceFromCluster(cluster []*types.Percept) *types.Trac
 
 // resummarizeTrace updates a trace's content based on all its sources
 func (a *Attention) resummarizeTrace(trace *types.Trace) {
-	// Collect all source content
+	// Collect all source content with speaker context
 	var fragments []string
 	for _, srcID := range trace.Sources {
 		if p := a.percepts.Get(srcID); p != nil {
 			if content, ok := p.Data["content"].(string); ok && content != "" {
-				fragments = append(fragments, content)
+				// Include speaker context for better summarization
+				speaker := "user"
+				if p.Source == "bud" {
+					speaker = "Bud"
+				} else if author, ok := p.Data["author"].(string); ok && author != "" {
+					speaker = author
+				}
+				fragments = append(fragments, fmt.Sprintf("%s: %s", speaker, content))
 			}
 		}
 	}
