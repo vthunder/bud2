@@ -1,0 +1,34 @@
+name: multi-topic
+description: Discuss multiple distinct topics, recall specific ones
+
+conversations:
+  - name: Discuss various topics
+    messages:
+      - "Let me tell you about a few different things."
+      - "My dog's name is Biscuit. He's a golden retriever."
+      - "I work as a software engineer at a startup called TechFlow."
+      - "My partner's birthday is March 15th."
+      - "We're planning a trip to Japan in October."
+      - "My favorite restaurant is 'The Golden Spoon' on Main Street."
+      - "Thanks for listening!"
+
+  - name: Recall pet info
+    new_session: true
+    messages:
+      - "What's my dog's name and breed?"
+    expect:
+      - contains: "Biscuit"
+      - contains_any: ["golden retriever", "Golden Retriever", "golden"]
+
+  - name: Recall work info
+    messages:
+      - "Where do I work?"
+    expect:
+      - contains: "TechFlow"
+
+  - name: Recall date info
+    messages:
+      - "When is my partner's birthday?"
+    expect:
+      - contains: "March"
+      - contains: "15"

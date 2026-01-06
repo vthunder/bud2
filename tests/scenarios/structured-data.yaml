@@ -1,0 +1,31 @@
+name: structured-data
+description: Save structured information and recall it accurately
+
+conversations:
+  - name: Share schedule
+    messages:
+      - "I need you to remember my weekly schedule."
+      - |
+        Here's my schedule:
+        - Monday: Gym at 7am, Team meeting at 2pm
+        - Tuesday: Piano lesson at 6pm
+        - Wednesday: Work from home
+        - Thursday: Dentist at 10am
+        - Friday: Happy hour at 5pm
+      - "Got all that?"
+      - "This is really important, please save it somewhere you won't forget."
+
+  - name: Recall schedule
+    new_session: true
+    messages:
+      - "What do I have on Tuesday?"
+    expect:
+      - contains: "piano"
+      - contains_any: ["6pm", "6 pm", "6:00"]
+
+  - name: Recall another day
+    messages:
+      - "And what about Thursday?"
+    expect:
+      - contains: "dentist"
+      - contains_any: ["10am", "10 am", "10:00"]

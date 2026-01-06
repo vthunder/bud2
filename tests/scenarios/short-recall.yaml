@@ -1,0 +1,16 @@
+name: short-recall
+description: Short conversation, then recall a detail in a new session
+
+conversations:
+  - name: Tell secret
+    messages:
+      - "Hi! I want to tell you something to remember."
+      - "The secret code word is 'pineapple submarine'. Remember that!"
+      - "Great, I'll ask you about it later. Bye for now!"
+
+  - name: Recall secret
+    new_session: true
+    messages:
+      - "Do you remember the secret code word I told you earlier?"
+    expect:
+      - contains: "pineapple"

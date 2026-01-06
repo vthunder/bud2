@@ -1,0 +1,21 @@
+name: correction
+description: Test that corrections override old information
+
+conversations:
+  - name: Initial information
+    messages:
+      - "My phone number is 555-1234."
+      - "Got it?"
+
+  - name: Correction
+    messages:
+      - "Actually, I made a mistake. My phone number is 555-9876, not 555-1234."
+      - "Please remember the correct one."
+
+  - name: Verify correction
+    new_session: true
+    messages:
+      - "What's my phone number?"
+    expect:
+      - contains: "9876"
+      - not_contains: "1234"

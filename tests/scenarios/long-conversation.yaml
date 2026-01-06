@@ -1,0 +1,31 @@
+name: long-conversation
+description: Longer conversation with recall from farther back
+
+conversations:
+  - name: Extended discussion
+    messages:
+      - "Hey Bud! Let's chat about a few things."
+      - "First, my favorite color is cerulean blue. It's important to me."
+      - "I've been thinking about learning to play the ukulele."
+      - "What do you think about that?"
+      - "Also, I have a dentist appointment next Tuesday at 3pm."
+      - "My friend Sarah recommended a good book called 'The Midnight Library'."
+      - "I should probably read more this year."
+      - "Oh, and I'm allergic to shellfish - please remember that."
+      - "Anyway, let's talk about something else now."
+      - "What's your take on the weather lately?"
+      - "I think I'll go for a walk later."
+      - "Alright, that's enough chatting for now. Bye!"
+
+  - name: Recall early details
+    new_session: true
+    messages:
+      - "What's my favorite color?"
+    expect:
+      - contains: "cerulean"
+
+  - name: Recall middle details
+    messages:
+      - "Do I have any allergies you should know about?"
+    expect:
+      - contains: "shellfish"
