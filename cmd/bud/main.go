@@ -111,6 +111,11 @@ func main() {
 
 	// Start signal processor (polls signals.jsonl for session completions)
 	signalProcessor.Start(500 * time.Millisecond)
+
+	// Start CPU watcher as fallback for signal_done
+	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
+	cpuWatcher.Start()
+
 	log.Printf("[main] Session tracker initialized (daily budget: %.0f min)", dailyBudgetMinutes)
 
 	// Initialize attention first (executive needs it for trace retrieval)
@@ -321,6 +326,7 @@ func main() {
 
 	// Stop subsystems
 	close(stopChan)
+	cpuWatcher.Stop()
 	attn.Stop()
 	if discordEffector != nil {
 		discordEffector.Stop()
