@@ -88,6 +88,12 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 	// Build prompt from thread context
 	prompt, perceptIDs := e.buildPrompt(thread, session, isFirstMessage)
 
+	// Skip if prompt is empty (e.g., only filtered percepts)
+	if strings.TrimSpace(prompt) == "" {
+		log.Printf("[executive] Thread %s has no new content, skipping", thread.ID)
+		return nil
+	}
+
 	// Set up tool handling
 	session.OnToolCall(func(name string, args map[string]any) (string, error) {
 		return e.handleToolCall(thread, name, args)
@@ -198,6 +204,10 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 	var newPercepts []*types.Percept
 	now := time.Now()
 	for _, p := range allPercepts {
+		// Skip Bud's own outputs (thoughts) - they shouldn't come back as input
+		if p.Source == "bud" {
+			continue
+		}
 		// Only include recent percepts
 		if now.Sub(p.Timestamp) < recentThreshold {
 			// Skip if already sent to Claude in this session

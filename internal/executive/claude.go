@@ -353,7 +353,9 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 
 		// Wait for Claude to fully initialize (OAuth, plugins, etc.)
 		log.Printf("[claude] Waiting for Claude to initialize in window %s...", windowName)
-		time.Sleep(5 * time.Second)
+		if err := c.waitForReady(windowName, 60*time.Second); err != nil {
+			return fmt.Errorf("claude failed to initialize: %w", err)
+		}
 	}
 
 	// Send the prompt
@@ -406,6 +408,60 @@ func (c *ClaudeSession) Close() error {
 	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
 	windowName := fmt.Sprintf("thread-%s", safeThreadID)
 	return c.tmux.KillWindow(windowName)
+}
+
+// waitForReady polls the tmux window until Claude shows the ">" prompt
+func (c *ClaudeSession) waitForReady(windowName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		// Capture recent output from the window
+		output, err := c.tmux.CapturePane(windowName, 50)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Strip ANSI escape codes for reliable matching
+		output = stripANSI(output)
+
+		// Look for Claude Code ready indicators:
+		// 1. "⏵⏵" - the actual input prompt
+		// 2. "> Try" - suggestion prompt means initialized
+		// 3. "bypass permissions" - bottom status indicator
+		if strings.Contains(output, "⏵⏵") ||
+			strings.Contains(output, "> Try") ||
+			strings.Contains(output, "bypass permissions") {
+			log.Printf("[claude] Claude ready in window %s", windowName)
+			return nil
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timeout waiting for Claude to be ready")
+}
+
+// stripANSI removes ANSI escape codes from a string
+func stripANSI(s string) string {
+	// Simple regex-free approach: skip escape sequences
+	var result strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			// End of escape sequence
+			if (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteByte(s[i])
+	}
+	return result.String()
 }
 
 func truncatePrompt(s string, maxLen int) string {
