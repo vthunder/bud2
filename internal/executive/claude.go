@@ -21,6 +21,10 @@ type ClaudeSession struct {
 	tmux      *Tmux
 	mu        sync.Mutex
 
+	// State
+	firstMessageSent bool              // track if we've sent the first message (for boilerplate)
+	seenPerceptIDs   map[string]bool   // track which percepts have been sent to Claude
+
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
 	onOutput   func(text string)
@@ -39,9 +43,10 @@ type ClaudeConfig struct {
 // NewClaudeSession creates a session for a thread
 func NewClaudeSession(threadID string, tmux *Tmux) *ClaudeSession {
 	return &ClaudeSession{
-		threadID:  threadID,
-		sessionID: generateUUID(),
-		tmux:      tmux,
+		threadID:       threadID,
+		sessionID:      generateUUID(),
+		tmux:           tmux,
+		seenPerceptIDs: make(map[string]bool),
 	}
 }
 
@@ -54,6 +59,28 @@ func generateUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%12x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// IsFirstMessage returns true if no messages have been sent yet
+func (c *ClaudeSession) IsFirstMessage() bool {
+	return !c.firstMessageSent
+}
+
+// MarkFirstMessageSent marks that the first message has been sent
+func (c *ClaudeSession) MarkFirstMessageSent() {
+	c.firstMessageSent = true
+}
+
+// HasSeenPercept returns true if this percept has been sent to Claude before
+func (c *ClaudeSession) HasSeenPercept(perceptID string) bool {
+	return c.seenPerceptIDs[perceptID]
+}
+
+// MarkPerceptsSeen marks percepts as having been sent to Claude
+func (c *ClaudeSession) MarkPerceptsSeen(perceptIDs []string) {
+	for _, id := range perceptIDs {
+		c.seenPerceptIDs[id] = true
+	}
 }
 
 // OnToolCall sets the callback for tool calls
@@ -289,7 +316,7 @@ func (c *ClaudeSession) processStderr(r io.Reader, buf *strings.Builder) {
 }
 
 // SendPromptInteractive runs Claude interactively in a tmux window
-// This is for visual debugging - you can attach to the tmux session
+// This is the primary mode for agent operation (not just debugging)
 func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -311,8 +338,9 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 			return fmt.Errorf("failed to create window: %w", err)
 		}
 
-		// Start Claude in the window
-		claudeCmd := fmt.Sprintf("claude --session-id %s", c.sessionID)
+		// Start Claude in autonomous mode (like gastown)
+		// --dangerously-skip-permissions allows autonomous operation
+		claudeCmd := fmt.Sprintf("claude --dangerously-skip-permissions --session-id %s", c.sessionID)
 		if cfg.Model != "" {
 			claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
 		}
@@ -331,24 +359,32 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	// Send the prompt
 	log.Printf("[claude] Sending interactive prompt to window %s: %s", windowName, truncatePrompt(prompt, 100))
 
-	// For multiline prompts, collapse to single line for interactive mode
-	singleLinePrompt := strings.ReplaceAll(prompt, "\n", " ")
-
 	target := fmt.Sprintf("%s:%s", c.tmux.session, windowName)
 
-	// Send the prompt text literally (without interpreting special chars)
-	cmdText := exec.Command("tmux", "send-keys", "-t", target, "-l", singleLinePrompt)
+	// Send the prompt text literally (the -l flag preserves newlines and special chars)
+	cmdText := exec.Command("tmux", "send-keys", "-t", target, "-l", prompt)
 	if err := cmdText.Run(); err != nil {
 		return fmt.Errorf("failed to send prompt text: %w", err)
 	}
 
-	// Send Enter key separately
-	cmdEnter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
-	if err := cmdEnter.Run(); err != nil {
-		return fmt.Errorf("failed to send enter: %w", err)
+	// Wait 500ms for paste to complete (gastown pattern - tested, required)
+	time.Sleep(500 * time.Millisecond)
+
+	// Send Enter with retry logic (gastown pattern - 3 attempts, 200ms between)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		cmdEnter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
+		if err := cmdEnter.Run(); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("failed to send Enter after 3 attempts: %w", lastErr)
 }
 
 // GetWindowOutput captures recent output from the tmux window

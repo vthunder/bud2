@@ -29,9 +29,11 @@ type Executive struct {
 
 // ExecutiveConfig holds executive configuration
 type ExecutiveConfig struct {
-	Model      string // Claude model to use
-	WorkDir    string // Working directory
-	UseInteractive bool // Use tmux interactive mode (for debugging)
+	Model           string                                              // Claude model to use
+	WorkDir         string                                              // Working directory
+	UseInteractive  bool                                                // Use tmux interactive mode (for debugging)
+	GetActiveTraces func(limit int, excludeSources []string) []*types.Trace // function to get activated memory traces
+	GetCoreTraces   func() []*types.Trace                               // function to get core identity traces
 }
 
 // New creates a new Executive
@@ -57,10 +59,34 @@ func (e *Executive) Start() error {
 
 // ProcessThread processes an active thread
 func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) error {
+	// Check if already processed (prevent re-processing on restart)
+	if thread.ProcessedAt != nil {
+		// Check if any percepts are newer than ProcessedAt
+		hasNewPercepts := false
+		percepts := e.percepts.GetMany(thread.PerceptRefs)
+		for _, p := range percepts {
+			if p.Timestamp.After(*thread.ProcessedAt) {
+				hasNewPercepts = true
+				break
+			}
+		}
+		if !hasNewPercepts {
+			log.Printf("[executive] Thread %s already processed at %s, skipping",
+				thread.ID, thread.ProcessedAt.Format(time.RFC3339))
+			// Pause this thread so attention can select a different one
+			thread.Status = types.StatusPaused
+			return nil
+		}
+		log.Printf("[executive] Thread %s has new percepts since last processing", thread.ID)
+	}
+
 	session := e.getOrCreateSession(thread.ID)
 
+	// Check if this is the first message in this session
+	isFirstMessage := session.IsFirstMessage()
+
 	// Build prompt from thread context
-	prompt := e.buildPrompt(thread)
+	prompt, perceptIDs := e.buildPrompt(thread, session, isFirstMessage)
 
 	// Set up tool handling
 	session.OnToolCall(func(name string, args map[string]any) (string, error) {
@@ -84,6 +110,13 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 		if err := session.SendPromptInteractive(prompt, claudeCfg); err != nil {
 			return fmt.Errorf("interactive prompt failed: %w", err)
 		}
+		// Mark first message sent (so subsequent prompts skip boilerplate)
+		session.MarkFirstMessageSent()
+		// Mark percepts as seen (so they're not repeated)
+		session.MarkPerceptsSeen(perceptIDs)
+		// Mark as processed (prevents re-processing on restart)
+		now := time.Now()
+		thread.ProcessedAt = &now
 		// In interactive mode, we don't wait for completion
 		// User can monitor in tmux
 		log.Printf("[executive] Sent prompt to thread %s (interactive mode)", thread.ID)
@@ -94,6 +127,14 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 	if err := session.SendPrompt(ctx, prompt, claudeCfg); err != nil {
 		return fmt.Errorf("prompt failed: %w", err)
 	}
+	// Mark first message sent
+	session.MarkFirstMessageSent()
+	// Mark percepts as seen
+	session.MarkPerceptsSeen(perceptIDs)
+
+	// Mark as processed
+	now := time.Now()
+	thread.ProcessedAt = &now
 
 	// Log output
 	if output.Len() > 0 {
@@ -104,40 +145,106 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 }
 
 // buildPrompt constructs the prompt for Claude
-func (e *Executive) buildPrompt(thread *types.Thread) string {
+// Returns the prompt string and IDs of percepts that were included
+func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, isFirstMessage bool) (string, []string) {
 	var prompt strings.Builder
+	var includedPerceptIDs []string
 
-	// Thread goal
-	prompt.WriteString(fmt.Sprintf("## Current Task\n%s\n\n", thread.Goal))
-
-	// Get referenced percepts
-	percepts := e.percepts.GetMany(thread.PerceptRefs)
-	if len(percepts) > 0 {
-		prompt.WriteString("## Context\n")
-		for _, p := range percepts {
-			prompt.WriteString(fmt.Sprintf("- [%s] %s: ", p.Source, p.Type))
-			if content, ok := p.Data["content"].(string); ok {
-				prompt.WriteString(content)
+	// Include core identity traces on first message only (defines who Bud is)
+	if isFirstMessage && e.config.GetCoreTraces != nil {
+		coreTraces := e.config.GetCoreTraces()
+		if len(coreTraces) > 0 {
+			prompt.WriteString("## Identity\n")
+			for _, t := range coreTraces {
+				prompt.WriteString(fmt.Sprintf("- %s\n", t.Content))
 			}
 			prompt.WriteString("\n")
+		}
+	}
+
+	// Include activated memory traces (long-term memory)
+	// Exclude: core traces (already in Identity), traces from recent percepts (in Recent Context)
+	if e.config.GetActiveTraces != nil {
+		// Get IDs of recent percepts to exclude (avoid duplication with Recent Context)
+		var recentPerceptIDs []string
+		allPercepts := e.percepts.GetMany(thread.PerceptRefs)
+		now := time.Now()
+		for _, p := range allPercepts {
+			if now.Sub(p.Timestamp) < 60*time.Second {
+				recentPerceptIDs = append(recentPerceptIDs, p.ID)
+			}
+		}
+		traces := e.config.GetActiveTraces(10, recentPerceptIDs) // top 10, excluding only recent
+		// Filter out core traces (they're in Identity section)
+		var nonCoreTraces []*types.Trace
+		for _, t := range traces {
+			if !t.IsCore {
+				nonCoreTraces = append(nonCoreTraces, t)
+			}
+		}
+		if len(nonCoreTraces) > 0 {
+			prompt.WriteString("## Relevant Memories\n")
+			for _, t := range nonCoreTraces {
+				prompt.WriteString(fmt.Sprintf("- %s\n", t.Content))
+			}
+			prompt.WriteString("\n")
+		}
+	}
+
+	// Get referenced percepts - only include recent ones (not yet consolidated)
+	// Consolidated percepts live in traces, recent ones in context
+	const recentThreshold = 60 * time.Second // match consolidation threshold
+	allPercepts := e.percepts.GetMany(thread.PerceptRefs)
+	var newPercepts []*types.Percept
+	now := time.Now()
+	for _, p := range allPercepts {
+		// Only include recent percepts
+		if now.Sub(p.Timestamp) < recentThreshold {
+			// Skip if already sent to Claude in this session
+			if !session.HasSeenPercept(p.ID) {
+				newPercepts = append(newPercepts, p)
+				includedPerceptIDs = append(includedPerceptIDs, p.ID)
+			}
+		}
+	}
+
+	// Format new percepts (these are messages Claude hasn't seen yet)
+	if len(newPercepts) > 0 {
+		// Use "Context" on first message, "New" on subsequent
+		if isFirstMessage {
+			prompt.WriteString("## Context\n")
+		} else {
+			prompt.WriteString("## New\n")
+		}
+		for _, p := range newPercepts {
+			// Format: "author@channel: content" for messages
+			if p.Source == "discord" || p.Source == "inbox" {
+				author := "user"
+				if a, ok := p.Data["author"].(string); ok && a != "" {
+					author = a
+				}
+				channelID := ""
+				if ch, ok := p.Data["channel_id"].(string); ok {
+					channelID = ch
+				}
+				content := ""
+				if c, ok := p.Data["content"].(string); ok {
+					content = c
+				}
+				prompt.WriteString(fmt.Sprintf("- %s@%s: %s\n", author, channelID, content))
+			} else {
+				// Generic format for other percept types
+				prompt.WriteString(fmt.Sprintf("- [%s] %s: ", p.Source, p.Type))
+				if content, ok := p.Data["content"].(string); ok {
+					prompt.WriteString(content)
+				}
+				prompt.WriteString("\n")
+			}
 		}
 		prompt.WriteString("\n")
 	}
 
-	// Thread state
-	if thread.State.Phase != "" {
-		prompt.WriteString(fmt.Sprintf("## Current Phase\n%s\n\n", thread.State.Phase))
-	}
-	if thread.State.NextStep != "" {
-		prompt.WriteString(fmt.Sprintf("## Next Step\n%s\n\n", thread.State.NextStep))
-	}
-
-	// Instructions
-	prompt.WriteString("## Instructions\n")
-	prompt.WriteString("Respond to the task above. Use available tools as needed.\n")
-	prompt.WriteString("When done, indicate completion clearly.\n")
-
-	return prompt.String()
+	return prompt.String(), includedPerceptIDs
 }
 
 // handleToolCall processes a tool call from Claude
@@ -166,11 +273,11 @@ func (e *Executive) toolRespondToUser(thread *types.Thread, args map[string]any)
 		return "", fmt.Errorf("content is required")
 	}
 
-	// Get channel from percept data
+	// Get channel from percept data (Discord or inbox)
 	channelID := ""
 	percepts := e.percepts.GetMany(thread.PerceptRefs)
 	for _, p := range percepts {
-		if p.Source == "discord" {
+		if p.Source == "discord" || p.Source == "inbox" {
 			if ch, ok := p.Data["channel_id"].(string); ok {
 				channelID = ch
 				break

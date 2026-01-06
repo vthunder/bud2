@@ -166,3 +166,26 @@ func (t *Tmux) SelectWindow(windowName string) error {
 	cmd := exec.Command("tmux", "select-window", "-t", target)
 	return cmd.Run()
 }
+
+// GetPaneCommand returns the current command running in a window's pane
+// This is useful for detecting if Claude is still running
+func (t *Tmux) GetPaneCommand(windowName string) (string, error) {
+	target := fmt.Sprintf("%s:%s", t.session, windowName)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_command}")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get pane command for %s: %w", windowName, err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// IsClaudeRunning checks if Claude Code (node process) is running in a window
+// Gastown pattern: Claude Code runs as a node process
+func (t *Tmux) IsClaudeRunning(windowName string) bool {
+	cmd, err := t.GetPaneCommand(windowName)
+	if err != nil {
+		return false
+	}
+	// Claude Code runs as a node process
+	return cmd == "node" || cmd == "claude"
+}

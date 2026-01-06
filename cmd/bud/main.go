@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/attention"
@@ -38,42 +41,52 @@ func main() {
 	}
 	claudeModel := os.Getenv("CLAUDE_MODEL")
 	useInteractive := os.Getenv("EXECUTIVE_INTERACTIVE") == "true"
+	syntheticMode := os.Getenv("SYNTHETIC_MODE") == "true"
 
-	if discordToken == "" {
-		log.Fatal("DISCORD_TOKEN environment variable required")
+	// In synthetic mode, Discord is not required
+	if !syntheticMode && discordToken == "" {
+		log.Fatal("DISCORD_TOKEN environment variable required (or set SYNTHETIC_MODE=true)")
 	}
 
 	// Ensure state directory exists
 	os.MkdirAll(statePath, 0755)
 
+	// Generate .mcp.json with correct state path for MCP server
+	if err := writeMCPConfig(statePath); err != nil {
+		log.Printf("Warning: failed to write .mcp.json: %v", err)
+	}
+
 	// Initialize memory pools
+	inbox := memory.NewInbox(filepath.Join(statePath, "inbox.jsonl"))
 	perceptPool := memory.NewPerceptPool(filepath.Join(statePath, "percepts.json"))
 	threadPool := memory.NewThreadPool(filepath.Join(statePath, "threads.json"))
+	tracePool := memory.NewTracePool(filepath.Join(statePath, "traces.json"))
 	outbox := memory.NewOutbox(filepath.Join(statePath, "outbox.jsonl"))
 
 	// Load persisted state
+	if err := inbox.Load(); err != nil {
+		log.Printf("Warning: failed to load inbox: %v", err)
+	}
 	if err := perceptPool.Load(); err != nil {
 		log.Printf("Warning: failed to load percepts: %v", err)
 	}
 	if err := threadPool.Load(); err != nil {
 		log.Printf("Warning: failed to load threads: %v", err)
 	}
+	if err := tracePool.Load(); err != nil {
+		log.Printf("Warning: failed to load traces: %v", err)
+	}
 	if err := outbox.Load(); err != nil {
 		log.Printf("Warning: failed to load outbox: %v", err)
 	}
+	log.Printf("[main] Loaded %d traces from memory", tracePool.Count())
 
-	// Initialize executive
-	exec := executive.New(perceptPool, threadPool, outbox, executive.ExecutiveConfig{
-		Model:          claudeModel,
-		WorkDir:        ".",
-		UseInteractive: useInteractive,
-	})
-	if err := exec.Start(); err != nil {
-		log.Fatalf("Failed to start executive: %v", err)
-	}
+	// Initialize attention first (executive needs it for trace retrieval)
+	var attn *attention.Attention
+	var exec *executive.Executive
 
-	// Initialize attention
-	attn := attention.New(perceptPool, threadPool, func(thread *types.Thread) {
+	// Create attention with callback that will use exec (set below)
+	attn = attention.New(perceptPool, threadPool, tracePool, func(thread *types.Thread) {
 		log.Printf("[main] Active thread changed: %s - %s", thread.ID, thread.Goal)
 		// Invoke executive to process the thread
 		ctx := context.Background()
@@ -82,40 +95,139 @@ func main() {
 		}
 	})
 
-	// Initialize Discord sense
-	discordSense, err := senses.NewDiscordSense(senses.DiscordConfig{
-		Token:     discordToken,
-		ChannelID: discordChannel,
-		OwnerID:   discordOwner,
-	}, func(percept *types.Percept) {
-		// Add percept to pool
-		perceptPool.Add(percept)
+	// Bootstrap core identity traces from seed file (if no core traces exist)
+	seedPath := filepath.Join(statePath, "core_seed.md")
+	if err := attn.BootstrapCore(seedPath); err != nil {
+		log.Printf("Warning: failed to bootstrap core traces: %v", err)
+	}
 
-		// For now, auto-create a thread for each message
-		// TODO: smarter thread assignment based on relevance
-		content := percept.Data["content"].(string)
-		goal := "respond to: " + truncate(content, 50)
-		attn.CreateThread(goal, []string{percept.ID})
+	// Initialize executive with trace retrieval functions
+	exec = executive.New(perceptPool, threadPool, outbox, executive.ExecutiveConfig{
+		Model:           claudeModel,
+		WorkDir:         ".",
+		UseInteractive:  useInteractive,
+		GetActiveTraces: attn.GetActivatedTraces,
+		GetCoreTraces:   attn.GetCoreTraces,
 	})
-	if err != nil {
-		log.Fatalf("Failed to create Discord sense: %v", err)
+	if err := exec.Start(); err != nil {
+		log.Fatalf("Failed to start executive: %v", err)
 	}
 
-	// Start Discord sense
-	if err := discordSense.Start(); err != nil {
-		log.Fatalf("Failed to start Discord sense: %v", err)
+	// Process percept helper - used by both inbox polling and response capture
+	processPercept := func(percept *types.Percept) {
+		perceptPool.Add(percept)
+		threads := attn.RoutePercept(percept, func(content string) string {
+			return "respond to: " + truncate(content, 50)
+		})
+		log.Printf("[main] Percept %s routed to %d thread(s)", percept.ID, len(threads))
 	}
 
-	// Initialize Discord effector (shares session with sense)
-	discordEffector := effectors.NewDiscordEffector(
-		discordSense.Session(),
-		func() []*types.Action { return outbox.GetPending() },
-		func(id string) { outbox.MarkComplete(id) },
-	)
-	discordEffector.Start()
+	// Capture outgoing response helper
+	captureResponse := func(channelID, content string) {
+		percept := &types.Percept{
+			ID:        fmt.Sprintf("bud-response-%d", time.Now().UnixNano()),
+			Source:    "bud",
+			Type:      "response",
+			Intensity: 0.3, // lower intensity for own responses
+			Timestamp: time.Now(),
+			Tags:      []string{"outgoing"},
+			Data: map[string]any{
+				"channel_id": channelID,
+				"content":    content,
+			},
+		}
+		// Compute embedding for consolidation (but don't route - would cause feedback loop)
+		attn.EmbedPercept(percept)
+		perceptPool.Add(percept)
+		log.Printf("[main] Captured Bud response as percept (for consolidation)")
+	}
+
+	// Stop channel for all polling goroutines
+	stopChan := make(chan struct{})
+
+	// Discord mode: start sense and effector
+	var discordSense *senses.DiscordSense
+	var discordEffector *effectors.DiscordEffector
+
+	if !syntheticMode {
+		var err error
+		discordSense, err = senses.NewDiscordSense(senses.DiscordConfig{
+			Token:     discordToken,
+			ChannelID: discordChannel,
+			OwnerID:   discordOwner,
+		}, inbox)
+		if err != nil {
+			log.Fatalf("Failed to create Discord sense: %v", err)
+		}
+
+		if err := discordSense.Start(); err != nil {
+			log.Fatalf("Failed to start Discord sense: %v", err)
+		}
+
+		discordEffector = effectors.NewDiscordEffector(
+			discordSense.Session(),
+			func() (int, error) { return outbox.Poll() },
+			func() []*types.Action { return outbox.GetPending() },
+			func(id string) { outbox.MarkComplete(id) },
+		)
+		discordEffector.SetOnSend(captureResponse)
+		discordEffector.Start()
+
+		log.Println("[main] Discord sense and effector started")
+	} else {
+		log.Println("[main] SYNTHETIC_MODE enabled - Discord disabled")
+		log.Println("[main] Write to inbox.jsonl, read from outbox.jsonl")
+	}
+
+	// Start inbox polling (processes messages from both Discord and synthetic sources)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				// Poll inbox file for external writes (synthetic mode)
+				newMsgs, err := inbox.Poll()
+				if err != nil {
+					log.Printf("[main] Inbox poll error: %v", err)
+					continue
+				}
+				if len(newMsgs) > 0 {
+					log.Printf("[main] Found %d new messages in inbox", len(newMsgs))
+				}
+
+				// Process all pending messages
+				for _, msg := range inbox.GetPending() {
+					percept := msg.ToPercept()
+					processPercept(percept)
+					inbox.MarkProcessed(msg.ID)
+				}
+			}
+		}
+	}()
 
 	// Start attention
 	attn.Start()
+
+	// Start consolidation goroutine (memory consolidation during idle)
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				n := attn.Consolidate()
+				if n > 0 {
+					log.Printf("[main] Consolidated %d percepts into traces (total: %d)", n, attn.TraceCount())
+				}
+			}
+		}
+	}()
 
 	log.Println("[main] All subsystems started. Press Ctrl+C to stop.")
 
@@ -127,20 +239,38 @@ func main() {
 	log.Println("[main] Shutting down...")
 
 	// Stop subsystems
+	close(stopChan)
 	attn.Stop()
-	discordEffector.Stop()
-	discordSense.Stop()
+	if discordEffector != nil {
+		discordEffector.Stop()
+	}
+	if discordSense != nil {
+		discordSense.Stop()
+	}
+
+	// Final consolidation before shutdown (consolidate ALL percepts regardless of age)
+	n := attn.ConsolidateAll()
+	if n > 0 {
+		log.Printf("[main] Final consolidation: %d percepts", n)
+	}
 
 	// Persist state
+	if err := inbox.Save(); err != nil {
+		log.Printf("Warning: failed to save inbox: %v", err)
+	}
 	if err := perceptPool.Save(); err != nil {
 		log.Printf("Warning: failed to save percepts: %v", err)
 	}
 	if err := threadPool.Save(); err != nil {
 		log.Printf("Warning: failed to save threads: %v", err)
 	}
+	if err := tracePool.Save(); err != nil {
+		log.Printf("Warning: failed to save traces: %v", err)
+	}
 	if err := outbox.Save(); err != nil {
 		log.Printf("Warning: failed to save outbox: %v", err)
 	}
+	log.Printf("[main] Saved %d traces to memory", tracePool.Count())
 
 	log.Println("[main] Goodbye!")
 }
@@ -150,4 +280,47 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// writeMCPConfig generates .mcp.json with the correct state path
+func writeMCPConfig(statePath string) error {
+	// Get absolute path for state
+	absStatePath, err := filepath.Abs(statePath)
+	if err != nil {
+		return err
+	}
+
+	// Get the path to bud-mcp binary (same directory as bud)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	budMCPPath := filepath.Join(filepath.Dir(exe), "bud-mcp")
+
+	// Build config
+	config := map[string]any{
+		"mcpServers": map[string]any{
+			"bud2": map[string]any{
+				"type":    "stdio",
+				"command": budMCPPath,
+				"args":    []string{},
+				"env": map[string]string{
+					"BUD_STATE_PATH": absStatePath,
+				},
+			},
+		},
+	}
+
+	// Write to .mcp.json in current working directory
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(".mcp.json", data, 0644); err != nil {
+		return err
+	}
+
+	log.Printf("[main] Generated .mcp.json with BUD_STATE_PATH=%s", absStatePath)
+	return nil
 }

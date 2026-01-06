@@ -9,8 +9,10 @@ type Percept struct {
 	Type      string            `json:"type"`      // message, notification, event
 	Intensity float64           `json:"intensity"` // 0.0-1.0, automatic
 	Timestamp time.Time         `json:"timestamp"`
-	Tags      []string          `json:"tags"` // [from:owner], [urgent], etc
-	Data      map[string]any    `json:"data"` // source-specific payload
+	Tags      []string          `json:"tags"`      // [from:owner], [urgent], etc
+	Data      map[string]any    `json:"data"`      // source-specific payload
+	Features  map[string]any    `json:"features,omitempty"` // sense-defined clustering features
+	Embedding []float64         `json:"embedding,omitempty"` // semantic embedding
 }
 
 // Recency returns seconds since percept was created
@@ -33,11 +35,32 @@ type Thread struct {
 	ID          string            `json:"id"`
 	Goal        string            `json:"goal"`
 	Status      ThreadStatus      `json:"status"`
-	Salience    float64           `json:"salience"` // computed from percepts + relevance
+	Salience    float64           `json:"salience"`    // computed from percepts + relevance
+	Activation  float64           `json:"activation"`  // current activation level (for routing)
 	PerceptRefs []string          `json:"percept_refs"` // many-to-many refs to percepts
 	State       ThreadState       `json:"state"`
 	CreatedAt   time.Time         `json:"created_at"`
 	LastActive  time.Time         `json:"last_active"`
+	ProcessedAt *time.Time        `json:"processed_at,omitempty"` // when last sent to executive
+
+	// Feature accumulation (for association matching)
+	Features    ThreadFeatures    `json:"features"`
+
+	// Semantic embeddings for topic matching
+	Embeddings  ThreadEmbeddings  `json:"embeddings"`
+}
+
+// ThreadFeatures accumulates features from percepts for association matching
+type ThreadFeatures struct {
+	Channels map[string]float64 `json:"channels,omitempty"` // channel_id -> weight
+	Authors  map[string]float64 `json:"authors,omitempty"`  // author_id -> weight
+	Sources  map[string]float64 `json:"sources,omitempty"`  // source (discord, github) -> weight
+}
+
+// ThreadEmbeddings holds semantic embeddings for a thread
+type ThreadEmbeddings struct {
+	Centroid []float64 `json:"centroid,omitempty"` // average of percept embeddings
+	Topic    []float64 `json:"topic,omitempty"`    // embedding of thread goal/summary
 }
 
 // ThreadState holds thread-specific context
@@ -78,4 +101,22 @@ type Reflex struct {
 	Action          string `json:"action"`  // action to execute
 	SpawnAwareness  bool   `json:"spawn_awareness"`
 	AwarenessType   string `json:"awareness_type,omitempty"`
+}
+
+// Trace is a consolidated memory unit (compressed from percepts)
+type Trace struct {
+	ID         string    `json:"id"`
+	Content    string    `json:"content"`    // summarized gist
+	Embedding  []float64 `json:"embedding"`  // for similarity matching
+	Activation float64   `json:"activation"` // current activation level (decays)
+	Strength   int       `json:"strength"`   // reinforcement count
+	Sources    []string  `json:"sources"`    // percept IDs that contributed
+	IsCore     bool      `json:"is_core"`    // core identity traces (always activated)
+	CreatedAt  time.Time `json:"created_at"`
+	LastAccess time.Time `json:"last_access"`
+}
+
+// Recency returns seconds since trace was last accessed
+func (t *Trace) Recency() float64 {
+	return time.Since(t.LastAccess).Seconds()
 }

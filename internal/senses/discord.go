@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/vthunder/bud2/internal/types"
+	"github.com/vthunder/bud2/internal/memory"
 )
 
 // DiscordSense listens to Discord and produces percepts
@@ -16,7 +15,7 @@ type DiscordSense struct {
 	channelID string
 	ownerID   string
 	botID     string
-	onPercept func(*types.Percept)
+	inbox     *memory.Inbox
 }
 
 // DiscordConfig holds Discord connection settings
@@ -27,7 +26,7 @@ type DiscordConfig struct {
 }
 
 // NewDiscordSense creates a new Discord sense
-func NewDiscordSense(cfg DiscordConfig, onPercept func(*types.Percept)) (*DiscordSense, error) {
+func NewDiscordSense(cfg DiscordConfig, inbox *memory.Inbox) (*DiscordSense, error) {
 	session, err := discordgo.New("Bot " + cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
@@ -37,7 +36,7 @@ func NewDiscordSense(cfg DiscordConfig, onPercept func(*types.Percept)) (*Discor
 		session:   session,
 		channelID: cfg.ChannelID,
 		ownerID:   cfg.OwnerID,
-		onPercept: onPercept,
+		inbox:     inbox,
 	}
 
 	// Register message handler
@@ -84,96 +83,42 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 		return
 	}
 
-	// Convert to percept
-	percept := d.messageToPercept(m)
-
-	log.Printf("[discord-sense] Percept: %s (intensity: %.2f, tags: %v)",
-		truncate(m.Content, 50), percept.Intensity, percept.Tags)
-
-	// Emit percept
-	if d.onPercept != nil {
-		d.onPercept(percept)
+	// Build extra data for intensity/tag computation later
+	extra := map[string]any{
+		"is_owner":      m.Author.ID == d.ownerID,
+		"is_dm":         m.GuildID == "",
+		"mentions_bot":  d.mentionsBot(m),
+		"has_urgent_kw": d.hasUrgentKeyword(m.Content),
 	}
-}
 
-// messageToPercept converts a Discord message to a percept
-func (d *DiscordSense) messageToPercept(m *discordgo.MessageCreate) *types.Percept {
-	intensity := d.computeIntensity(m)
-	tags := d.computeTags(m)
-
-	return &types.Percept{
+	// Create inbox message
+	msg := &memory.InboxMessage{
 		ID:        fmt.Sprintf("discord-%s-%s", m.ChannelID, m.ID),
-		Source:    "discord",
-		Type:      "message",
-		Intensity: intensity,
-		Timestamp: time.Now(),
-		Tags:      tags,
-		Data: map[string]any{
-			"channel_id":   m.ChannelID,
-			"message_id":   m.ID,
-			"author_id":    m.Author.ID,
-			"author_name":  m.Author.Username,
-			"content":      m.Content,
-			"is_dm":        m.GuildID == "",
-			"mentions_bot": d.mentionsBot(m),
-		},
+		Content:   m.Content,
+		ChannelID: m.ChannelID,
+		AuthorID:  m.Author.ID,
+		Author:    m.Author.Username,
+		Extra:     extra,
+	}
+
+	log.Printf("[discord-sense] Message: %s (from: %s)", truncate(m.Content, 50), m.Author.Username)
+
+	// Write to inbox
+	if d.inbox != nil {
+		d.inbox.Add(msg)
 	}
 }
 
-// computeIntensity determines signal strength (0.0-1.0)
-func (d *DiscordSense) computeIntensity(m *discordgo.MessageCreate) float64 {
-	intensity := 0.5 // base intensity
-
-	// Owner messages are high priority
-	if m.Author.ID == d.ownerID {
-		intensity = 0.9
-	}
-
-	// DMs are high priority
-	if m.GuildID == "" {
-		intensity = max(intensity, 0.8)
-	}
-
-	// Bot mentions are high priority
-	if d.mentionsBot(m) {
-		intensity = max(intensity, 0.85)
-	}
-
-	// Urgent keywords boost intensity
-	content := strings.ToLower(m.Content)
+// hasUrgentKeyword checks for urgent keywords in content
+func (d *DiscordSense) hasUrgentKeyword(content string) bool {
+	lc := strings.ToLower(content)
 	urgentKeywords := []string{"urgent", "asap", "help", "error", "broken", "emergency"}
 	for _, kw := range urgentKeywords {
-		if strings.Contains(content, kw) {
-			intensity = max(intensity, 0.8)
-			break
+		if strings.Contains(lc, kw) {
+			return true
 		}
 	}
-
-	return intensity
-}
-
-// computeTags generates tags for the percept
-func (d *DiscordSense) computeTags(m *discordgo.MessageCreate) []string {
-	var tags []string
-
-	if m.Author.ID == d.ownerID {
-		tags = append(tags, "from:owner")
-	}
-
-	if m.GuildID == "" {
-		tags = append(tags, "dm")
-	}
-
-	if d.mentionsBot(m) {
-		tags = append(tags, "mention")
-	}
-
-	// Check for question
-	if strings.Contains(m.Content, "?") {
-		tags = append(tags, "question")
-	}
-
-	return tags
+	return false
 }
 
 // mentionsBot checks if the message mentions the bot
@@ -191,11 +136,4 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-func max(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }

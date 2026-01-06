@@ -308,6 +308,67 @@ bud2/
 └── go.sum
 ```
 
+## MCP Communication Architecture
+
+### Context
+
+Claude Code runs in tmux windows (interactive mode) and needs to communicate back to bud2 to send Discord messages. Claude Code supports MCP (Model Context Protocol) for tool integration.
+
+### Decision: File-Based Outbox
+
+We chose to have the MCP server write to the same `outbox.jsonl` file that effectors read from, rather than direct IPC between MCP and effectors.
+
+```
+Claude (tmux) → talk_to_user tool → bud-mcp (subprocess)
+                                         ↓
+                                    outbox.jsonl
+                                         ↓
+                         Discord effector polls file (100ms)
+                                         ↓
+                                    Discord API
+```
+
+### Alternatives Considered
+
+**1. Direct IPC (Unix socket / HTTP)**
+```
+Claude → MCP server → socket → effector → Discord
+```
+- Pros: Lower latency, simpler flow
+- Cons: No persistence, lost actions on crash, harder to debug
+
+**2. In-process MCP (HTTP-based)**
+```
+Claude --mcp-url=http://localhost:9999 → bud2 HTTP handler → in-memory outbox
+```
+- Pros: Single process, direct memory access
+- Cons: Requires HTTP MCP transport (not stdio), more setup
+
+### Why File-Based
+
+| Benefit | Explanation |
+|---------|-------------|
+| **Persistence** | Actions survive crashes, can retry on restart |
+| **Debugging** | Inspect `outbox.jsonl` to see what was sent |
+| **Audit trail** | Complete history of all actions |
+| **Decoupling** | MCP server doesn't need to know about effectors |
+| **Simplicity** | No IPC coordination, just file append |
+
+| Tradeoff | Mitigation |
+|----------|------------|
+| 100ms polling latency | Acceptable for Discord chat |
+| File coordination | Simple append-only, offset tracking |
+
+### Implementation Details
+
+- **MCP server** (`cmd/bud-mcp`): Writes JSON action to `outbox.jsonl`
+- **Outbox** (`internal/memory/outbox.go`): Tracks file offset, `Poll()` reads new entries
+- **Effector**: Calls `Poll()` before `GetPending()` each cycle
+
+### Future Considerations
+
+If latency becomes critical (e.g., real-time applications), switch to HTTP-based MCP transport where bud2 exposes an HTTP endpoint and Claude connects to it directly. This would allow direct in-memory outbox access while keeping the outbox abstraction for logging.
+
 ## Next Steps
 
 1. **Scaffold Go project** - module, basic structure

@@ -13,21 +13,34 @@ import (
 type DiscordEffector struct {
 	session      *discordgo.Session
 	pollInterval time.Duration
+	pollFile     func() (int, error) // Poll for new actions from file (MCP writes)
 	getActions   func() []*types.Action
 	markComplete func(id string)
+	onSend       func(channelID, content string) // called when message is sent (for memory)
 	stopChan     chan struct{}
 }
 
 // NewDiscordEffector creates a Discord effector
 // It shares the session with the sense (or creates its own)
-func NewDiscordEffector(session *discordgo.Session, getActions func() []*types.Action, markComplete func(id string)) *DiscordEffector {
+func NewDiscordEffector(
+	session *discordgo.Session,
+	pollFile func() (int, error),
+	getActions func() []*types.Action,
+	markComplete func(id string),
+) *DiscordEffector {
 	return &DiscordEffector{
 		session:      session,
 		pollInterval: 100 * time.Millisecond,
+		pollFile:     pollFile,
 		getActions:   getActions,
 		markComplete: markComplete,
 		stopChan:     make(chan struct{}),
 	}
+}
+
+// SetOnSend sets a callback for when messages are sent (for memory capture)
+func (e *DiscordEffector) SetOnSend(callback func(channelID, content string)) {
+	e.onSend = callback
 }
 
 // Start begins polling the outbox for actions
@@ -56,6 +69,16 @@ func (e *DiscordEffector) pollLoop() {
 }
 
 func (e *DiscordEffector) processActions() {
+	// Poll file for new actions (written by MCP server)
+	if e.pollFile != nil {
+		newCount, err := e.pollFile()
+		if err != nil {
+			log.Printf("[discord-effector] Poll error: %v", err)
+		} else if newCount > 0 {
+			log.Printf("[discord-effector] Found %d new actions from file", newCount)
+		}
+	}
+
 	actions := e.getActions()
 	for _, action := range actions {
 		if action.Effector != "discord" {
@@ -100,6 +123,9 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 	}
 
 	_, err := e.session.ChannelMessageSend(channelID, content)
+	if err == nil && e.onSend != nil {
+		e.onSend(channelID, content)
+	}
 	return err
 }
 

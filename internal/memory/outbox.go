@@ -3,6 +3,7 @@ package memory
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -12,9 +13,10 @@ import (
 
 // Outbox manages pending effector actions
 type Outbox struct {
-	mu      sync.RWMutex
-	actions map[string]*types.Action
-	path    string
+	mu         sync.RWMutex
+	actions    map[string]*types.Action
+	path       string
+	lastOffset int64 // Track file position for incremental reads
 }
 
 // NewOutbox creates a new outbox
@@ -110,6 +112,9 @@ func (o *Outbox) Load() error {
 		o.actions[action.ID] = &action
 	}
 
+	// Track file position for incremental polling
+	o.lastOffset, _ = file.Seek(0, io.SeekEnd)
+
 	return scanner.Err()
 }
 
@@ -157,4 +162,54 @@ func (o *Outbox) Append(action *types.Action) error {
 	file.WriteString("\n")
 
 	return nil
+}
+
+// Poll checks for new entries in the file (written by external processes like MCP)
+// Returns the number of new actions found
+func (o *Outbox) Poll() (int, error) {
+	file, err := os.Open(o.path)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	// Seek to where we left off
+	o.mu.RLock()
+	offset := o.lastOffset
+	o.mu.RUnlock()
+
+	if offset > 0 {
+		_, err = file.Seek(offset, io.SeekStart)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	// Read new entries
+	scanner := bufio.NewScanner(file)
+	newCount := 0
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	for scanner.Scan() {
+		var action types.Action
+		if err := json.Unmarshal(scanner.Bytes(), &action); err != nil {
+			continue // skip malformed lines
+		}
+		// Only add if not already present (avoid duplicates)
+		if _, exists := o.actions[action.ID]; !exists {
+			o.actions[action.ID] = &action
+			newCount++
+		}
+	}
+
+	// Update offset to current position
+	newOffset, _ := file.Seek(0, io.SeekCurrent)
+	o.lastOffset = newOffset
+
+	return newCount, scanner.Err()
 }
