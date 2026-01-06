@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/attention"
+	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/memory"
@@ -42,6 +44,25 @@ func main() {
 	claudeModel := os.Getenv("CLAUDE_MODEL")
 	useInteractive := os.Getenv("EXECUTIVE_INTERACTIVE") == "true"
 	syntheticMode := os.Getenv("SYNTHETIC_MODE") == "true"
+	autonomousEnabled := os.Getenv("AUTONOMOUS_ENABLED") == "true"
+	autonomousIntervalStr := os.Getenv("AUTONOMOUS_INTERVAL")
+	dailyBudgetStr := os.Getenv("DAILY_THINKING_BUDGET")
+
+	// Parse autonomous interval (default 2 hours)
+	autonomousInterval := 2 * time.Hour
+	if autonomousIntervalStr != "" {
+		if d, err := time.ParseDuration(autonomousIntervalStr); err == nil {
+			autonomousInterval = d
+		}
+	}
+
+	// Parse daily budget (default 30 minutes)
+	dailyBudgetMinutes := 30.0
+	if dailyBudgetStr != "" {
+		if v, err := strconv.ParseFloat(dailyBudgetStr, 64); err == nil {
+			dailyBudgetMinutes = v
+		}
+	}
 
 	// In synthetic mode, Discord is not required
 	if !syntheticMode && discordToken == "" {
@@ -81,6 +102,17 @@ func main() {
 	}
 	log.Printf("[main] Loaded %d traces from memory", tracePool.Count())
 
+	// Initialize session tracker and signal processor for thinking time budget
+	sessionTracker := budget.NewSessionTracker(statePath)
+	signalProcessor := budget.NewSignalProcessor(statePath, sessionTracker)
+	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
+	thinkingBudget.DailyMinutes = dailyBudgetMinutes
+	thinkingBudget.MinIntervalBetween = autonomousInterval
+
+	// Start signal processor (polls signals.jsonl for session completions)
+	signalProcessor.Start(500 * time.Millisecond)
+	log.Printf("[main] Session tracker initialized (daily budget: %.0f min)", dailyBudgetMinutes)
+
 	// Initialize attention first (executive needs it for trace retrieval)
 	var attn *attention.Attention
 	var exec *executive.Executive
@@ -108,6 +140,7 @@ func main() {
 		UseInteractive:  useInteractive,
 		GetActiveTraces: attn.GetActivatedTraces,
 		GetCoreTraces:   attn.GetCoreTraces,
+		SessionTracker:  sessionTracker,
 	})
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
@@ -228,6 +261,54 @@ func main() {
 			}
 		}
 	}()
+
+	// Start autonomous wake-up goroutine (periodic self-initiated work)
+	if autonomousEnabled {
+		log.Printf("[main] Autonomous mode enabled (interval: %v)", autonomousInterval)
+		go func() {
+			// Wait a bit before first autonomous check
+			time.Sleep(30 * time.Second)
+
+			ticker := time.NewTicker(autonomousInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-stopChan:
+					return
+				case <-ticker.C:
+					// Check if we can do autonomous work
+					if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
+						log.Printf("[autonomous] Skipping wake-up: %s", reason)
+						continue
+					}
+
+					// Log budget status
+					thinkingBudget.LogStatus()
+
+					// Create an autonomous percept to trigger attention
+					percept := &types.Percept{
+						ID:        fmt.Sprintf("autonomous-%d", time.Now().UnixNano()),
+						Source:    "system",
+						Type:      "autonomous_wake",
+						Intensity: 0.5, // moderate intensity
+						Timestamp: time.Now(),
+						Tags:      []string{"autonomous", "scheduled"},
+						Data: map[string]any{
+							"trigger": "periodic",
+							"message": "Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.",
+						},
+					}
+
+					log.Printf("[autonomous] Triggering wake-up")
+					thinkingBudget.RecordAutonomousCall()
+					processPercept(percept)
+				}
+			}
+		}()
+	} else {
+		log.Println("[main] Autonomous mode disabled (set AUTONOMOUS_ENABLED=true to enable)")
+	}
 
 	log.Println("[main] All subsystems started. Press Ctrl+C to stop.")
 
