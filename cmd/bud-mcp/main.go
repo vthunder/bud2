@@ -672,6 +672,113 @@ func main() {
 		return string(data), nil
 	})
 
+	// Register gtd_update tool
+	server.RegisterTool("gtd_update", func(ctx any, args map[string]any) (string, error) {
+		id, ok := args["id"].(string)
+		if !ok || id == "" {
+			return "", fmt.Errorf("id is required")
+		}
+
+		// Get existing task
+		task := gtdStore.GetTask(id)
+		if task == nil {
+			return "", fmt.Errorf("task not found: %s", id)
+		}
+
+		// Track what was updated for the response
+		var updates []string
+
+		// Update provided fields
+		if title, ok := args["title"].(string); ok {
+			task.Title = title
+			updates = append(updates, "title")
+		}
+		if notes, ok := args["notes"].(string); ok {
+			task.Notes = notes
+			updates = append(updates, "notes")
+		}
+		if when, ok := args["when"].(string); ok {
+			task.When = when
+			updates = append(updates, "when")
+		}
+		if project, ok := args["project"].(string); ok {
+			task.Project = project
+			updates = append(updates, "project")
+		}
+		if heading, ok := args["heading"].(string); ok {
+			task.Heading = heading
+			updates = append(updates, "heading")
+		}
+		if area, ok := args["area"].(string); ok {
+			task.Area = area
+			updates = append(updates, "area")
+		}
+		if checklistRaw, ok := args["checklist"].([]any); ok {
+			var checklist []gtd.ChecklistItem
+			for _, item := range checklistRaw {
+				if itemMap, ok := item.(map[string]any); ok {
+					ci := gtd.ChecklistItem{}
+					if text, ok := itemMap["text"].(string); ok {
+						ci.Text = text
+					}
+					if done, ok := itemMap["done"].(bool); ok {
+						ci.Done = done
+					}
+					checklist = append(checklist, ci)
+				}
+			}
+			task.Checklist = checklist
+			updates = append(updates, "checklist")
+		}
+
+		// Validate the updated task
+		if err := gtdStore.ValidateTask(task); err != nil {
+			return "", fmt.Errorf("validation failed: %w", err)
+		}
+
+		// Save the update
+		if err := gtdStore.UpdateTask(task); err != nil {
+			return "", fmt.Errorf("failed to update task: %w", err)
+		}
+		if err := gtdStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save: %w", err)
+		}
+
+		log.Printf("Updated GTD task: %s (fields: %v)", id, updates)
+		return fmt.Sprintf("Task updated: %s (updated: %s)", task.Title, strings.Join(updates, ", ")), nil
+	})
+
+	// Register gtd_complete tool
+	server.RegisterTool("gtd_complete", func(ctx any, args map[string]any) (string, error) {
+		id, ok := args["id"].(string)
+		if !ok || id == "" {
+			return "", fmt.Errorf("id is required")
+		}
+
+		// Get task first to include info in response
+		task := gtdStore.GetTask(id)
+		if task == nil {
+			return "", fmt.Errorf("task not found: %s", id)
+		}
+
+		taskTitle := task.Title
+		isRepeating := task.Repeat != ""
+
+		// Complete the task (handles repeating tasks internally)
+		if err := gtdStore.CompleteTask(id); err != nil {
+			return "", fmt.Errorf("failed to complete task: %w", err)
+		}
+		if err := gtdStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save: %w", err)
+		}
+
+		log.Printf("Completed GTD task: %s (repeating: %v)", id, isRepeating)
+		if isRepeating {
+			return fmt.Sprintf("Task completed: %s (next occurrence created for repeating task)", taskTitle), nil
+		}
+		return fmt.Sprintf("Task completed: %s", taskTitle), nil
+	})
+
 	// Register create_core tool (create a new core trace directly)
 	server.RegisterTool("create_core", func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)

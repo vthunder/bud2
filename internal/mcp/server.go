@@ -635,6 +635,62 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				},
 			},
 		},
+		{
+			Name:        "gtd_update",
+			Description: "Update a task in the user's GTD system. Only provided fields are updated.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"id": {
+						Type:        "string",
+						Description: "Task ID to update (required)",
+					},
+					"title": {
+						Type:        "string",
+						Description: "New title for the task",
+					},
+					"notes": {
+						Type:        "string",
+						Description: "New notes for the task",
+					},
+					"when": {
+						Type:        "string",
+						Description: "When to do it: inbox, today, anytime, someday, or YYYY-MM-DD date",
+					},
+					"project": {
+						Type:        "string",
+						Description: "Project ID to move task to (empty string to remove from project)",
+					},
+					"heading": {
+						Type:        "string",
+						Description: "Heading name within the project",
+					},
+					"area": {
+						Type:        "string",
+						Description: "Area ID for the task (empty string to remove area)",
+					},
+					"checklist": {
+						Type:        "array",
+						Description: "Checklist items as array of {text, done} objects",
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
+		{
+			Name:        "gtd_complete",
+			Description: "Mark a task as complete in the user's GTD system. Handles repeating tasks by creating the next occurrence.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"id": {
+						Type:        "string",
+						Description: "Task ID to mark as complete (required)",
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{
