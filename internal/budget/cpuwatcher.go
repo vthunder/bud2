@@ -167,27 +167,14 @@ func (w *CPUWatcher) findClaudeProcesses() []*process.Process {
 	}
 
 	for _, proc := range procs {
-		name, err := proc.Name()
-		if err != nil {
-			continue
-		}
-
-		// Check if it's a Claude process
-		if strings.Contains(strings.ToLower(name), "claude") {
-			result = append(result, proc)
-			continue
-		}
-
-		// Also check command line
 		cmdline, err := proc.Cmdline()
 		if err != nil {
 			continue
 		}
-		if strings.Contains(strings.ToLower(cmdline), "claude") {
-			// Exclude our own processes
-			if strings.Contains(cmdline, "bud-mcp") || strings.Contains(cmdline, "cpuwatcher") {
-				continue
-			}
+
+		// Only track Claude CLI sessions that bud spawned
+		// These have --session-id in the command line
+		if strings.Contains(cmdline, "claude") && strings.Contains(cmdline, "--session-id") {
 			result = append(result, proc)
 		}
 	}
