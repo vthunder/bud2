@@ -280,8 +280,10 @@ func (a *Attention) activateThread(thread *types.Thread) {
 	log.Printf("[attention] Activated thread %s (salience: %.2f)", thread.ID, thread.Salience)
 }
 
-// RoutePercept finds matching threads for a percept and adds to all above threshold
-// This is the main entry point for handling new percepts
+// RoutePercept routes a percept to the best matching thread (or creates new one)
+// This is the main entry point for handling new percepts.
+// Note: Percepts go to ONE thread only. Other threads get context via trace activation
+// (spreading activation) and mid-thread trace loading (BUD-wk3).
 func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(string) string) []*types.Thread {
 	const associationThreshold = 0.3 // minimum score to join existing thread
 
@@ -300,6 +302,7 @@ func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(stri
 	}
 
 	// Spreading activation: boost traces similar to this percept
+	// This makes related context available to ALL threads via GetActivatedTraces
 	if len(percept.Embedding) > 0 {
 		activated := a.traces.SpreadActivation(percept.Embedding, 0.5, 0.3)
 		if len(activated) > 0 {
@@ -307,9 +310,9 @@ func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(stri
 		}
 	}
 
-	// Find all matching threads above threshold
-	var matchingThreads []*types.Thread
-	var scores []float64
+	// Find best matching thread above threshold
+	var bestThread *types.Thread
+	var bestScore float64
 
 	for _, thread := range a.threads.All() {
 		if thread.Status == types.StatusComplete || thread.Status == types.StatusFrozen {
@@ -317,20 +320,18 @@ func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(stri
 		}
 
 		score := a.computeAssociation(percept, thread)
-		if score >= associationThreshold {
-			matchingThreads = append(matchingThreads, thread)
-			scores = append(scores, score)
+		if score >= associationThreshold && score > bestScore {
+			bestThread = thread
+			bestScore = score
 		}
 	}
 
-	// Add percept to all matching threads
-	if len(matchingThreads) > 0 {
-		for i, thread := range matchingThreads {
-			a.addPerceptToThread(thread, percept)
-			log.Printf("[attention] Routed percept %s to thread %s (association: %.2f)",
-				percept.ID, thread.ID, scores[i])
-		}
-		return matchingThreads
+	// Route to best matching thread
+	if bestThread != nil {
+		a.addPerceptToThread(bestThread, percept)
+		log.Printf("[attention] Routed percept %s to thread %s (association: %.2f)",
+			percept.ID, bestThread.ID, bestScore)
+		return []*types.Thread{bestThread}
 	}
 
 	// No matching threads, create new one
