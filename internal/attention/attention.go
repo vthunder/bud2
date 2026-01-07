@@ -248,10 +248,14 @@ func (a *Attention) selectThread() *types.Thread {
 	}
 
 	// No active thread, pick highest salience if above threshold
-	if candidates[0].Salience >= threshold {
-		return candidates[0]
+	top := candidates[0]
+	if top.Salience >= threshold {
+		return top
 	}
 
+	// Log when thread doesn't meet threshold (helps debug)
+	log.Printf("[attention] No thread selected: top %s salience %.2f < threshold %.2f (arousal: %.2f)",
+		top.ID, top.Salience, threshold, a.arousal.Level)
 	return nil
 }
 
