@@ -13,12 +13,12 @@ import (
 
 // Task represents a commitment ("I will do X")
 type Task struct {
-	ID       string    `json:"id"`
-	Task     string    `json:"task"`
-	Due      time.Time `json:"due,omitempty"`
-	Priority int       `json:"priority"` // 1 = highest
-	Context  string    `json:"context"`  // why this task exists
-	Status   string    `json:"status"`   // pending, in_progress, done
+	ID       string     `json:"id"`
+	Task     string     `json:"task"`
+	Due      *time.Time `json:"due,omitempty"`
+	Priority int        `json:"priority"` // 1 = highest
+	Context  string     `json:"context"`  // why this task exists
+	Status   string     `json:"status"`   // pending, in_progress, done
 }
 
 // TaskStore manages tasks.json
@@ -137,7 +137,7 @@ func (s *TaskStore) GetDue() []*Task {
 	now := time.Now()
 	var result []*Task
 	for _, t := range s.tasks {
-		if t.Status != "done" && !t.Due.IsZero() && t.Due.Before(now) {
+		if t.Status != "done" && t.Due != nil && t.Due.Before(now) {
 			result = append(result, t)
 		}
 	}
@@ -153,7 +153,7 @@ func (s *TaskStore) GetUpcoming(within time.Duration) []*Task {
 	deadline := now.Add(within)
 	var result []*Task
 	for _, t := range s.tasks {
-		if t.Status != "done" && !t.Due.IsZero() && t.Due.After(now) && t.Due.Before(deadline) {
+		if t.Status != "done" && t.Due != nil && t.Due.After(now) && t.Due.Before(deadline) {
 			result = append(result, t)
 		}
 	}

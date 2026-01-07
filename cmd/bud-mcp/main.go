@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -334,8 +336,10 @@ func main() {
 			t.Priority = 2 // default medium priority
 		}
 		if dueStr, ok := args["due"].(string); ok && dueStr != "" {
-			if due, err := time.Parse(time.RFC3339, dueStr); err == nil {
+			if due := parseDueTime(dueStr); due != nil {
 				t.Due = due
+			} else {
+				log.Printf("Warning: could not parse due time: %s", dueStr)
 			}
 		}
 
@@ -344,8 +348,12 @@ func main() {
 			return "", fmt.Errorf("failed to save task: %w", err)
 		}
 
-		log.Printf("Added task: %s", truncate(task, 50))
-		return fmt.Sprintf("Task added: %s (ID: %s)", task, t.ID), nil
+		dueInfo := ""
+		if t.Due != nil {
+			dueInfo = fmt.Sprintf(" (due: %s)", t.Due.Format(time.RFC3339))
+		}
+		log.Printf("Added task: %s%s", truncate(task, 50), dueInfo)
+		return fmt.Sprintf("Task added: %s (ID: %s)%s", task, t.ID, dueInfo), nil
 	})
 
 	// Register list_tasks tool
@@ -832,4 +840,92 @@ func saveTraces(path string, traces []*types.Trace) error {
 	}
 
 	return os.WriteFile(path, data, 0644)
+}
+
+// parseDueTime parses various due time formats
+// Supports: RFC3339, relative times (2m, 1h, 30min, etc.), and common formats
+func parseDueTime(s string) *time.Time {
+	now := time.Now()
+
+	// Try RFC3339 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return &t
+	}
+
+	// Try common date/time formats
+	formats := []string{
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"01/02/2006 15:04",
+		"01/02/2006",
+		"15:04",
+	}
+	for _, f := range formats {
+		if t, err := time.ParseInLocation(f, s, now.Location()); err == nil {
+			// For time-only format, use today's date
+			if f == "15:04" {
+				t = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+				if t.Before(now) {
+					t = t.Add(24 * time.Hour) // tomorrow if time already passed
+				}
+			}
+			return &t
+		}
+	}
+
+	// Try relative time parsing (e.g., "2m", "1h", "30min", "2 hours")
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "in ")
+
+	// Parse duration-like strings
+	var duration time.Duration
+	var matched bool
+
+	// Try standard Go duration first
+	if d, err := time.ParseDuration(s); err == nil {
+		duration = d
+		matched = true
+	}
+
+	// Try custom patterns: "2 min", "1 hour", "30 minutes"
+	if !matched {
+		patterns := []struct {
+			suffix string
+			mult   time.Duration
+		}{
+			{"minutes", time.Minute},
+			{"minute", time.Minute},
+			{"mins", time.Minute},
+			{"min", time.Minute},
+			{"hours", time.Hour},
+			{"hour", time.Hour},
+			{"hrs", time.Hour},
+			{"hr", time.Hour},
+			{"days", 24 * time.Hour},
+			{"day", 24 * time.Hour},
+			{"seconds", time.Second},
+			{"second", time.Second},
+			{"secs", time.Second},
+			{"sec", time.Second},
+		}
+		for _, p := range patterns {
+			if strings.HasSuffix(s, p.suffix) {
+				numStr := strings.TrimSpace(strings.TrimSuffix(s, p.suffix))
+				if n, err := strconv.Atoi(numStr); err == nil {
+					duration = time.Duration(n) * p.mult
+					matched = true
+					break
+				}
+			}
+		}
+	}
+
+	if matched && duration > 0 {
+		t := now.Add(duration)
+		return &t
+	}
+
+	return nil
 }
