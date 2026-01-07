@@ -24,8 +24,8 @@ Manual test scenarios for verifying autonomous behavior in Bud.
 3. Ask: "What tasks do I have?"
 
 **Expected:**
-- Bud calls `add_task` tool
-- Task appears in `list_tasks` output
+- Bud calls `add_bud_task` tool
+- Task appears in `list_bud_tasks` output
 - Task has a due time ~2 minutes from now
 
 **Verify:**
@@ -59,7 +59,7 @@ cat state/tasks.json | jq .
 2. Ask: "Mark the server logs task as done"
 
 **Expected:**
-- Bud calls `complete_task` tool
+- Bud calls `complete_bud_task` tool
 - Task no longer appears in pending list
 
 ---

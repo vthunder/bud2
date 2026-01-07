@@ -50,7 +50,7 @@ pipeline:
 | `github_api` | GitHub API call |
 | `reply` | Send Discord message |
 | `react` | Add emoji reaction |
-| `add_task` | Add to tasks.json |
+| `add_bud_task` | Add to tasks.json |
 | `add_idea` | Add to ideas.json |
 | `log` | Write to journal |
 

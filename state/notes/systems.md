@@ -23,9 +23,9 @@ Tasks are commitments - things I've promised to do.
 - 3 = low priority, do when time permits
 
 **Tools:**
-- `add_task` - create a new task
-- `list_tasks` - see pending tasks
-- `complete_task` - mark done
+- `add_bud_task` - create a new task
+- `list_bud_tasks` - see pending tasks
+- `complete_bud_task` - mark done
 
 Overdue tasks generate high-intensity impulses that wake me up.
 
