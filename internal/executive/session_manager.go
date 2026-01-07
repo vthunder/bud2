@@ -46,9 +46,12 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// If already focused, just return the session
+	// If already focused and session exists, return it
 	if thread.SessionState == types.SessionFocused {
-		return m.sessions[thread.ID], nil
+		if session, ok := m.sessions[thread.ID]; ok {
+			return session, nil
+		}
+		// Session doesn't exist (e.g., after restart) - fall through to create one
 	}
 
 	// Find current focused thread (if any) and move it to active
