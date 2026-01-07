@@ -30,10 +30,9 @@ func NewThinkingBudget(tracker *SessionTracker) *ThinkingBudget {
 
 // CanDoAutonomousWork checks if autonomous work is allowed
 func (b *ThinkingBudget) CanDoAutonomousWork() (bool, string) {
-	// Check if a session is already active
-	if b.tracker != nil && b.tracker.HasActiveSessions() {
-		return false, "session already active"
-	}
+	// Note: We don't block on active sessions. The attention system handles
+	// thread prioritization, and session manager handles concurrent limits.
+	// Impulses can queue even if Claude is currently processing something.
 
 	// Check daily budget
 	if b.tracker != nil {

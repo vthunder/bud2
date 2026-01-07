@@ -95,14 +95,11 @@ func TestThinkingBudget(t *testing.T) {
 		t.Errorf("Expected to be able to do autonomous work, got: %s", reason)
 	}
 
-	// Start a session - should block autonomous work
+	// Active sessions should NOT block autonomous work (attention handles priority)
 	tracker.StartSession("session-1", "thread-1")
-	ok, reason = budget.CanDoAutonomousWork()
-	if ok {
-		t.Error("Expected autonomous work blocked with active session")
-	}
-	if reason != "session already active" {
-		t.Errorf("Expected 'session already active', got: %s", reason)
+	ok, _ = budget.CanDoAutonomousWork()
+	if !ok {
+		t.Error("Expected autonomous work allowed even with active session")
 	}
 
 	// Complete the session
