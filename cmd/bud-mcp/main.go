@@ -321,8 +321,8 @@ func main() {
 	taskStore.Load()
 	ideaStore.Load()
 
-	// Register add_task tool
-	server.RegisterTool("add_task", func(ctx any, args map[string]any) (string, error) {
+	// Register add_bud_task tool
+	server.RegisterTool("add_bud_task", func(ctx any, args map[string]any) (string, error) {
 		task, ok := args["task"].(string)
 		if !ok || task == "" {
 			return "", fmt.Errorf("task description is required")
@@ -363,8 +363,8 @@ func main() {
 		return fmt.Sprintf("Task added: %s (ID: %s)%s", task, t.ID, dueInfo), nil
 	})
 
-	// Register list_tasks tool
-	server.RegisterTool("list_tasks", func(ctx any, args map[string]any) (string, error) {
+	// Register list_bud_tasks tool
+	server.RegisterTool("list_bud_tasks", func(ctx any, args map[string]any) (string, error) {
 		tasks := taskStore.GetPending()
 		if len(tasks) == 0 {
 			return "No pending tasks.", nil
@@ -374,8 +374,8 @@ func main() {
 		return string(data), nil
 	})
 
-	// Register complete_task tool
-	server.RegisterTool("complete_task", func(ctx any, args map[string]any) (string, error) {
+	// Register complete_bud_task tool
+	server.RegisterTool("complete_bud_task", func(ctx any, args map[string]any) (string, error) {
 		taskID, ok := args["task_id"].(string)
 		if !ok || taskID == "" {
 			return "", fmt.Errorf("task_id is required")

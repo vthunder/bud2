@@ -355,8 +355,8 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 			},
 		},
 		{
-			Name:        "add_task",
-			Description: "Add a task (commitment) to your task queue. Use this to track things you've committed to do.",
+			Name:        "add_bud_task",
+			Description: "Add a task (Bud's commitment) to your task queue. Use this to track things you've committed to do.",
 			InputSchema: inputSchema{
 				Type: "object",
 				Properties: map[string]property{
@@ -381,16 +381,16 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 			},
 		},
 		{
-			Name:        "list_tasks",
-			Description: "List pending tasks. Use this to see what you've committed to do.",
+			Name:        "list_bud_tasks",
+			Description: "List pending Bud tasks. Use this to see what you've committed to do.",
 			InputSchema: inputSchema{
 				Type:       "object",
 				Properties: map[string]property{},
 			},
 		},
 		{
-			Name:        "complete_task",
-			Description: "Mark a task as complete.",
+			Name:        "complete_bud_task",
+			Description: "Mark a Bud task as complete.",
 			InputSchema: inputSchema{
 				Type: "object",
 				Properties: map[string]property{
