@@ -92,8 +92,12 @@ func (s *GTDStore) Save() error {
 }
 
 // generateID creates a unique ID based on current timestamp
+// idCounter ensures unique IDs even when called within the same nanosecond
+var idCounter int64
+
 func generateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	idCounter++
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), idCounter)
 }
 
 // AddArea adds a new area to the store

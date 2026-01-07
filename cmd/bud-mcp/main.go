@@ -901,6 +901,11 @@ func main() {
 				project.Headings = headings
 			}
 
+			// Validate project before adding
+			if err := gtdStore.ValidateProject(project); err != nil {
+				return "", fmt.Errorf("validation failed: %w", err)
+			}
+
 			gtdStore.AddProject(project)
 			if err := gtdStore.Save(); err != nil {
 				return "", fmt.Errorf("failed to save project: %w", err)

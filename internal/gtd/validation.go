@@ -29,6 +29,9 @@ func isValidWhen(when string) bool {
 
 // ValidateTask validates a task against GTD rules
 func (s *GTDStore) ValidateTask(task *Task) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// Validate when field
 	if !isValidWhen(task.When) {
 		return fmt.Errorf("invalid when value '%s': must be inbox, today, anytime, someday, or a date (YYYY-MM-DD)", task.When)
@@ -54,7 +57,13 @@ func (s *GTDStore) ValidateTask(task *Task) error {
 
 	// If project is set, verify it exists and heading is valid
 	if task.Project != "" {
-		project := s.GetProject(task.Project)
+		var project *Project
+		for i := range s.data.Projects {
+			if s.data.Projects[i].ID == task.Project {
+				project = &s.data.Projects[i]
+				break
+			}
+		}
 		if project == nil {
 			return fmt.Errorf("project not found: %s", task.Project)
 		}
@@ -93,6 +102,9 @@ func (s *GTDStore) ValidateTask(task *Task) error {
 
 // ValidateProject validates a project
 func (s *GTDStore) ValidateProject(project *Project) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// Project must have an area
 	if project.Area == "" {
 		return fmt.Errorf("project must have an area")
