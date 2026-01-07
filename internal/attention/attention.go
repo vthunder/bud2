@@ -369,17 +369,23 @@ func (a *Attention) computeAssociation(percept *types.Percept, thread *types.Thr
 		}
 	}
 
-	// Recency bonus (recent threads more likely to capture)
-	recencySeconds := time.Since(thread.LastActive).Seconds()
-	if recencySeconds < 60 {
-		score += 0.15 // very recent
-	} else if recencySeconds < 300 {
-		score += 0.08 // somewhat recent
-	}
-	// Older threads get no recency bonus
-
 	// Current activation level contributes
 	score += thread.Activation * 0.15
+
+	// Apply time decay as multiplier (old threads need much higher base score to match)
+	recencySeconds := time.Since(thread.LastActive).Seconds()
+	var decay float64
+	switch {
+	case recencySeconds < 60:
+		decay = 1.0 // no decay for threads active in last minute
+	case recencySeconds < 300:
+		decay = 0.8 // 20% decay for 1-5 minutes old
+	case recencySeconds < 1800:
+		decay = 0.4 // 60% decay for 5-30 minutes old
+	default:
+		decay = 0.15 // 85% decay for threads >30 minutes old
+	}
+	score *= decay
 
 	return score
 }
