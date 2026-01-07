@@ -18,6 +18,7 @@ import (
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/memory"
+	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/types"
 )
@@ -101,6 +102,12 @@ func main() {
 		log.Printf("Warning: failed to load outbox: %v", err)
 	}
 	log.Printf("[main] Loaded %d traces from memory", tracePool.Count())
+
+	// Initialize motivation stores (for autonomous impulses)
+	taskStore := motivation.NewTaskStore(statePath)
+	if err := taskStore.Load(); err != nil {
+		log.Printf("Warning: failed to load tasks: %v", err)
+	}
 
 	// Initialize session tracker and signal processor for thinking time budget
 	sessionTracker := budget.NewSessionTracker(statePath)
@@ -274,32 +281,66 @@ func main() {
 	if autonomousEnabled {
 		log.Printf("[main] Autonomous mode enabled (interval: %v)", autonomousInterval)
 		go func() {
-			// Wait a bit before first autonomous check
-			time.Sleep(30 * time.Second)
+			// Check for task impulses more frequently (every minute)
+			taskCheckInterval := 1 * time.Minute
+			taskTicker := time.NewTicker(taskCheckInterval)
+			defer taskTicker.Stop()
 
-			ticker := time.NewTicker(autonomousInterval)
-			defer ticker.Stop()
+			// Periodic wake-up on longer interval
+			periodicTicker := time.NewTicker(autonomousInterval)
+			defer periodicTicker.Stop()
+
+			// Wait a bit before first check
+			time.Sleep(10 * time.Second)
+
+			// Do initial task check
+			checkTaskImpulses := func() {
+				// Reload tasks in case they changed
+				taskStore.Load()
+				impulses := taskStore.GenerateImpulses()
+				if len(impulses) == 0 {
+					return
+				}
+
+				// Check budget before triggering
+				if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
+					log.Printf("[autonomous] Task impulse blocked: %s", reason)
+					return
+				}
+
+				// Process the highest priority impulse
+				impulse := impulses[0]
+				log.Printf("[autonomous] Triggering wake-up via task impulse: %s", impulse.Description)
+				thinkingBudget.LogStatus()
+				thinkingBudget.RecordAutonomousCall()
+				processPercept(impulse.ToPercept())
+			}
+
+			// Check immediately on startup
+			checkTaskImpulses()
 
 			for {
 				select {
 				case <-stopChan:
 					return
-				case <-ticker.C:
-					// Check if we can do autonomous work
+				case <-taskTicker.C:
+					// Check for due/upcoming tasks
+					checkTaskImpulses()
+
+				case <-periodicTicker.C:
+					// Periodic wake-up (even without specific tasks)
 					if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
-						log.Printf("[autonomous] Skipping wake-up: %s", reason)
+						log.Printf("[autonomous] Skipping periodic wake-up: %s", reason)
 						continue
 					}
 
-					// Log budget status
 					thinkingBudget.LogStatus()
 
-					// Create an autonomous impulse (internal motivation)
 					impulse := &types.Impulse{
 						ID:          fmt.Sprintf("impulse-wake-%d", time.Now().UnixNano()),
 						Source:      types.ImpulseSystem,
 						Type:        "wake",
-						Intensity:   0.5, // moderate intensity
+						Intensity:   0.5,
 						Timestamp:   time.Now(),
 						Description: "Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.",
 						Data: map[string]any{
@@ -307,9 +348,8 @@ func main() {
 						},
 					}
 
-					log.Printf("[autonomous] Triggering wake-up via impulse")
+					log.Printf("[autonomous] Triggering periodic wake-up")
 					thinkingBudget.RecordAutonomousCall()
-					// Convert impulse to percept for attention routing
 					processPercept(impulse.ToPercept())
 				}
 			}
