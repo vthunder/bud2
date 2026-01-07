@@ -95,8 +95,10 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 		if !hasNewPercepts {
 			log.Printf("[executive] Thread %s already processed at %s, skipping",
 				thread.ID, thread.ProcessedAt.Format(time.RFC3339))
-			// Pause this thread so attention can select a different one
+			// Pause this thread and reset salience so attention can select a different one
 			thread.Status = types.StatusPaused
+			thread.Salience = 0
+			thread.Activation = 0.1 // low but not zero, can be boosted by new percepts
 			return nil
 		}
 		log.Printf("[executive] Thread %s has new percepts since last processing", thread.ID)
