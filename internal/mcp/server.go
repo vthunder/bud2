@@ -575,6 +575,66 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Required: []string{"database_id"},
 			},
 		},
+		// GTD tools (user's tasks, not Bud's commitments)
+		{
+			Name:        "gtd_add",
+			Description: "Add a task to the user's GTD system. Quick capture to inbox by default, or specify when/project to place it directly.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"title": {
+						Type:        "string",
+						Description: "Task title (what needs to be done)",
+					},
+					"notes": {
+						Type:        "string",
+						Description: "Additional notes or context for the task (optional)",
+					},
+					"when": {
+						Type:        "string",
+						Description: "When to do it: inbox (default), today, anytime, someday, or YYYY-MM-DD date",
+					},
+					"project": {
+						Type:        "string",
+						Description: "Project ID to add task to (optional)",
+					},
+					"heading": {
+						Type:        "string",
+						Description: "Heading name within the project (requires project)",
+					},
+					"area": {
+						Type:        "string",
+						Description: "Area ID for the task (optional, only if not in a project)",
+					},
+				},
+				Required: []string{"title"},
+			},
+		},
+		{
+			Name:        "gtd_list",
+			Description: "List tasks from the user's GTD system with optional filters.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"when": {
+						Type:        "string",
+						Description: "Filter by when: inbox, today, anytime, someday, or a specific YYYY-MM-DD date",
+					},
+					"project": {
+						Type:        "string",
+						Description: "Filter by project ID",
+					},
+					"area": {
+						Type:        "string",
+						Description: "Filter by area ID",
+					},
+					"status": {
+						Type:        "string",
+						Description: "Filter by status: open (default), completed, canceled, or all",
+					},
+				},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

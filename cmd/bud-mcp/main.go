@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/journal"
 	"github.com/vthunder/bud2/internal/mcp"
@@ -567,6 +568,108 @@ func main() {
 		}
 
 		return fmt.Sprintf("Reflex '%s' deleted.", name), nil
+	})
+
+	// Initialize GTD store (user's tasks, not Bud's commitments)
+	gtdStore := gtd.NewGTDStore(statePath)
+	if err := gtdStore.Load(); err != nil {
+		log.Printf("Warning: Failed to load GTD store: %v", err)
+	}
+
+	// Register gtd_add tool
+	server.RegisterTool("gtd_add", func(ctx any, args map[string]any) (string, error) {
+		title, ok := args["title"].(string)
+		if !ok || title == "" {
+			return "", fmt.Errorf("title is required")
+		}
+
+		task := &gtd.Task{
+			Title: title,
+		}
+
+		// Optional fields
+		if notes, ok := args["notes"].(string); ok {
+			task.Notes = notes
+		}
+		if when, ok := args["when"].(string); ok && when != "" {
+			task.When = when
+		}
+		if project, ok := args["project"].(string); ok {
+			task.Project = project
+		}
+		if heading, ok := args["heading"].(string); ok {
+			task.Heading = heading
+		}
+		if area, ok := args["area"].(string); ok {
+			task.Area = area
+		}
+
+		// Validate before adding
+		if err := gtdStore.ValidateTask(task); err != nil {
+			return "", fmt.Errorf("validation failed: %w", err)
+		}
+
+		gtdStore.AddTask(task)
+		if err := gtdStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save task: %w", err)
+		}
+
+		location := task.When
+		if task.Project != "" {
+			if p := gtdStore.GetProject(task.Project); p != nil {
+				location = fmt.Sprintf("project '%s'", p.Title)
+				if task.Heading != "" {
+					location += fmt.Sprintf(" / %s", task.Heading)
+				}
+			}
+		}
+
+		log.Printf("Added GTD task: %s (when: %s)", truncate(title, 50), location)
+		return fmt.Sprintf("Task added to %s: %s (ID: %s)", location, title, task.ID), nil
+	})
+
+	// Register gtd_list tool
+	server.RegisterTool("gtd_list", func(ctx any, args map[string]any) (string, error) {
+		when, _ := args["when"].(string)
+		project, _ := args["project"].(string)
+		area, _ := args["area"].(string)
+		status, _ := args["status"].(string)
+		if status == "" {
+			status = "open" // default to open tasks
+		}
+
+		tasks := gtdStore.GetTasks(when, project, area)
+
+		// Filter by status
+		var filtered []gtd.Task
+		for _, t := range tasks {
+			if status == "all" || t.Status == status {
+				filtered = append(filtered, t)
+			}
+		}
+
+		if len(filtered) == 0 {
+			filterDesc := ""
+			if when != "" {
+				filterDesc += fmt.Sprintf(" when=%s", when)
+			}
+			if project != "" {
+				filterDesc += fmt.Sprintf(" project=%s", project)
+			}
+			if area != "" {
+				filterDesc += fmt.Sprintf(" area=%s", area)
+			}
+			if status != "all" {
+				filterDesc += fmt.Sprintf(" status=%s", status)
+			}
+			if filterDesc == "" {
+				return "No tasks found.", nil
+			}
+			return fmt.Sprintf("No tasks found matching:%s", filterDesc), nil
+		}
+
+		data, _ := json.MarshalIndent(filtered, "", "  ")
+		return string(data), nil
 	})
 
 	// Register create_core tool (create a new core trace directly)
