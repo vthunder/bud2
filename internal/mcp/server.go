@@ -691,6 +691,66 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Required: []string{"id"},
 			},
 		},
+		{
+			Name:        "gtd_areas",
+			Description: "Manage areas of responsibility in the user's GTD system. Areas are high-level categories like Work, Home, Health.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action to perform: list, add, or update",
+					},
+					"id": {
+						Type:        "string",
+						Description: "Area ID (required for update)",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Area title (required for add, optional for update)",
+					},
+				},
+				Required: []string{"action"},
+			},
+		},
+		{
+			Name:        "gtd_projects",
+			Description: "Manage projects in the user's GTD system. Projects are multi-step outcomes with tasks.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action to perform: list, add, or update",
+					},
+					"id": {
+						Type:        "string",
+						Description: "Project ID (required for update)",
+					},
+					"title": {
+						Type:        "string",
+						Description: "Project title (required for add, optional for update)",
+					},
+					"notes": {
+						Type:        "string",
+						Description: "Project notes (optional)",
+					},
+					"when": {
+						Type:        "string",
+						Description: "When: anytime, someday, or YYYY-MM-DD date (optional)",
+					},
+					"area": {
+						Type:        "string",
+						Description: "Area ID for filtering (list) or assignment (add/update)",
+					},
+					"headings": {
+						Type:        "array",
+						Description: "Ordered list of heading names for organizing tasks (optional)",
+					},
+				},
+				Required: []string{"action"},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

@@ -117,6 +117,34 @@ func (s *GTDStore) GetAreas() []Area {
 	return result
 }
 
+// GetArea returns an area by ID
+func (s *GTDStore) GetArea(id string) *Area {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range s.data.Areas {
+		if s.data.Areas[i].ID == id {
+			a := s.data.Areas[i]
+			return &a
+		}
+	}
+	return nil
+}
+
+// UpdateArea updates an existing area
+func (s *GTDStore) UpdateArea(area *Area) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Areas {
+		if s.data.Areas[i].ID == area.ID {
+			s.data.Areas[i] = *area
+			return nil
+		}
+	}
+	return fmt.Errorf("area not found: %s", area.ID)
+}
+
 // AddProject adds a new project to the store
 func (s *GTDStore) AddProject(project *Project) {
 	s.mu.Lock()
@@ -173,6 +201,20 @@ func (s *GTDStore) GetProject(id string) *Project {
 		}
 	}
 	return nil
+}
+
+// UpdateProject updates an existing project
+func (s *GTDStore) UpdateProject(project *Project) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Projects {
+		if s.data.Projects[i].ID == project.ID {
+			s.data.Projects[i] = *project
+			return nil
+		}
+	}
+	return fmt.Errorf("project not found: %s", project.ID)
 }
 
 // AddTask adds a new task to the store

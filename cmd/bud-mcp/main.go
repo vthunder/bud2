@@ -779,6 +779,193 @@ func main() {
 		return fmt.Sprintf("Task completed: %s", taskTitle), nil
 	})
 
+	// Register gtd_areas tool
+	server.RegisterTool("gtd_areas", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			return "", fmt.Errorf("action is required (list, add, or update)")
+		}
+
+		switch action {
+		case "list":
+			areas := gtdStore.GetAreas()
+			if len(areas) == 0 {
+				return "No areas defined.", nil
+			}
+			data, _ := json.MarshalIndent(areas, "", "  ")
+			return string(data), nil
+
+		case "add":
+			title, ok := args["title"].(string)
+			if !ok || title == "" {
+				return "", fmt.Errorf("title is required for add")
+			}
+
+			area := &gtd.Area{
+				Title: title,
+			}
+			gtdStore.AddArea(area)
+			if err := gtdStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save area: %w", err)
+			}
+
+			log.Printf("Added GTD area: %s", title)
+			return fmt.Sprintf("Area added: %s (ID: %s)", title, area.ID), nil
+
+		case "update":
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required for update")
+			}
+
+			area := gtdStore.GetArea(id)
+			if area == nil {
+				return "", fmt.Errorf("area not found: %s", id)
+			}
+
+			// Update title if provided
+			if title, ok := args["title"].(string); ok && title != "" {
+				area.Title = title
+			}
+
+			if err := gtdStore.UpdateArea(area); err != nil {
+				return "", fmt.Errorf("failed to update area: %w", err)
+			}
+			if err := gtdStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("Updated GTD area: %s", id)
+			return fmt.Sprintf("Area updated: %s", area.Title), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s (use list, add, or update)", action)
+		}
+	})
+
+	// Register gtd_projects tool
+	server.RegisterTool("gtd_projects", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			return "", fmt.Errorf("action is required (list, add, or update)")
+		}
+
+		switch action {
+		case "list":
+			when, _ := args["when"].(string)
+			area, _ := args["area"].(string)
+			projects := gtdStore.GetProjects(when, area)
+			if len(projects) == 0 {
+				filterDesc := ""
+				if when != "" {
+					filterDesc += fmt.Sprintf(" when=%s", when)
+				}
+				if area != "" {
+					filterDesc += fmt.Sprintf(" area=%s", area)
+				}
+				if filterDesc == "" {
+					return "No projects found.", nil
+				}
+				return fmt.Sprintf("No projects found matching:%s", filterDesc), nil
+			}
+			data, _ := json.MarshalIndent(projects, "", "  ")
+			return string(data), nil
+
+		case "add":
+			title, ok := args["title"].(string)
+			if !ok || title == "" {
+				return "", fmt.Errorf("title is required for add")
+			}
+
+			project := &gtd.Project{
+				Title: title,
+			}
+
+			// Optional fields
+			if notes, ok := args["notes"].(string); ok {
+				project.Notes = notes
+			}
+			if when, ok := args["when"].(string); ok && when != "" {
+				project.When = when
+			}
+			if area, ok := args["area"].(string); ok {
+				project.Area = area
+			}
+			if headingsRaw, ok := args["headings"].([]any); ok {
+				var headings []string
+				for _, h := range headingsRaw {
+					if hs, ok := h.(string); ok {
+						headings = append(headings, hs)
+					}
+				}
+				project.Headings = headings
+			}
+
+			gtdStore.AddProject(project)
+			if err := gtdStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save project: %w", err)
+			}
+
+			log.Printf("Added GTD project: %s", title)
+			return fmt.Sprintf("Project added: %s (ID: %s)", title, project.ID), nil
+
+		case "update":
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required for update")
+			}
+
+			project := gtdStore.GetProject(id)
+			if project == nil {
+				return "", fmt.Errorf("project not found: %s", id)
+			}
+
+			// Track what was updated
+			var updates []string
+
+			// Update provided fields
+			if title, ok := args["title"].(string); ok && title != "" {
+				project.Title = title
+				updates = append(updates, "title")
+			}
+			if notes, ok := args["notes"].(string); ok {
+				project.Notes = notes
+				updates = append(updates, "notes")
+			}
+			if when, ok := args["when"].(string); ok {
+				project.When = when
+				updates = append(updates, "when")
+			}
+			if area, ok := args["area"].(string); ok {
+				project.Area = area
+				updates = append(updates, "area")
+			}
+			if headingsRaw, ok := args["headings"].([]any); ok {
+				var headings []string
+				for _, h := range headingsRaw {
+					if hs, ok := h.(string); ok {
+						headings = append(headings, hs)
+					}
+				}
+				project.Headings = headings
+				updates = append(updates, "headings")
+			}
+
+			if err := gtdStore.UpdateProject(project); err != nil {
+				return "", fmt.Errorf("failed to update project: %w", err)
+			}
+			if err := gtdStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("Updated GTD project: %s (fields: %v)", id, updates)
+			return fmt.Sprintf("Project updated: %s (updated: %s)", project.Title, strings.Join(updates, ", ")), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s (use list, add, or update)", action)
+		}
+	})
+
 	// Register create_core tool (create a new core trace directly)
 	server.RegisterTool("create_core", func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)
