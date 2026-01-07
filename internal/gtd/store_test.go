@@ -324,3 +324,30 @@ func TestGTDStore_TaskOrdering(t *testing.T) {
 		t.Errorf("Expected third task 'Third', got '%s'", tasks[2].Title)
 	}
 }
+
+func TestGTDStore_Validation(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewGTDStore(tmpDir)
+
+	// Add an area and project for testing
+	store.AddArea(&Area{ID: "work", Title: "Work"})
+	store.AddProject(&Project{ID: "proj1", Title: "Project 1", Area: "work", Headings: []string{"Phase 1"}})
+
+	// Inbox task cannot have project/area
+	task := &Task{Title: "Test", When: "inbox", Project: "proj1"}
+	if err := store.ValidateTask(task); err == nil {
+		t.Error("Expected validation error for inbox task with project")
+	}
+
+	// Task with heading must have project
+	task2 := &Task{Title: "Test", When: "today", Heading: "Phase 1"}
+	if err := store.ValidateTask(task2); err == nil {
+		t.Error("Expected validation error for task with heading but no project")
+	}
+
+	// Valid task
+	task3 := &Task{Title: "Test", When: "today", Project: "proj1", Heading: "Phase 1"}
+	if err := store.ValidateTask(task3); err != nil {
+		t.Errorf("Unexpected validation error: %v", err)
+	}
+}
