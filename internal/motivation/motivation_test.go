@@ -10,9 +10,10 @@ func TestTaskStore(t *testing.T) {
 	store := NewTaskStore(tmpDir)
 
 	// Add a task
+	overdue := time.Now().Add(-time.Hour)
 	task := &Task{
 		Task:     "Review PR #42",
-		Due:      time.Now().Add(-time.Hour), // overdue
+		Due:      &overdue, // overdue
 		Priority: 1,
 		Context:  "Promised in standup",
 	}

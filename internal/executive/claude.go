@@ -24,6 +24,7 @@ type ClaudeSession struct {
 	// State
 	firstMessageSent bool              // track if we've sent the first message (for boilerplate)
 	seenPerceptIDs   map[string]bool   // track which percepts have been sent to Claude
+	seenTraceIDs     map[string]bool   // track which traces have been sent to Claude
 
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
@@ -47,6 +48,7 @@ func NewClaudeSession(threadID string, tmux *Tmux) *ClaudeSession {
 		sessionID:      generateUUID(),
 		tmux:           tmux,
 		seenPerceptIDs: make(map[string]bool),
+		seenTraceIDs:   make(map[string]bool),
 	}
 }
 
@@ -80,6 +82,18 @@ func (c *ClaudeSession) HasSeenPercept(perceptID string) bool {
 func (c *ClaudeSession) MarkPerceptsSeen(perceptIDs []string) {
 	for _, id := range perceptIDs {
 		c.seenPerceptIDs[id] = true
+	}
+}
+
+// HasSeenTrace returns true if this trace has been sent to Claude before
+func (c *ClaudeSession) HasSeenTrace(traceID string) bool {
+	return c.seenTraceIDs[traceID]
+}
+
+// MarkTracesSeen marks traces as having been sent to Claude
+func (c *ClaudeSession) MarkTracesSeen(traceIDs []string) {
+	for _, id := range traceIDs {
+		c.seenTraceIDs[id] = true
 	}
 }
 

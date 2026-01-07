@@ -114,7 +114,7 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 	isFirstMessage := session.IsFirstMessage()
 
 	// Build prompt from thread context
-	prompt, perceptIDs := e.buildPrompt(thread, session, isFirstMessage)
+	prompt, perceptIDs, traceIDs := e.buildPrompt(thread, session, isFirstMessage)
 
 	// Skip if prompt is empty (e.g., only filtered percepts)
 	if strings.TrimSpace(prompt) == "" {
@@ -164,8 +164,9 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 		}
 		// Mark first message sent (so subsequent prompts skip boilerplate)
 		session.MarkFirstMessageSent()
-		// Mark percepts as seen (so they're not repeated)
+		// Mark percepts and traces as seen (so they're not repeated)
 		session.MarkPerceptsSeen(perceptIDs)
+		session.MarkTracesSeen(traceIDs)
 		// Mark as processed (prevents re-processing on restart)
 		now := time.Now()
 		thread.ProcessedAt = &now
@@ -191,8 +192,9 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 
 	// Mark first message sent
 	session.MarkFirstMessageSent()
-	// Mark percepts as seen
+	// Mark percepts and traces as seen
 	session.MarkPerceptsSeen(perceptIDs)
+	session.MarkTracesSeen(traceIDs)
 
 	// Mark as processed
 	now := time.Now()
@@ -207,10 +209,11 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 }
 
 // buildPrompt constructs the prompt for Claude
-// Returns the prompt string and IDs of percepts that were included
-func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, isFirstMessage bool) (string, []string) {
+// Returns the prompt string, IDs of percepts included, and IDs of traces included
+func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, isFirstMessage bool) (string, []string, []string) {
 	var prompt strings.Builder
 	var includedPerceptIDs []string
+	var includedTraceIDs []string
 
 	// Include core identity traces on first message only (defines who Bud is)
 	if isFirstMessage && e.config.GetCoreTraces != nil {
@@ -237,16 +240,21 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 			}
 		}
 		traces := e.config.GetActiveTraces(10, recentPerceptIDs, thread.Embeddings.Centroid) // top 10, with context from thread centroid
-		// Filter out core traces (they're in Identity section)
-		var nonCoreTraces []*types.Trace
+		// Filter out core traces and traces already sent to this session
+		var newTraces []*types.Trace
 		for _, t := range traces {
-			if !t.IsCore {
-				nonCoreTraces = append(nonCoreTraces, t)
+			if t.IsCore {
+				continue // core traces in Identity section
 			}
+			if session.HasSeenTrace(t.ID) {
+				continue // already sent to this session
+			}
+			newTraces = append(newTraces, t)
+			includedTraceIDs = append(includedTraceIDs, t.ID)
 		}
-		if len(nonCoreTraces) > 0 {
+		if len(newTraces) > 0 {
 			prompt.WriteString("## Relevant Memories\n")
-			for _, t := range nonCoreTraces {
+			for _, t := range newTraces {
 				prompt.WriteString(fmt.Sprintf("- %s\n", t.Content))
 			}
 			prompt.WriteString("\n")
@@ -310,7 +318,7 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 		prompt.WriteString("\n")
 	}
 
-	return prompt.String(), includedPerceptIDs
+	return prompt.String(), includedPerceptIDs, includedTraceIDs
 }
 
 // handleToolCall processes a tool call from Claude
