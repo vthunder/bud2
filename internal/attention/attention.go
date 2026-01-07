@@ -975,8 +975,15 @@ func (a *Attention) findLabileTraces(emb []float64, threshold float64) []*types.
 
 // GetActivatedTraces returns traces that are currently activated
 // excludeSources filters out traces that contain any of the given source IDs
+// contextEmb is the thread's current centroid - used to re-activate relevant traces
 // Marks returned traces as labile (open for reconsolidation) for 5 minutes
-func (a *Attention) GetActivatedTraces(limit int, excludeSources []string) []*types.Trace {
+func (a *Attention) GetActivatedTraces(limit int, excludeSources []string, contextEmb []float64) []*types.Trace {
+	// Re-run spreading activation based on current thread context
+	// This ensures traces relevant to the evolved conversation are activated
+	if len(contextEmb) > 0 {
+		a.traces.SpreadActivation(contextEmb, 0.3, 0.3) // moderate boost for context-similar traces
+	}
+
 	traces := a.traces.GetActivated(0.1, 0) // low threshold, get all activated
 
 	// Build exclude set

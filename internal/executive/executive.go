@@ -31,7 +31,7 @@ type ExecutiveConfig struct {
 	Model           string                                              // Claude model to use
 	WorkDir         string                                              // Working directory
 	UseInteractive  bool                                                // Use tmux interactive mode (for debugging)
-	GetActiveTraces func(limit int, excludeSources []string) []*types.Trace // function to get activated memory traces
+	GetActiveTraces func(limit int, excludeSources []string, contextEmb []float64) []*types.Trace // function to get activated memory traces
 	GetCoreTraces   func() []*types.Trace                               // function to get core identity traces
 	SessionTracker  *budget.SessionTracker                              // tracks thinking time
 	StartTyping     func(channelID string)                              // start typing indicator
@@ -236,7 +236,7 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 				recentPerceptIDs = append(recentPerceptIDs, p.ID)
 			}
 		}
-		traces := e.config.GetActiveTraces(10, recentPerceptIDs) // top 10, excluding only recent
+		traces := e.config.GetActiveTraces(10, recentPerceptIDs, thread.Embeddings.Centroid) // top 10, with context from thread centroid
 		// Filter out core traces (they're in Identity section)
 		var nonCoreTraces []*types.Trace
 		for _, t := range traces {
