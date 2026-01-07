@@ -81,19 +81,6 @@ func (e *Executive) getChannelID(thread *types.Thread) string {
 
 // ProcessThread processes an active thread
 func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) error {
-	// Get channel ID for typing indicator
-	channelID := e.getChannelID(thread)
-
-	// Start typing indicator if we have a channel and callback
-	if channelID != "" && e.config.StartTyping != nil {
-		e.config.StartTyping(channelID)
-		defer func() {
-			if e.config.StopTyping != nil {
-				e.config.StopTyping(channelID)
-			}
-		}()
-	}
-
 	// Check if already processed (prevent re-processing on restart)
 	if thread.ProcessedAt != nil {
 		// Check if any percepts are newer than ProcessedAt
@@ -131,6 +118,19 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 	if strings.TrimSpace(prompt) == "" {
 		log.Printf("[executive] Thread %s has no new content, skipping", thread.ID)
 		return nil
+	}
+
+	// Get channel ID for typing indicator (only after we know we'll send to Claude)
+	channelID := e.getChannelID(thread)
+
+	// Start typing indicator if we have a channel and callback
+	if channelID != "" && e.config.StartTyping != nil {
+		e.config.StartTyping(channelID)
+		defer func() {
+			if e.config.StopTyping != nil {
+				e.config.StopTyping(channelID)
+			}
+		}()
 	}
 
 	// Set up tool handling
