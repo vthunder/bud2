@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vthunder/bud2/internal/journal"
 	"github.com/vthunder/bud2/internal/mcp"
+	"github.com/vthunder/bud2/internal/motivation"
+	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -209,6 +212,339 @@ func main() {
 
 		log.Printf("Session done signal: session=%s summary=%s", sessionID, truncate(summary, 50))
 		return "Done signal recorded. Ready for new prompts.", nil
+	})
+
+	// Initialize journal
+	j := journal.New(statePath)
+
+	// Register journal_log tool (log a decision or action for observability)
+	server.RegisterTool("journal_log", func(ctx any, args map[string]any) (string, error) {
+		entryType, _ := args["type"].(string)
+		summary, _ := args["summary"].(string)
+		context, _ := args["context"].(string)
+		reasoning, _ := args["reasoning"].(string)
+		outcome, _ := args["outcome"].(string)
+
+		if summary == "" {
+			return "", fmt.Errorf("summary is required")
+		}
+
+		// Map type string to EntryType
+		var t journal.EntryType
+		switch entryType {
+		case "decision":
+			t = journal.EntryDecision
+		case "impulse":
+			t = journal.EntryImpulse
+		case "reflex":
+			t = journal.EntryReflex
+		case "exploration":
+			t = journal.EntryExploration
+		case "action":
+			t = journal.EntryAction
+		case "observation":
+			t = journal.EntryObservation
+		default:
+			t = journal.EntryAction
+		}
+
+		entry := journal.Entry{
+			Type:      t,
+			Summary:   summary,
+			Context:   context,
+			Reasoning: reasoning,
+			Outcome:   outcome,
+		}
+
+		if err := j.Log(entry); err != nil {
+			return "", fmt.Errorf("failed to log journal entry: %w", err)
+		}
+
+		log.Printf("Journal entry: [%s] %s", entryType, truncate(summary, 50))
+		return "Logged to journal.", nil
+	})
+
+	// Register journal_recent tool (get recent journal entries for observability)
+	server.RegisterTool("journal_recent", func(ctx any, args map[string]any) (string, error) {
+		count := 20 // default
+		if n, ok := args["count"].(float64); ok && n > 0 {
+			count = int(n)
+		}
+
+		entries, err := j.Recent(count)
+		if err != nil {
+			return "", fmt.Errorf("failed to get journal entries: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return "No journal entries yet.", nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Register journal_today tool (get today's journal entries)
+	server.RegisterTool("journal_today", func(ctx any, args map[string]any) (string, error) {
+		entries, err := j.Today()
+		if err != nil {
+			return "", fmt.Errorf("failed to get today's entries: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return "No journal entries today yet.", nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Initialize motivation stores
+	taskStore := motivation.NewTaskStore(statePath)
+	ideaStore := motivation.NewIdeaStore(statePath)
+	taskStore.Load()
+	ideaStore.Load()
+
+	// Register add_task tool
+	server.RegisterTool("add_task", func(ctx any, args map[string]any) (string, error) {
+		task, ok := args["task"].(string)
+		if !ok || task == "" {
+			return "", fmt.Errorf("task description is required")
+		}
+
+		t := &motivation.Task{
+			Task:    task,
+			Context: "",
+			Status:  "pending",
+		}
+
+		if context, ok := args["context"].(string); ok {
+			t.Context = context
+		}
+		if priority, ok := args["priority"].(float64); ok {
+			t.Priority = int(priority)
+		} else {
+			t.Priority = 2 // default medium priority
+		}
+		if dueStr, ok := args["due"].(string); ok && dueStr != "" {
+			if due, err := time.Parse(time.RFC3339, dueStr); err == nil {
+				t.Due = due
+			}
+		}
+
+		taskStore.Add(t)
+		if err := taskStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save task: %w", err)
+		}
+
+		log.Printf("Added task: %s", truncate(task, 50))
+		return fmt.Sprintf("Task added: %s (ID: %s)", task, t.ID), nil
+	})
+
+	// Register list_tasks tool
+	server.RegisterTool("list_tasks", func(ctx any, args map[string]any) (string, error) {
+		tasks := taskStore.GetPending()
+		if len(tasks) == 0 {
+			return "No pending tasks.", nil
+		}
+
+		data, _ := json.MarshalIndent(tasks, "", "  ")
+		return string(data), nil
+	})
+
+	// Register complete_task tool
+	server.RegisterTool("complete_task", func(ctx any, args map[string]any) (string, error) {
+		taskID, ok := args["task_id"].(string)
+		if !ok || taskID == "" {
+			return "", fmt.Errorf("task_id is required")
+		}
+
+		task := taskStore.Get(taskID)
+		if task == nil {
+			return "", fmt.Errorf("task not found: %s", taskID)
+		}
+
+		taskStore.Complete(taskID)
+		if err := taskStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save: %w", err)
+		}
+
+		log.Printf("Completed task: %s", taskID)
+		return fmt.Sprintf("Task completed: %s", task.Task), nil
+	})
+
+	// Register add_idea tool
+	server.RegisterTool("add_idea", func(ctx any, args map[string]any) (string, error) {
+		idea, ok := args["idea"].(string)
+		if !ok || idea == "" {
+			return "", fmt.Errorf("idea description is required")
+		}
+
+		i := &motivation.Idea{
+			Idea:     idea,
+			Priority: 2, // default medium
+		}
+
+		if sparkedBy, ok := args["sparked_by"].(string); ok {
+			i.SparkBy = sparkedBy
+		}
+		if priority, ok := args["priority"].(float64); ok {
+			i.Priority = int(priority)
+		}
+
+		ideaStore.Add(i)
+		if err := ideaStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save idea: %w", err)
+		}
+
+		log.Printf("Added idea: %s", truncate(idea, 50))
+		return fmt.Sprintf("Idea saved for later exploration: %s (ID: %s)", idea, i.ID), nil
+	})
+
+	// Register list_ideas tool
+	server.RegisterTool("list_ideas", func(ctx any, args map[string]any) (string, error) {
+		ideas := ideaStore.GetUnexplored()
+		if len(ideas) == 0 {
+			return "No unexplored ideas.", nil
+		}
+
+		data, _ := json.MarshalIndent(ideas, "", "  ")
+		return string(data), nil
+	})
+
+	// Register explore_idea tool (mark as explored with notes)
+	server.RegisterTool("explore_idea", func(ctx any, args map[string]any) (string, error) {
+		ideaID, ok := args["idea_id"].(string)
+		if !ok || ideaID == "" {
+			return "", fmt.Errorf("idea_id is required")
+		}
+
+		idea := ideaStore.Get(ideaID)
+		if idea == nil {
+			return "", fmt.Errorf("idea not found: %s", ideaID)
+		}
+
+		notes := ""
+		if n, ok := args["notes"].(string); ok {
+			notes = n
+		}
+
+		ideaStore.MarkExplored(ideaID, notes)
+		if err := ideaStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save: %w", err)
+		}
+
+		log.Printf("Explored idea: %s", ideaID)
+		return fmt.Sprintf("Idea explored: %s", idea.Idea), nil
+	})
+
+	// Initialize reflex engine
+	reflexEngine := reflex.NewEngine(statePath)
+	reflexEngine.Load()
+
+	// Register create_reflex tool
+	server.RegisterTool("create_reflex", func(ctx any, args map[string]any) (string, error) {
+		name, ok := args["name"].(string)
+		if !ok || name == "" {
+			return "", fmt.Errorf("name is required")
+		}
+
+		pattern := ""
+		if p, ok := args["pattern"].(string); ok {
+			pattern = p
+		}
+
+		description := ""
+		if d, ok := args["description"].(string); ok {
+			description = d
+		}
+
+		// Parse pipeline from JSON array
+		var pipeline reflex.Pipeline
+		if pipelineJSON, ok := args["pipeline"].([]any); ok {
+			for _, step := range pipelineJSON {
+				if stepMap, ok := step.(map[string]any); ok {
+					ps := reflex.PipelineStep{
+						Params: make(map[string]any),
+					}
+					if a, ok := stepMap["action"].(string); ok {
+						ps.Action = a
+					}
+					if i, ok := stepMap["input"].(string); ok {
+						ps.Input = i
+					}
+					if o, ok := stepMap["output"].(string); ok {
+						ps.Output = o
+					}
+					for k, v := range stepMap {
+						if k != "action" && k != "input" && k != "output" {
+							ps.Params[k] = v
+						}
+					}
+					pipeline = append(pipeline, ps)
+				}
+			}
+		}
+
+		r := &reflex.Reflex{
+			Name:        name,
+			Description: description,
+			Trigger: reflex.Trigger{
+				Pattern: pattern,
+			},
+			Pipeline: pipeline,
+		}
+
+		// Parse extract if provided
+		if extract, ok := args["extract"].([]any); ok {
+			for _, e := range extract {
+				if s, ok := e.(string); ok {
+					r.Trigger.Extract = append(r.Trigger.Extract, s)
+				}
+			}
+		}
+
+		if err := reflexEngine.SaveReflex(r); err != nil {
+			return "", fmt.Errorf("failed to save reflex: %w", err)
+		}
+
+		log.Printf("Created reflex: %s", name)
+		return fmt.Sprintf("Reflex '%s' created and saved. It will be active on next message.", name), nil
+	})
+
+	// Register list_reflexes tool
+	server.RegisterTool("list_reflexes", func(ctx any, args map[string]any) (string, error) {
+		reflexes := reflexEngine.List()
+		if len(reflexes) == 0 {
+			return "No reflexes defined.", nil
+		}
+
+		var result []map[string]any
+		for _, r := range reflexes {
+			result = append(result, map[string]any{
+				"name":        r.Name,
+				"description": r.Description,
+				"pattern":     r.Trigger.Pattern,
+				"fire_count":  r.FireCount,
+			})
+		}
+
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return string(data), nil
+	})
+
+	// Register delete_reflex tool
+	server.RegisterTool("delete_reflex", func(ctx any, args map[string]any) (string, error) {
+		name, ok := args["name"].(string)
+		if !ok || name == "" {
+			return "", fmt.Errorf("name is required")
+		}
+
+		if err := reflexEngine.Delete(name); err != nil {
+			return "", err
+		}
+
+		return fmt.Sprintf("Reflex '%s' deleted.", name), nil
 	})
 
 	// Register create_core tool (create a new core trace directly)

@@ -36,6 +36,8 @@ type ExecutiveConfig struct {
 	GetActiveTraces func(limit int, excludeSources []string) []*types.Trace // function to get activated memory traces
 	GetCoreTraces   func() []*types.Trace                               // function to get core identity traces
 	SessionTracker  *budget.SessionTracker                              // tracks thinking time
+	StartTyping     func(channelID string)                              // start typing indicator
+	StopTyping      func(channelID string)                              // stop typing indicator
 }
 
 // New creates a new Executive
@@ -50,6 +52,12 @@ func New(percepts *memory.PerceptPool, threads *memory.ThreadPool, outbox *memor
 	}
 }
 
+// SetTypingCallbacks sets the typing indicator callbacks (called after Discord effector is initialized)
+func (e *Executive) SetTypingCallbacks(start, stop func(channelID string)) {
+	e.config.StartTyping = start
+	e.config.StopTyping = stop
+}
+
 // Start initializes the executive (creates tmux session)
 func (e *Executive) Start() error {
 	if err := e.tmux.EnsureSession(); err != nil {
@@ -59,8 +67,34 @@ func (e *Executive) Start() error {
 	return nil
 }
 
+// getChannelID extracts the Discord channel ID from thread percepts
+func (e *Executive) getChannelID(thread *types.Thread) string {
+	percepts := e.percepts.GetMany(thread.PerceptRefs)
+	for _, p := range percepts {
+		if p.Source == "discord" || p.Source == "inbox" {
+			if ch, ok := p.Data["channel_id"].(string); ok && ch != "" {
+				return ch
+			}
+		}
+	}
+	return ""
+}
+
 // ProcessThread processes an active thread
 func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) error {
+	// Get channel ID for typing indicator
+	channelID := e.getChannelID(thread)
+
+	// Start typing indicator if we have a channel and callback
+	if channelID != "" && e.config.StartTyping != nil {
+		e.config.StartTyping(channelID)
+		defer func() {
+			if e.config.StopTyping != nil {
+				e.config.StopTyping(channelID)
+			}
+		}()
+	}
+
 	// Check if already processed (prevent re-processing on restart)
 	if thread.ProcessedAt != nil {
 		// Check if any percepts are newer than ProcessedAt

@@ -125,6 +125,51 @@ func (t *Trace) Recency() float64 {
 	return time.Since(t.LastAccess).Seconds()
 }
 
+// ImpulseSource identifies where an impulse came from
+type ImpulseSource string
+
+const (
+	ImpulseTask     ImpulseSource = "task"     // from tasks.json - commitment due
+	ImpulseIdea     ImpulseSource = "idea"     // from ideas.json - exploration urge
+	ImpulseSchedule ImpulseSource = "schedule" // from schedule.json - recurring trigger
+	ImpulseSystem   ImpulseSource = "system"   // system-generated (autonomous wake, etc)
+)
+
+// Impulse is an internal motivation (vs Percept which is external)
+// Impulses and percepts are scored together by attention
+type Impulse struct {
+	ID          string            `json:"id"`
+	Source      ImpulseSource     `json:"source"`    // task, idea, schedule, system
+	Type        string            `json:"type"`      // due, triggered, explore, wake
+	Intensity   float64           `json:"intensity"` // 0.0-1.0, based on urgency/priority
+	Timestamp   time.Time         `json:"timestamp"`
+	Description string            `json:"description"` // what this impulse is about
+	Data        map[string]any    `json:"data"`        // source-specific payload
+	Embedding   []float64         `json:"embedding,omitempty"` // for attention matching
+}
+
+// Recency returns seconds since impulse was created
+func (i *Impulse) Recency() float64 {
+	return time.Since(i.Timestamp).Seconds()
+}
+
+// ToPercept converts an impulse to a percept for unified attention processing
+func (i *Impulse) ToPercept() *Percept {
+	return &Percept{
+		ID:        i.ID,
+		Source:    "impulse:" + string(i.Source),
+		Type:      i.Type,
+		Intensity: i.Intensity,
+		Timestamp: i.Timestamp,
+		Tags:      []string{"internal", string(i.Source)},
+		Data: map[string]any{
+			"description": i.Description,
+			"impulse":     i.Data,
+		},
+		Embedding: i.Embedding,
+	}
+}
+
 // IsLabile returns true if the trace is in its reconsolidation window
 func (t *Trace) IsLabile() bool {
 	if t.LabileUntil == nil {

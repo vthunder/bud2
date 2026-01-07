@@ -303,6 +303,205 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				},
 			},
 		},
+		{
+			Name:        "journal_log",
+			Description: "Log a decision, action, or observation to the journal for observability. Use this to record your reasoning, decisions made, and actions taken. Helps answer 'what did you do today?' and 'why did you do that?'",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"type": {
+						Type:        "string",
+						Description: "Entry type: 'decision', 'impulse', 'reflex', 'exploration', 'action', or 'observation'",
+					},
+					"summary": {
+						Type:        "string",
+						Description: "Brief description of what happened",
+					},
+					"context": {
+						Type:        "string",
+						Description: "What prompted this (optional)",
+					},
+					"reasoning": {
+						Type:        "string",
+						Description: "Why this decision was made (optional)",
+					},
+					"outcome": {
+						Type:        "string",
+						Description: "What resulted from this (optional)",
+					},
+				},
+				Required: []string{"summary"},
+			},
+		},
+		{
+			Name:        "journal_recent",
+			Description: "Get recent journal entries. Use this to review what you've been doing and why.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"count": {
+						Type:        "number",
+						Description: "Number of entries to return (default 20)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "journal_today",
+			Description: "Get today's journal entries. Use this to answer 'what did you do today?'",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "add_task",
+			Description: "Add a task (commitment) to your task queue. Use this to track things you've committed to do.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"task": {
+						Type:        "string",
+						Description: "What you need to do",
+					},
+					"context": {
+						Type:        "string",
+						Description: "Why this task exists (optional)",
+					},
+					"priority": {
+						Type:        "number",
+						Description: "Priority level: 1=highest, 2=medium, 3=low (default 2)",
+					},
+					"due": {
+						Type:        "string",
+						Description: "Due date/time in RFC3339 format (optional)",
+					},
+				},
+				Required: []string{"task"},
+			},
+		},
+		{
+			Name:        "list_tasks",
+			Description: "List pending tasks. Use this to see what you've committed to do.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "complete_task",
+			Description: "Mark a task as complete.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"task_id": {
+						Type:        "string",
+						Description: "ID of the task to complete",
+					},
+				},
+				Required: []string{"task_id"},
+			},
+		},
+		{
+			Name:        "add_idea",
+			Description: "Save an idea for later exploration. Ideas are things you want to learn or think about when idle.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"idea": {
+						Type:        "string",
+						Description: "The idea or topic to explore",
+					},
+					"sparked_by": {
+						Type:        "string",
+						Description: "What triggered this idea (optional)",
+					},
+					"priority": {
+						Type:        "number",
+						Description: "Interest level: 1=highest, 2=medium, 3=low (default 2)",
+					},
+				},
+				Required: []string{"idea"},
+			},
+		},
+		{
+			Name:        "list_ideas",
+			Description: "List unexplored ideas. Use this to find something to think about during idle time.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "explore_idea",
+			Description: "Mark an idea as explored, with notes about what you learned.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"idea_id": {
+						Type:        "string",
+						Description: "ID of the idea that was explored",
+					},
+					"notes": {
+						Type:        "string",
+						Description: "What you learned or discovered (optional)",
+					},
+				},
+				Required: []string{"idea_id"},
+			},
+		},
+		{
+			Name:        "create_reflex",
+			Description: "Create a new reflex (automated response). Reflexes run without waking the executive for pattern-matched inputs.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"name": {
+						Type:        "string",
+						Description: "Unique name for the reflex",
+					},
+					"description": {
+						Type:        "string",
+						Description: "What this reflex does",
+					},
+					"pattern": {
+						Type:        "string",
+						Description: "Regex pattern to match (use capture groups for extraction)",
+					},
+					"extract": {
+						Type:        "array",
+						Description: "Names for captured groups (e.g., [\"url\", \"title\"])",
+					},
+					"pipeline": {
+						Type:        "array",
+						Description: "Array of action steps: [{action, input, output, ...params}]",
+					},
+				},
+				Required: []string{"name", "pipeline"},
+			},
+		},
+		{
+			Name:        "list_reflexes",
+			Description: "List all defined reflexes.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "delete_reflex",
+			Description: "Delete a reflex by name.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"name": {
+						Type:        "string",
+						Description: "Name of the reflex to delete",
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

@@ -1,0 +1,206 @@
+package motivation
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/vthunder/bud2/internal/types"
+)
+
+// Task represents a commitment ("I will do X")
+type Task struct {
+	ID       string    `json:"id"`
+	Task     string    `json:"task"`
+	Due      time.Time `json:"due,omitempty"`
+	Priority int       `json:"priority"` // 1 = highest
+	Context  string    `json:"context"`  // why this task exists
+	Status   string    `json:"status"`   // pending, in_progress, done
+}
+
+// TaskStore manages tasks.json
+type TaskStore struct {
+	path  string
+	tasks map[string]*Task
+	mu    sync.RWMutex
+}
+
+// NewTaskStore creates a new task store
+func NewTaskStore(statePath string) *TaskStore {
+	return &TaskStore{
+		path:  filepath.Join(statePath, "tasks.json"),
+		tasks: make(map[string]*Task),
+	}
+}
+
+// Load reads tasks from file
+func (s *TaskStore) Load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var tasks []*Task
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		return err
+	}
+
+	s.tasks = make(map[string]*Task)
+	for _, t := range tasks {
+		s.tasks[t.ID] = t
+	}
+	return nil
+}
+
+// Save writes tasks to file
+func (s *TaskStore) Save() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks := make([]*Task, 0, len(s.tasks))
+	for _, t := range s.tasks {
+		tasks = append(tasks, t)
+	}
+
+	data, err := json.MarshalIndent(tasks, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, data, 0644)
+}
+
+// Add adds a new task
+func (s *TaskStore) Add(task *Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if task.ID == "" {
+		task.ID = fmt.Sprintf("task-%d", time.Now().UnixNano())
+	}
+	if task.Status == "" {
+		task.Status = "pending"
+	}
+	s.tasks[task.ID] = task
+}
+
+// Get retrieves a task by ID
+func (s *TaskStore) Get(id string) *Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tasks[id]
+}
+
+// Remove removes a task
+func (s *TaskStore) Remove(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tasks, id)
+}
+
+// Complete marks a task as done
+func (s *TaskStore) Complete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tasks[id]; ok {
+		t.Status = "done"
+	}
+}
+
+// GetPending returns all pending tasks
+func (s *TaskStore) GetPending() []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []*Task
+	for _, t := range s.tasks {
+		if t.Status == "pending" || t.Status == "in_progress" {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// GetDue returns tasks that are due or overdue
+func (s *TaskStore) GetDue() []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	var result []*Task
+	for _, t := range s.tasks {
+		if t.Status != "done" && !t.Due.IsZero() && t.Due.Before(now) {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// GetUpcoming returns tasks due within the given duration
+func (s *TaskStore) GetUpcoming(within time.Duration) []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	deadline := now.Add(within)
+	var result []*Task
+	for _, t := range s.tasks {
+		if t.Status != "done" && !t.Due.IsZero() && t.Due.After(now) && t.Due.Before(deadline) {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// GenerateImpulses creates impulses for due and upcoming tasks
+func (s *TaskStore) GenerateImpulses() []*types.Impulse {
+	var impulses []*types.Impulse
+
+	// High priority for overdue tasks
+	for _, t := range s.GetDue() {
+		impulses = append(impulses, &types.Impulse{
+			ID:          fmt.Sprintf("impulse-task-due-%s", t.ID),
+			Source:      types.ImpulseTask,
+			Type:        "due",
+			Intensity:   0.9, // overdue is urgent
+			Timestamp:   time.Now(),
+			Description: fmt.Sprintf("OVERDUE: %s", t.Task),
+			Data: map[string]any{
+				"task_id":  t.ID,
+				"task":     t.Task,
+				"due":      t.Due,
+				"priority": t.Priority,
+				"context":  t.Context,
+			},
+		})
+	}
+
+	// Medium priority for upcoming tasks (within 1 hour)
+	for _, t := range s.GetUpcoming(time.Hour) {
+		impulses = append(impulses, &types.Impulse{
+			ID:          fmt.Sprintf("impulse-task-upcoming-%s", t.ID),
+			Source:      types.ImpulseTask,
+			Type:        "upcoming",
+			Intensity:   0.6,
+			Timestamp:   time.Now(),
+			Description: fmt.Sprintf("Coming up: %s (due %s)", t.Task, t.Due.Format("15:04")),
+			Data: map[string]any{
+				"task_id":  t.ID,
+				"task":     t.Task,
+				"due":      t.Due,
+				"priority": t.Priority,
+				"context":  t.Context,
+			},
+		})
+	}
+
+	return impulses
+}

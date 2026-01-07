@@ -211,6 +211,9 @@ func main() {
 		discordEffector.SetOnSend(captureResponse)
 		discordEffector.Start()
 
+		// Wire up typing indicator to executive
+		exec.SetTypingCallbacks(discordEffector.StartTyping, discordEffector.StopTyping)
+
 		log.Println("[main] Discord sense and effector started")
 	} else {
 		log.Println("[main] SYNTHETIC_MODE enabled - Discord disabled")
@@ -291,23 +294,23 @@ func main() {
 					// Log budget status
 					thinkingBudget.LogStatus()
 
-					// Create an autonomous percept to trigger attention
-					percept := &types.Percept{
-						ID:        fmt.Sprintf("autonomous-%d", time.Now().UnixNano()),
-						Source:    "system",
-						Type:      "autonomous_wake",
-						Intensity: 0.5, // moderate intensity
-						Timestamp: time.Now(),
-						Tags:      []string{"autonomous", "scheduled"},
+					// Create an autonomous impulse (internal motivation)
+					impulse := &types.Impulse{
+						ID:          fmt.Sprintf("impulse-wake-%d", time.Now().UnixNano()),
+						Source:      types.ImpulseSystem,
+						Type:        "wake",
+						Intensity:   0.5, // moderate intensity
+						Timestamp:   time.Now(),
+						Description: "Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.",
 						Data: map[string]any{
 							"trigger": "periodic",
-							"message": "Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.",
 						},
 					}
 
-					log.Printf("[autonomous] Triggering wake-up")
+					log.Printf("[autonomous] Triggering wake-up via impulse")
 					thinkingBudget.RecordAutonomousCall()
-					processPercept(percept)
+					// Convert impulse to percept for attention routing
+					processPercept(impulse.ToPercept())
 				}
 			}
 		}()
@@ -329,6 +332,7 @@ func main() {
 	cpuWatcher.Stop()
 	attn.Stop()
 	if discordEffector != nil {
+		discordEffector.StopAllTyping()
 		discordEffector.Stop()
 	}
 	if discordSense != nil {

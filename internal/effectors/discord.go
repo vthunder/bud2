@@ -3,6 +3,7 @@ package effectors
 import (
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -18,6 +19,10 @@ type DiscordEffector struct {
 	markComplete func(id string)
 	onSend       func(channelID, content string) // called when message is sent (for memory)
 	stopChan     chan struct{}
+
+	// Typing indicator state
+	typingMu    sync.Mutex
+	typingChans map[string]chan struct{} // channel ID -> stop channel
 }
 
 // NewDiscordEffector creates a Discord effector
@@ -35,6 +40,7 @@ func NewDiscordEffector(
 		getActions:   getActions,
 		markComplete: markComplete,
 		stopChan:     make(chan struct{}),
+		typingChans:  make(map[string]chan struct{}),
 	}
 }
 
@@ -146,4 +152,77 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 	}
 
 	return e.session.MessageReactionAdd(channelID, messageID, emoji)
+}
+
+// StartTyping starts showing the typing indicator in a channel.
+// The indicator is maintained until StopTyping is called.
+func (e *DiscordEffector) StartTyping(channelID string) {
+	if channelID == "" || e.session == nil {
+		return
+	}
+
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+
+	// Already typing in this channel
+	if _, exists := e.typingChans[channelID]; exists {
+		return
+	}
+
+	stopChan := make(chan struct{})
+	e.typingChans[channelID] = stopChan
+
+	// Start typing indicator goroutine
+	go func() {
+		// Send initial typing indicator
+		if err := e.session.ChannelTyping(channelID); err != nil {
+			log.Printf("[discord-effector] Failed to start typing: %v", err)
+			return
+		}
+		log.Printf("[discord-effector] Started typing in channel %s", channelID)
+
+		// Discord typing indicators expire after ~10 seconds, so refresh every 8 seconds
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				log.Printf("[discord-effector] Stopped typing in channel %s", channelID)
+				return
+			case <-ticker.C:
+				if err := e.session.ChannelTyping(channelID); err != nil {
+					log.Printf("[discord-effector] Failed to refresh typing: %v", err)
+					return
+				}
+			}
+		}
+	}()
+}
+
+// StopTyping stops the typing indicator in a channel
+func (e *DiscordEffector) StopTyping(channelID string) {
+	if channelID == "" {
+		return
+	}
+
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+
+	if stopChan, exists := e.typingChans[channelID]; exists {
+		close(stopChan)
+		delete(e.typingChans, channelID)
+	}
+}
+
+// StopAllTyping stops all typing indicators (used during shutdown)
+func (e *DiscordEffector) StopAllTyping() {
+	e.typingMu.Lock()
+	defer e.typingMu.Unlock()
+
+	for channelID, stopChan := range e.typingChans {
+		close(stopChan)
+		delete(e.typingChans, channelID)
+		log.Printf("[discord-effector] Stopped typing in channel %s (shutdown)", channelID)
+	}
 }
