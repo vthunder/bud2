@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/journal"
 	"github.com/vthunder/bud2/internal/mcp"
@@ -20,6 +21,11 @@ func main() {
 	// Log to stderr so stdout is clean for JSON-RPC
 	log.SetOutput(os.Stderr)
 	log.SetPrefix("[bud-mcp] ")
+
+	// Load .env file if present (don't error if missing)
+	if err := godotenv.Load(); err == nil {
+		log.Println("Loaded .env file")
+	}
 
 	log.Println("Starting bud2 MCP server...")
 
