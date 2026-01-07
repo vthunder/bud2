@@ -226,10 +226,10 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 					},
 					"channel_id": {
 						Type:        "string",
-						Description: "The Discord channel ID to send to (usually from the original message context)",
+						Description: "The Discord channel ID to send to. Optional - if not provided, uses the default channel from DISCORD_CHANNEL_ID.",
 					},
 				},
-				Required: []string{"message", "channel_id"},
+				Required: []string{"message"},
 			},
 		},
 		{

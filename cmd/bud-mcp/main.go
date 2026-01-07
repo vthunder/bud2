@@ -43,6 +43,9 @@ func main() {
 	// Create MCP server
 	server := mcp.NewServer()
 
+	// Get default channel from environment
+	defaultChannel := os.Getenv("DISCORD_CHANNEL_ID")
+
 	// Register talk_to_user tool
 	server.RegisterTool("talk_to_user", func(ctx any, args map[string]any) (string, error) {
 		message, ok := args["message"].(string)
@@ -50,9 +53,13 @@ func main() {
 			return "", fmt.Errorf("message is required")
 		}
 
-		channelID, ok := args["channel_id"].(string)
-		if !ok {
-			return "", fmt.Errorf("channel_id is required")
+		// Use provided channel_id or fall back to default
+		channelID, _ := args["channel_id"].(string)
+		if channelID == "" {
+			channelID = defaultChannel
+		}
+		if channelID == "" {
+			return "", fmt.Errorf("channel_id required (none provided and DISCORD_CHANNEL_ID not set)")
 		}
 
 		log.Printf("talk_to_user: channel=%s message=%s", channelID, truncate(message, 50))
