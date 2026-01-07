@@ -177,6 +177,7 @@ func (i *Impulse) ToPercept() *Percept {
 		Timestamp: i.Timestamp,
 		Tags:      []string{"internal", string(i.Source)},
 		Data: map[string]any{
+			"content":     i.Description, // used by prompt builder
 			"description": i.Description,
 			"impulse":     i.Data,
 		},

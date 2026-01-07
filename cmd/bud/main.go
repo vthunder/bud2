@@ -315,6 +315,8 @@ func main() {
 				log.Printf("[autonomous] Triggering wake-up via task impulse: %s", impulse.Description)
 				thinkingBudget.LogStatus()
 				thinkingBudget.RecordAutonomousCall()
+
+				// Convert to percept (Bud knows owner's default channel from core memory)
 				processPercept(impulse.ToPercept())
 			}
 
