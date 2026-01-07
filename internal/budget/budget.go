@@ -10,12 +10,8 @@ type ThinkingBudget struct {
 	tracker *SessionTracker
 
 	// Limits
-	DailyMinutes         float64       // Max thinking minutes per day (e.g., 30)
-	MaxSessionDuration   time.Duration // Max single session length (e.g., 10 min)
-	MinIntervalBetween   time.Duration // Minimum time between autonomous calls (e.g., 1 hour)
-
-	// State
-	lastAutonomousCall time.Time
+	DailyMinutes       float64       // Max thinking minutes per day (e.g., 30)
+	MaxSessionDuration time.Duration // Max single session length (e.g., 10 min)
 }
 
 // NewThinkingBudget creates a new budget manager
@@ -24,7 +20,6 @@ func NewThinkingBudget(tracker *SessionTracker) *ThinkingBudget {
 		tracker:            tracker,
 		DailyMinutes:       30,               // 30 minutes/day default
 		MaxSessionDuration: 10 * time.Minute, // 10 min max per session
-		MinIntervalBetween: 1 * time.Hour,    // 1 hour between autonomous calls
 	}
 }
 
@@ -42,21 +37,7 @@ func (b *ThinkingBudget) CanDoAutonomousWork() (bool, string) {
 		}
 	}
 
-	// Check minimum interval
-	if !b.lastAutonomousCall.IsZero() {
-		elapsed := time.Since(b.lastAutonomousCall)
-		if elapsed < b.MinIntervalBetween {
-			remaining := b.MinIntervalBetween - elapsed
-			return false, "too soon since last autonomous call (wait " + remaining.Round(time.Minute).String() + ")"
-		}
-	}
-
 	return true, ""
-}
-
-// RecordAutonomousCall marks that an autonomous call was made
-func (b *ThinkingBudget) RecordAutonomousCall() {
-	b.lastAutonomousCall = time.Now()
 }
 
 // GetStatus returns current budget status

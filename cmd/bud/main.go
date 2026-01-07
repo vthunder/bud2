@@ -114,7 +114,6 @@ func main() {
 	signalProcessor := budget.NewSignalProcessor(statePath, sessionTracker)
 	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
 	thinkingBudget.DailyMinutes = dailyBudgetMinutes
-	thinkingBudget.MinIntervalBetween = autonomousInterval
 
 	// Start signal processor (polls signals.jsonl for session completions)
 	signalProcessor.Start(500 * time.Millisecond)
@@ -314,7 +313,6 @@ func main() {
 				impulse := impulses[0]
 				log.Printf("[autonomous] Triggering wake-up via task impulse: %s", impulse.Description)
 				thinkingBudget.LogStatus()
-				thinkingBudget.RecordAutonomousCall()
 
 				// Convert to percept (Bud knows owner's default channel from core memory)
 				processPercept(impulse.ToPercept())
@@ -353,7 +351,6 @@ func main() {
 					}
 
 					log.Printf("[autonomous] Triggering periodic wake-up")
-					thinkingBudget.RecordAutonomousCall()
 					processPercept(impulse.ToPercept())
 				}
 			}

@@ -86,8 +86,7 @@ func TestThinkingBudget(t *testing.T) {
 
 	tracker := NewSessionTracker(statePath)
 	budget := NewThinkingBudget(tracker)
-	budget.DailyMinutes = 1          // 1 minute for testing
-	budget.MinIntervalBetween = time.Second // 1 second for testing
+	budget.DailyMinutes = 1 // 1 minute for testing
 
 	// Should be able to do autonomous work initially
 	ok, reason := budget.CanDoAutonomousWork()
@@ -105,22 +104,10 @@ func TestThinkingBudget(t *testing.T) {
 	// Complete the session
 	tracker.CompleteSession("session-1")
 
-	// Record an autonomous call
-	budget.RecordAutonomousCall()
-
-	// Should be blocked by interval
-	ok, reason = budget.CanDoAutonomousWork()
-	if ok {
-		t.Error("Expected autonomous work blocked by interval")
-	}
-
-	// Wait for interval
-	time.Sleep(time.Second + 100*time.Millisecond)
-
-	// Should be allowed now
+	// Should still be allowed (budget not exhausted)
 	ok, reason = budget.CanDoAutonomousWork()
 	if !ok {
-		t.Errorf("Expected autonomous work allowed after interval, got: %s", reason)
+		t.Errorf("Expected autonomous work allowed, got: %s", reason)
 	}
 
 	t.Log("Budget test passed")
