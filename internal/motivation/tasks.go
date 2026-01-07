@@ -21,7 +21,7 @@ type Task struct {
 	Status   string     `json:"status"`   // pending, in_progress, done
 }
 
-// TaskStore manages tasks.json
+// TaskStore manages bud_tasks.json (Bud's commitments)
 type TaskStore struct {
 	path  string
 	tasks map[string]*Task
@@ -31,7 +31,7 @@ type TaskStore struct {
 // NewTaskStore creates a new task store
 func NewTaskStore(statePath string) *TaskStore {
 	return &TaskStore{
-		path:  filepath.Join(statePath, "tasks.json"),
+		path:  filepath.Join(statePath, "bud_tasks.json"),
 		tasks: make(map[string]*Task),
 	}
 }
