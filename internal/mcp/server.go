@@ -502,6 +502,79 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Required: []string{"name"},
 			},
 		},
+		// Notion tools
+		{
+			Name:        "notion_search",
+			Description: "Search Notion for pages and databases by text query. Returns titles and IDs.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"query": {
+						Type:        "string",
+						Description: "Text to search for in page/database titles and content",
+					},
+					"filter": {
+						Type:        "string",
+						Description: "Filter by type: 'page' or 'database' (optional)",
+					},
+				},
+				Required: []string{"query"},
+			},
+		},
+		{
+			Name:        "notion_get_page",
+			Description: "Get a Notion page by ID. Returns the page properties.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"page_id": {
+						Type:        "string",
+						Description: "The Notion page ID (UUID format)",
+					},
+				},
+				Required: []string{"page_id"},
+			},
+		},
+		{
+			Name:        "notion_get_database",
+			Description: "Get a Notion database schema by ID. Returns property definitions including select/status options.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"database_id": {
+						Type:        "string",
+						Description: "The Notion database ID (UUID format)",
+					},
+				},
+				Required: []string{"database_id"},
+			},
+		},
+		{
+			Name:        "notion_query_database",
+			Description: "Query a Notion database with optional filter and sort. Returns matching pages with their properties.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"database_id": {
+						Type:        "string",
+						Description: "The Notion database ID (UUID format)",
+					},
+					"filter": {
+						Type:        "string",
+						Description: "JSON filter object (optional). Example: {\"property\": \"Status\", \"status\": {\"equals\": \"In Progress\"}}",
+					},
+					"sort_property": {
+						Type:        "string",
+						Description: "Property name to sort by (optional)",
+					},
+					"sort_direction": {
+						Type:        "string",
+						Description: "Sort direction: 'ascending' or 'descending' (default: descending)",
+					},
+				},
+				Required: []string{"database_id"},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

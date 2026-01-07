@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/journal"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
@@ -580,6 +581,206 @@ func main() {
 		log.Printf("Created core trace: %s", truncate(content, 50))
 		return fmt.Sprintf("Created core trace %s. Changes will take effect on next bud restart.", trace.ID), nil
 	})
+
+	// Notion tools (only register if NOTION_API_KEY is set)
+	if os.Getenv("NOTION_API_KEY") != "" {
+		notionClient, err := notion.NewClient()
+		if err != nil {
+			log.Printf("Warning: Failed to create Notion client: %v", err)
+		} else {
+			log.Println("Notion integration enabled")
+
+			// Register notion_search tool
+			server.RegisterTool("notion_search", func(ctx any, args map[string]any) (string, error) {
+				query, _ := args["query"].(string)
+				if query == "" {
+					return "", fmt.Errorf("query is required")
+				}
+
+				params := notion.SearchParams{
+					Query:    query,
+					PageSize: 20,
+				}
+
+				// Optional filter by type
+				if filterType, ok := args["filter"].(string); ok && filterType != "" {
+					params.Filter = &notion.SearchFilter{
+						Property: "object",
+						Value:    filterType,
+					}
+				}
+
+				result, err := notionClient.Search(params)
+				if err != nil {
+					return "", err
+				}
+
+				// Format results
+				var output []map[string]string
+				for _, obj := range result.Results {
+					output = append(output, map[string]string{
+						"id":    obj.ID,
+						"type":  obj.Object,
+						"title": obj.GetTitle(),
+						"url":   obj.URL,
+					})
+				}
+
+				data, _ := json.MarshalIndent(output, "", "  ")
+				return string(data), nil
+			})
+
+			// Register notion_get_page tool
+			server.RegisterTool("notion_get_page", func(ctx any, args map[string]any) (string, error) {
+				pageID, _ := args["page_id"].(string)
+				if pageID == "" {
+					return "", fmt.Errorf("page_id is required")
+				}
+
+				page, err := notionClient.GetPage(pageID)
+				if err != nil {
+					return "", err
+				}
+
+				// Format page properties
+				props := make(map[string]string)
+				for name := range page.Properties {
+					props[name] = page.GetPropertyText(name)
+				}
+
+				result := map[string]any{
+					"id":         page.ID,
+					"title":      page.GetTitle(),
+					"url":        page.URL,
+					"properties": props,
+				}
+
+				data, _ := json.MarshalIndent(result, "", "  ")
+				return string(data), nil
+			})
+
+			// Register notion_get_database tool
+			server.RegisterTool("notion_get_database", func(ctx any, args map[string]any) (string, error) {
+				dbID, _ := args["database_id"].(string)
+				if dbID == "" {
+					return "", fmt.Errorf("database_id is required")
+				}
+
+				db, err := notionClient.GetDatabase(dbID)
+				if err != nil {
+					return "", err
+				}
+
+				// Format schema
+				schema := make(map[string]any)
+				for name, prop := range db.Properties {
+					propInfo := map[string]any{
+						"type": prop.Type,
+					}
+					// Include options for select/status types
+					if prop.Select != nil {
+						var options []string
+						for _, opt := range prop.Select.Options {
+							options = append(options, opt.Name)
+						}
+						propInfo["options"] = options
+					}
+					if prop.MultiSelect != nil {
+						var options []string
+						for _, opt := range prop.MultiSelect.Options {
+							options = append(options, opt.Name)
+						}
+						propInfo["options"] = options
+					}
+					if prop.Status != nil {
+						var options []string
+						for _, opt := range prop.Status.Options {
+							options = append(options, opt.Name)
+						}
+						propInfo["options"] = options
+					}
+					schema[name] = propInfo
+				}
+
+				// Get title
+				var title string
+				if len(db.Title) > 0 {
+					title = db.Title[0].PlainText
+				}
+
+				result := map[string]any{
+					"id":     db.ID,
+					"title":  title,
+					"url":    db.URL,
+					"schema": schema,
+				}
+
+				data, _ := json.MarshalIndent(result, "", "  ")
+				return string(data), nil
+			})
+
+			// Register notion_query_database tool
+			server.RegisterTool("notion_query_database", func(ctx any, args map[string]any) (string, error) {
+				dbID, _ := args["database_id"].(string)
+				if dbID == "" {
+					return "", fmt.Errorf("database_id is required")
+				}
+
+				params := notion.QueryParams{
+					PageSize: 50,
+				}
+
+				// Parse optional filter JSON
+				if filterStr, ok := args["filter"].(string); ok && filterStr != "" {
+					var filter any
+					if err := json.Unmarshal([]byte(filterStr), &filter); err != nil {
+						return "", fmt.Errorf("invalid filter JSON: %w", err)
+					}
+					params.Filter = filter
+				}
+
+				// Optional sort
+				if sortProp, ok := args["sort_property"].(string); ok && sortProp != "" {
+					direction := "descending"
+					if d, ok := args["sort_direction"].(string); ok && d != "" {
+						direction = d
+					}
+					params.Sorts = []notion.Sort{{
+						Property:  sortProp,
+						Direction: direction,
+					}}
+				}
+
+				result, err := notionClient.QueryDatabase(dbID, params)
+				if err != nil {
+					return "", err
+				}
+
+				// Format results
+				var output []map[string]any
+				for _, obj := range result.Results {
+					props := make(map[string]string)
+					for name := range obj.Properties {
+						props[name] = obj.GetPropertyText(name)
+					}
+					output = append(output, map[string]any{
+						"id":         obj.ID,
+						"title":      obj.GetTitle(),
+						"properties": props,
+					})
+				}
+
+				data, _ := json.MarshalIndent(map[string]any{
+					"results":  output,
+					"has_more": result.HasMore,
+					"count":    len(output),
+				}, "", "  ")
+				return string(data), nil
+			})
+		}
+	} else {
+		log.Println("Notion integration disabled (NOTION_API_KEY not set)")
+	}
 
 	// Run server
 	if err := server.Run(); err != nil {

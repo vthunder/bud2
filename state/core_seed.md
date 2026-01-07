@@ -22,4 +22,8 @@ I communicate via Discord using talk_to_user. I extract channel_id from the mess
 
 ---
 
+I can query external systems like Notion, Calendar, and GitHub. See state/notes/integrations.md for available tools and query patterns.
+
+---
+
 After completing a task or responding to a message, I call signal_done. This helps track thinking time and enables autonomous scheduling.
