@@ -1,9 +1,39 @@
 package gtd
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+// validWhenValues contains the allowed static values for the When field
+var validWhenValues = map[string]bool{
+	"inbox":   true,
+	"today":   true,
+	"anytime": true,
+	"someday": true,
+}
+
+// datePattern matches YYYY-MM-DD format
+var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// isValidWhen checks if a when value is valid (static value or date pattern)
+func isValidWhen(when string) bool {
+	if when == "" {
+		return true // empty defaults to "inbox" in AddTask
+	}
+	if validWhenValues[when] {
+		return true
+	}
+	return datePattern.MatchString(when)
+}
 
 // ValidateTask validates a task against GTD rules
 func (s *GTDStore) ValidateTask(task *Task) error {
+	// Validate when field
+	if !isValidWhen(task.When) {
+		return fmt.Errorf("invalid when value '%s': must be inbox, today, anytime, someday, or a date (YYYY-MM-DD)", task.When)
+	}
+
 	// Inbox tasks cannot have project, area, or heading
 	if task.When == "inbox" {
 		if task.Project != "" {

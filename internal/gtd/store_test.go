@@ -350,4 +350,31 @@ func TestGTDStore_Validation(t *testing.T) {
 	if err := store.ValidateTask(task3); err != nil {
 		t.Errorf("Unexpected validation error: %v", err)
 	}
+
+	// Test when field validation
+	// Invalid when value
+	invalidWhenTask := &Task{Title: "Test", When: "invalid_value"}
+	if err := store.ValidateTask(invalidWhenTask); err == nil {
+		t.Error("Expected validation error for invalid when value")
+	}
+
+	// Valid when values
+	validWhenValues := []string{"inbox", "today", "anytime", "someday", "2024-01-15", ""}
+	for _, when := range validWhenValues {
+		taskWithWhen := &Task{Title: "Test", When: when}
+		// Note: "inbox" tasks can't have project/area, but we're just testing the when value here
+		if when == "inbox" || when == "" {
+			taskWithWhen.Project = ""
+			taskWithWhen.Area = ""
+		}
+		if err := store.ValidateTask(taskWithWhen); err != nil {
+			t.Errorf("Unexpected validation error for when='%s': %v", when, err)
+		}
+	}
+
+	// Test invalid date format
+	invalidDateTask := &Task{Title: "Test", When: "01-15-2024"}
+	if err := store.ValidateTask(invalidDateTask); err == nil {
+		t.Error("Expected validation error for invalid date format (MM-DD-YYYY)")
+	}
 }

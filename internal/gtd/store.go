@@ -70,8 +70,8 @@ func (s *GTDStore) Load() error {
 
 // Save writes the GTD data to disk
 func (s *GTDStore) Save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
