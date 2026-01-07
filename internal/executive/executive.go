@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/vthunder/bud2/internal/budget"
@@ -15,9 +14,8 @@ import (
 
 // Executive manages Claude sessions for threads
 type Executive struct {
-	tmux     *Tmux
-	sessions map[string]*ClaudeSession
-	mu       sync.RWMutex
+	tmux           *Tmux
+	sessionManager *SessionManager
 
 	// Dependencies
 	percepts *memory.PerceptPool
@@ -42,13 +40,14 @@ type ExecutiveConfig struct {
 
 // New creates a new Executive
 func New(percepts *memory.PerceptPool, threads *memory.ThreadPool, outbox *memory.Outbox, cfg ExecutiveConfig) *Executive {
+	tmux := NewTmux()
 	return &Executive{
-		tmux:     NewTmux(),
-		sessions: make(map[string]*ClaudeSession),
-		percepts: percepts,
-		threads:  threads,
-		outbox:   outbox,
-		config:   cfg,
+		tmux:           tmux,
+		sessionManager: NewSessionManager(threads, tmux),
+		percepts:       percepts,
+		threads:        threads,
+		outbox:         outbox,
+		config:         cfg,
 	}
 }
 
@@ -116,7 +115,11 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 		log.Printf("[executive] Thread %s has new percepts since last processing", thread.ID)
 	}
 
-	session := e.getOrCreateSession(thread.ID)
+	// Focus this thread (handles session limits, freezing old sessions if needed)
+	session, err := e.sessionManager.Focus(thread)
+	if err != nil {
+		return fmt.Errorf("failed to focus thread: %w", err)
+	}
 
 	// Check if this is the first message in this session
 	isFirstMessage := session.IsFirstMessage()
@@ -387,42 +390,32 @@ func (e *Executive) toolUpdateThreadState(thread *types.Thread, args map[string]
 	return "Thread state updated", nil
 }
 
-// getOrCreateSession gets or creates a Claude session for a thread
-func (e *Executive) getOrCreateSession(threadID string) *ClaudeSession {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if session, ok := e.sessions[threadID]; ok {
-		return session
-	}
-
-	session := NewClaudeSession(threadID, e.tmux)
-	e.sessions[threadID] = session
-	return session
+// GetSessionManager returns the session manager for external access
+func (e *Executive) GetSessionManager() *SessionManager {
+	return e.sessionManager
 }
 
-// CloseThread closes the session for a thread
+// SessionStats returns current session statistics
+func (e *Executive) SessionStats() SessionStats {
+	return e.sessionManager.Stats()
+}
+
+// CloseThread freezes the session for a thread (preserves session ID for resume)
 func (e *Executive) CloseThread(threadID string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if session, ok := e.sessions[threadID]; ok {
-		if err := session.Close(); err != nil {
-			return err
-		}
-		delete(e.sessions, threadID)
+	thread := e.threads.Get(threadID)
+	if thread == nil {
+		return nil // thread doesn't exist
 	}
-	return nil
+	return e.sessionManager.Freeze(thread)
 }
 
-// ListSessions returns all active session thread IDs
+// ListSessions returns thread IDs with active sessions (focused or active)
 func (e *Executive) ListSessions() []string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	ids := make([]string, 0, len(e.sessions))
-	for id := range e.sessions {
-		ids = append(ids, id)
+	var ids []string
+	for _, t := range e.threads.All() {
+		if t.SessionState == types.SessionFocused || t.SessionState == types.SessionActive {
+			ids = append(ids, t.ID)
+		}
 	}
 	return ids
 }

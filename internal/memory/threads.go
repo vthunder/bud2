@@ -67,6 +67,29 @@ func (t *ThreadPool) Active() *types.Thread {
 	return nil
 }
 
+// BySessionState returns threads with a given session state
+func (t *ThreadPool) BySessionState(state types.SessionState) []*types.Thread {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	result := make([]*types.Thread, 0)
+	for _, thread := range t.threads {
+		if thread.SessionState == state {
+			result = append(result, thread)
+		}
+	}
+	return result
+}
+
+// Focused returns the focused thread (should be at most one)
+func (t *ThreadPool) Focused() *types.Thread {
+	threads := t.BySessionState(types.SessionFocused)
+	if len(threads) > 0 {
+		return threads[0]
+	}
+	return nil
+}
+
 // All returns all threads
 func (t *ThreadPool) All() []*types.Thread {
 	t.mu.RLock()

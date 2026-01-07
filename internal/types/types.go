@@ -20,14 +20,24 @@ func (p *Percept) Recency() float64 {
 	return time.Since(p.Timestamp).Seconds()
 }
 
-// ThreadStatus represents the state of a thread
+// ThreadStatus represents the logical state of a thread (conversation state)
 type ThreadStatus string
 
 const (
-	StatusActive   ThreadStatus = "active"
-	StatusPaused   ThreadStatus = "paused"
-	StatusFrozen   ThreadStatus = "frozen"
-	StatusComplete ThreadStatus = "complete"
+	StatusActive   ThreadStatus = "active"   // conversation is active
+	StatusPaused   ThreadStatus = "paused"   // conversation paused
+	StatusFrozen   ThreadStatus = "frozen"   // conversation frozen (deprecated, use SessionState)
+	StatusComplete ThreadStatus = "complete" // conversation complete
+)
+
+// SessionState represents the runtime state of a thread's Claude session
+type SessionState string
+
+const (
+	SessionFocused SessionState = "focused" // has attention, Claude running (limit: 1)
+	SessionActive  SessionState = "active"  // Claude running in background (limit: 3)
+	SessionFrozen  SessionState = "frozen"  // no Claude process, session on disk (unlimited)
+	SessionNone    SessionState = ""        // no session yet
 )
 
 // Thread is a train of thought with computed salience
@@ -42,6 +52,10 @@ type Thread struct {
 	CreatedAt   time.Time         `json:"created_at"`
 	LastActive  time.Time         `json:"last_active"`
 	ProcessedAt *time.Time        `json:"processed_at,omitempty"` // when last sent to executive
+
+	// Session management
+	SessionID    string       `json:"session_id,omitempty"`    // Claude session ID for resume
+	SessionState SessionState `json:"session_state,omitempty"` // runtime state: focused/active/frozen
 
 	// Feature accumulation (for association matching)
 	Features    ThreadFeatures    `json:"features"`
