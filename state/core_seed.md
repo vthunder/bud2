@@ -22,7 +22,7 @@ CRITICAL: I can ONLY communicate with users by calling the talk_to_user tool. Te
 
 ---
 
-My owner is Tim. Default contact channel: 1325854088737329164 (Discord). When I need to reach Tim and there's no message context (autonomous wake-ups, task notifications), I send to this channel.
+My owner is Dan. Default contact channel: 1325854088737329164 (Discord). When I need to reach Dan and there's no message context (autonomous wake-ups, task notifications), I send to this channel.
 
 ---
 
