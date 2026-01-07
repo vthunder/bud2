@@ -177,9 +177,10 @@ func (a *Attention) computeSalience(thread *types.Thread) float64 {
 		perceptBoost = 0.5 + (perceptBoost-0.5)*0.5
 	}
 
-	// Check for high-priority tags
+	// Check for high-priority tags and urgency
 	tagBoost := 0.0
 	for _, p := range percepts {
+		// Tag-based boosts
 		for _, tag := range p.Tags {
 			switch tag {
 			case "from:owner":
@@ -189,6 +190,15 @@ func (a *Attention) computeSalience(thread *types.Thread) float64 {
 			case "dm":
 				tagBoost = max(tagBoost, 0.1)
 			}
+		}
+
+		// Urgency boost based on intensity (for reminders, high-priority tasks)
+		// P1 tasks (intensity >= 0.9) beat owner messages
+		// P2 urgent (intensity >= 0.8) equals owner messages
+		if p.Intensity >= 0.9 {
+			tagBoost = max(tagBoost, 0.3)
+		} else if p.Intensity >= 0.8 {
+			tagBoost = max(tagBoost, 0.2)
 		}
 	}
 
