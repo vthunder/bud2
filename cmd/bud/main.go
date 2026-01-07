@@ -123,7 +123,9 @@ func main() {
 	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
 	cpuWatcher.Start()
 
-	log.Printf("[main] Session tracker initialized (daily budget: %.0f min)", dailyBudgetMinutes)
+	todayUsed := sessionTracker.TodayThinkingMinutes()
+	log.Printf("[main] Session tracker initialized (used today: %.1f min, budget: %.0f min, remaining: %.1f min)",
+		todayUsed, dailyBudgetMinutes, dailyBudgetMinutes-todayUsed)
 
 	// Initialize attention first (executive needs it for trace retrieval)
 	var attn *attention.Attention

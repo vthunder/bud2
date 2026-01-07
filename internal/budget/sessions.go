@@ -61,18 +61,8 @@ func (t *SessionTracker) CompleteSession(sessionID string) *Session {
 
 	session, ok := t.active[sessionID]
 	if !ok {
-		// Session not found - might have been started before tracker existed
-		// Create a placeholder with unknown start time
-		now := time.Now()
-		session = &Session{
-			ID:          sessionID,
-			StartedAt:   now, // Unknown, use now
-			CompletedAt: &now,
-			DurationSec: 0, // Unknown
-		}
-		t.completed = append(t.completed, session)
-		t.save()
-		return session
+		// Session not found - ignore unknown sessions to avoid bogus 0-duration entries
+		return nil
 	}
 
 	now := time.Now()
