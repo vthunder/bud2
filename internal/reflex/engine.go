@@ -590,22 +590,24 @@ func (e *Engine) createGTDActions() {
 			if len(tasks) == 0 {
 				return "No tasks for today", nil
 			}
-			var lines []string
-			for i, t := range tasks {
-				lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
+			lines := formatTaskList(tasks, 1800)
+			header := "Today's tasks:\n"
+			if len(lines) < len(tasks) {
+				header = fmt.Sprintf("Today (%d of %d):\n", len(lines), len(tasks))
 			}
-			return "Today's tasks:\n" + strings.Join(lines, "\n"), nil
+			return header + strings.Join(lines, "\n"), nil
 
 		case "gtd_show_inbox":
 			tasks := e.gtdStore.GetTasks("inbox", "", "")
 			if len(tasks) == 0 {
 				return "Inbox is empty", nil
 			}
-			var lines []string
-			for i, t := range tasks {
-				lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
+			lines := formatTaskList(tasks, 1800)
+			header := "Inbox:\n"
+			if len(lines) < len(tasks) {
+				header = fmt.Sprintf("Inbox (%d of %d):\n", len(lines), len(tasks))
 			}
-			return "Inbox:\n" + strings.Join(lines, "\n"), nil
+			return header + strings.Join(lines, "\n"), nil
 
 		case "gtd_add_inbox":
 			// Extract what to add from content
@@ -636,4 +638,28 @@ func (e *Engine) createGTDActions() {
 			return nil, fmt.Errorf("unknown GTD intent: %s", intent)
 		}
 	}))
+}
+
+// formatTaskList formats tasks into numbered lines, truncating to fit within maxLen
+func formatTaskList(tasks []gtd.Task, maxLen int) []string {
+	var lines []string
+	totalLen := 0
+	for i, t := range tasks {
+		line := fmt.Sprintf("%d. %s", i+1, t.Title)
+		// Truncate long titles
+		if len(line) > 80 {
+			line = line[:77] + "..."
+		}
+		// Check if adding this line would exceed limit
+		newLen := totalLen + len(line)
+		if len(lines) > 0 {
+			newLen++ // account for newline
+		}
+		if newLen > maxLen {
+			break
+		}
+		lines = append(lines, line)
+		totalLen = newLen
+	}
+	return lines
 }
