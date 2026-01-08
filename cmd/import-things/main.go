@@ -28,9 +28,10 @@ const (
 	statusCompleted = 3
 
 	// Start values
-	startSomeday  = 0
-	startAnytime  = 1
-	startToday    = 2 // or scheduled
+	// start=0 means "not started" - this is inbox if no project/area, or someday if in a project
+	startNotStarted = 0
+	startAnytime    = 1
+	startToday      = 2 // or scheduled
 )
 
 // Apple's reference date for date integers (2001-01-01)
@@ -249,7 +250,9 @@ func importProjects(db *sql.DB) ([]Project, map[string]string, error) {
 			return nil, nil, err
 		}
 
-		when := convertWhen(start, startDate)
+		// Projects are always "organized" (they are containers themselves)
+		// so start=0 means someday for projects, not inbox
+		when := convertWhen(start, startDate, true)
 		gtdStatus := convertStatus(status)
 
 		projects = append(projects, Project{
@@ -291,7 +294,9 @@ func importTasks(db *sql.DB, headingMap map[string]string) ([]Task, error) {
 			return nil, err
 		}
 
-		when := convertWhen(start, startDate)
+		// Determine if task has project or area (affects inbox vs someday for start=0)
+		hasProjectOrArea := project != "" || area != ""
+		when := convertWhen(start, startDate, hasProjectOrArea)
 		gtdStatus := convertStatus(status)
 
 		// Convert heading UUID to title
@@ -306,10 +311,6 @@ func importTasks(db *sql.DB, headingMap map[string]string) ([]Task, error) {
 			t := time.Unix(int64(stopDate.Float64), 0)
 			completedAt = &t
 		}
-
-		// Note: Things doesn't have a persistent "inbox" state - it's a virtual view.
-		// We import tasks with their actual start value (anytime, someday, today, or date).
-		// The GTD inbox is for new captures, not imported historical data.
 
 		task := Task{
 			ID:          uuid,
@@ -363,10 +364,15 @@ func getChecklist(db *sql.DB, taskUUID string) ([]ChecklistItem, error) {
 	return items, nil
 }
 
-func convertWhen(start int, startDate sql.NullInt64) string {
+func convertWhen(start int, startDate sql.NullInt64, hasProjectOrArea bool) string {
 	switch start {
-	case startSomeday:
-		return "someday"
+	case startNotStarted:
+		// start=0 with no project/area = inbox (uncategorized, needs processing)
+		// start=0 with project/area = someday (deferred within that context)
+		if hasProjectOrArea {
+			return "someday"
+		}
+		return "inbox"
 	case startToday:
 		if startDate.Valid && startDate.Int64 > 0 && startDate.Int64 < 50000 {
 			// Convert Apple date integer (days since 2001-01-01) to YYYY-MM-DD
