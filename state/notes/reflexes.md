@@ -38,6 +38,67 @@ pipeline:
     message: "{{summary}}"
 ```
 
+## Classifier Types
+
+### Regex Classifier (default)
+
+Fast pattern matching for specific phrases:
+
+```yaml
+name: quick-add
+trigger:
+  source: discord
+  classifier: regex  # or omit - regex is default
+  pattern: "^add (.+) to inbox$"
+  extract: [item]
+pipeline:
+  - action: gtd_add
+    title: "{{.item}}"
+  - action: reply
+    message: "Added '{{.item}}' to inbox"
+```
+
+### Ollama Classifier
+
+Uses local LLM for natural language understanding:
+
+```yaml
+name: gtd-handler
+trigger:
+  source: discord
+  classifier: ollama
+  model: qwen2.5:7b  # optional, this is default
+  intents:
+    - gtd_show_today
+    - gtd_show_inbox
+    - gtd_add_inbox
+    - not_gtd
+  # prompt: "Custom classification prompt..."  # optional
+pipeline:
+  - action: gate
+    condition: "{{.intent}} == not_gtd"
+    stop: true
+  - action: gtd_dispatch
+    output: response
+  - action: reply
+    message: "{{.response}}"
+```
+
+The `{{.intent}}` variable is populated with the classified intent.
+
+### None Classifier
+
+Always matches if source/type filters pass:
+
+```yaml
+name: catch-all
+trigger:
+  source: discord
+  classifier: none
+pipeline:
+  # ...
+```
+
 ## Core Actions (Built-in)
 
 | Action | Description |
@@ -53,6 +114,30 @@ pipeline:
 | `add_bud_task` | Add to tasks.json |
 | `add_idea` | Add to ideas.json |
 | `log` | Write to journal |
+| `gate` | Conditionally stop pipeline |
+| `gtd_list` | List GTD tasks |
+| `gtd_add` | Add task to inbox |
+| `gtd_complete` | Complete a task |
+| `gtd_dispatch` | Route by intent |
+
+## GTD Actions
+
+| Action | Description | Parameters |
+|--------|-------------|------------|
+| `gtd_list` | List tasks | `when` (inbox, today, anytime, someday) |
+| `gtd_add` | Add task to inbox | `title`, `notes` (optional) |
+| `gtd_complete` | Complete a task | `id` or `title` (fuzzy match) |
+| `gtd_dispatch` | Route by intent | uses `{{.intent}}` from classifier |
+
+## Gate Action
+
+Conditionally stop pipeline execution:
+
+```yaml
+- action: gate
+  condition: "{{.intent}} == not_gtd"
+  stop: true
+```
 
 ## Creating Reflexes
 
