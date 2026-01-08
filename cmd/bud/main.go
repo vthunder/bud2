@@ -192,7 +192,7 @@ func main() {
 		}
 
 		// Try reflexes first
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		handled, results := reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
 

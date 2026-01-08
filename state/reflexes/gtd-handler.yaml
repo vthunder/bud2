@@ -2,7 +2,7 @@ name: gtd-handler
 description: Handle GTD queries using Ollama classification
 priority: 10
 trigger:
-  source: discord
+  source: inbox
   classifier: ollama
   model: qwen2.5:7b
   intents:
