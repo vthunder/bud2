@@ -44,6 +44,8 @@ type ExecutiveConfig struct {
 	SessionTracker    *budget.SessionTracker                                                       // tracks thinking time
 	StartTyping       func(channelID string)                                                       // start typing indicator
 	StopTyping        func(channelID string)                                                       // stop typing indicator
+	OnExecWake        func(threadID, context string)                                               // called when executive starts processing
+	OnExecDone        func(threadID, summary string, durationSec float64)                          // called when executive finishes
 }
 
 // New creates a new Executive
@@ -141,6 +143,20 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 				e.config.StopTyping(channelID)
 			}
 		}()
+	}
+
+	// Log executive wake
+	if e.config.OnExecWake != nil {
+		// Extract context from percepts
+		context := ""
+		percepts := e.percepts.GetMany(thread.PerceptRefs)
+		for _, p := range percepts {
+			if c, ok := p.Data["content"].(string); ok {
+				context = truncate(c, 100)
+				break
+			}
+		}
+		e.config.OnExecWake(thread.ID, context)
 	}
 
 	// Set up tool handling

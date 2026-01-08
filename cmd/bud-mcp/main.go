@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/journal"
@@ -310,6 +311,95 @@ func main() {
 
 		if len(entries) == 0 {
 			return "No journal entries today yet.", nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Initialize activity log for observability queries
+	activityLog := activity.New(statePath)
+
+	// Register activity_recent tool (get recent activity entries)
+	server.RegisterTool("activity_recent", func(ctx any, args map[string]any) (string, error) {
+		count := 50 // default
+		if n, ok := args["count"].(float64); ok && n > 0 {
+			count = int(n)
+		}
+
+		entries, err := activityLog.Recent(count)
+		if err != nil {
+			return "", fmt.Errorf("failed to get activity entries: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return "No activity entries yet.", nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Register activity_today tool (get today's activity entries)
+	server.RegisterTool("activity_today", func(ctx any, args map[string]any) (string, error) {
+		entries, err := activityLog.Today()
+		if err != nil {
+			return "", fmt.Errorf("failed to get today's activity: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return "No activity entries today yet.", nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Register activity_search tool (search activity by text)
+	server.RegisterTool("activity_search", func(ctx any, args map[string]any) (string, error) {
+		query, _ := args["query"].(string)
+		if query == "" {
+			return "", fmt.Errorf("query is required")
+		}
+
+		limit := 100 // default
+		if n, ok := args["limit"].(float64); ok && n > 0 {
+			limit = int(n)
+		}
+
+		entries, err := activityLog.Search(query, limit)
+		if err != nil {
+			return "", fmt.Errorf("failed to search activity: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return fmt.Sprintf("No activity entries matching '%s'.", query), nil
+		}
+
+		data, _ := json.MarshalIndent(entries, "", "  ")
+		return string(data), nil
+	})
+
+	// Register activity_by_type tool (filter activity by event type)
+	server.RegisterTool("activity_by_type", func(ctx any, args map[string]any) (string, error) {
+		typeStr, _ := args["type"].(string)
+		if typeStr == "" {
+			// Return list of valid types
+			return "Valid types: input, reflex, reflex_pass, executive_wake, executive_done, action, decision, error", nil
+		}
+
+		limit := 50 // default
+		if n, ok := args["limit"].(float64); ok && n > 0 {
+			limit = int(n)
+		}
+
+		entries, err := activityLog.ByType(activity.Type(typeStr), limit)
+		if err != nil {
+			return "", fmt.Errorf("failed to filter activity: %w", err)
+		}
+
+		if len(entries) == 0 {
+			return fmt.Sprintf("No activity entries of type '%s'.", typeStr), nil
 		}
 
 		data, _ := json.MarshalIndent(entries, "", "  ")

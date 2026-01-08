@@ -21,10 +21,11 @@ type Signal struct {
 
 // SignalProcessor reads signals from signals.jsonl and processes them
 type SignalProcessor struct {
-	statePath string
-	tracker   *SessionTracker
-	offset    int64
-	mu        sync.Mutex
+	statePath  string
+	tracker    *SessionTracker
+	offset     int64
+	mu         sync.Mutex
+	onComplete func(session *Session, summary string) // called when session completes
 }
 
 // NewSignalProcessor creates a new processor
@@ -33,6 +34,11 @@ func NewSignalProcessor(statePath string, tracker *SessionTracker) *SignalProces
 		statePath: statePath,
 		tracker:   tracker,
 	}
+}
+
+// SetOnComplete sets the callback for session completion
+func (p *SignalProcessor) SetOnComplete(cb func(session *Session, summary string)) {
+	p.onComplete = cb
 }
 
 // ProcessSignals reads new signals from the file and processes them
@@ -88,6 +94,10 @@ func (p *SignalProcessor) handleSignal(signal Signal) {
 			if session != nil && session.DurationSec > 0 {
 				log.Printf("[signals] Session %s completed in %.1f seconds: %s",
 					signal.SessionID, session.DurationSec, signal.Summary)
+				// Call completion callback
+				if p.onComplete != nil {
+					p.onComplete(session, signal.Summary)
+				}
 			} else {
 				log.Printf("[signals] Session done signal received (unknown start): %s", signal.Summary)
 			}

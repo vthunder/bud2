@@ -28,6 +28,9 @@ type CPUWatcher struct {
 	// Control
 	stopChan chan struct{}
 	running  bool
+
+	// Callbacks
+	onComplete func(session *Session, summary string)
 }
 
 type claudeProcessState struct {
@@ -60,6 +63,11 @@ func (w *CPUWatcher) SetThresholds(idle, active float64, idleDur time.Duration) 
 	w.idleThreshold = idle
 	w.activeThreshold = active
 	w.idleDuration = idleDur
+}
+
+// SetOnComplete sets the callback for session completion
+func (w *CPUWatcher) SetOnComplete(cb func(session *Session, summary string)) {
+	w.onComplete = cb
 }
 
 // Start begins watching Claude processes
@@ -275,6 +283,10 @@ func (w *CPUWatcher) onSessionCompleted(state *claudeProcessState, now time.Time
 	if completed != nil {
 		log.Printf("[cpuwatcher] Completed session %s via CPU detection (%.1f sec, fallback for signal_done)",
 			oldestSession.ID, completed.DurationSec)
+		// Call completion callback
+		if w.onComplete != nil {
+			w.onComplete(completed, "Completed via CPU idle detection")
+		}
 	}
 }
 

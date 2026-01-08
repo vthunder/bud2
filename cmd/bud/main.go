@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/attention"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/effectors"
@@ -117,17 +118,27 @@ func main() {
 		log.Printf("Warning: failed to load GTD store: %v", err)
 	}
 
+	// Initialize activity logger for observability
+	activityLog := activity.New(statePath)
+
 	// Initialize session tracker and signal processor for thinking time budget
 	sessionTracker := budget.NewSessionTracker(statePath)
 	signalProcessor := budget.NewSignalProcessor(statePath, sessionTracker)
 	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
 	thinkingBudget.DailyMinutes = dailyBudgetMinutes
 
+	// Set up session completion callback for activity logging
+	sessionCompleteCallback := func(session *budget.Session, summary string) {
+		activityLog.LogExecDone(summary, session.ThreadID, session.DurationSec, "signal_done")
+	}
+
 	// Start signal processor (polls signals.jsonl for session completions)
+	signalProcessor.SetOnComplete(sessionCompleteCallback)
 	signalProcessor.Start(500 * time.Millisecond)
 
 	// Start CPU watcher as fallback for signal_done
 	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
+	cpuWatcher.SetOnComplete(sessionCompleteCallback)
 	cpuWatcher.Start()
 
 	todayUsed := sessionTracker.TodayThinkingMinutes()
@@ -193,6 +204,9 @@ func main() {
 			return result
 		},
 		SessionTracker: sessionTracker,
+		OnExecWake: func(threadID, context string) {
+			activityLog.LogExecWake("Executive processing", threadID, context)
+		},
 	})
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
@@ -206,6 +220,23 @@ func main() {
 			content = c
 		}
 
+		// Extract author for activity logging
+		author := ""
+		if a, ok := percept.Data["author"].(string); ok {
+			author = a
+		}
+		channelID := ""
+		if ch, ok := percept.Data["channel_id"].(string); ok {
+			channelID = ch
+		}
+
+		// Log input event
+		inputSummary := content
+		if author != "" {
+			inputSummary = fmt.Sprintf("%s: %s", author, truncate(content, 100))
+		}
+		activityLog.LogInput(inputSummary, percept.Source, channelID)
+
 		// Try reflexes first
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -216,10 +247,24 @@ func main() {
 			// Success && !Stopped means reflex actually handled it
 			// Stopped means gate fired (e.g., not_gtd) - let executive handle
 			if result.Stopped {
+				intent, _ := result.Output["intent"].(string)
 				log.Printf("[main] Reflex %s passed (gate stopped) - routing to executive", result.ReflexName)
+				activityLog.LogReflexPass(
+					fmt.Sprintf("Not handled by %s, routing to executive", result.ReflexName),
+					intent,
+					content,
+				)
 			} else if result.Success {
 				response, _ := result.Output["response"].(string)
 				intent, _ := result.Output["intent"].(string)
+
+				// Log to activity log
+				activityLog.LogReflex(
+					fmt.Sprintf("Handled %s query", intent),
+					intent,
+					content,
+					response,
+				)
 
 				// Add to reflex log for short-term context (always)
 				reflexLog.Add(content, response, intent, result.ReflexName)
@@ -309,6 +354,9 @@ func main() {
 			func(id string) { outbox.MarkComplete(id) },
 		)
 		discordEffector.SetOnSend(captureResponse)
+		discordEffector.SetOnAction(func(actionType, channelID, content, source string) {
+			activityLog.LogAction(fmt.Sprintf("%s: %s", actionType, truncate(content, 80)), source, channelID, content)
+		})
 		discordEffector.Start()
 
 		// Wire up typing indicator to executive

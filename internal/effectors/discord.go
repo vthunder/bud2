@@ -17,7 +17,8 @@ type DiscordEffector struct {
 	pollFile     func() (int, error) // Poll for new actions from file (MCP writes)
 	getActions   func() []*types.Action
 	markComplete func(id string)
-	onSend       func(channelID, content string) // called when message is sent (for memory)
+	onSend       func(channelID, content string)                   // called when message is sent (for memory)
+	onAction     func(actionType, channelID, content, source string) // called when action is executed (for activity log)
 	stopChan     chan struct{}
 
 	// Typing indicator state
@@ -47,6 +48,11 @@ func NewDiscordEffector(
 // SetOnSend sets a callback for when messages are sent (for memory capture)
 func (e *DiscordEffector) SetOnSend(callback func(channelID, content string)) {
 	e.onSend = callback
+}
+
+// SetOnAction sets a callback for when actions are executed (for activity logging)
+func (e *DiscordEffector) SetOnAction(callback func(actionType, channelID, content, source string)) {
+	e.onAction = callback
 }
 
 // Start begins polling the outbox for actions
@@ -129,8 +135,14 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 	}
 
 	_, err := e.session.ChannelMessageSend(channelID, content)
-	if err == nil && e.onSend != nil {
-		e.onSend(channelID, content)
+	if err == nil {
+		if e.onSend != nil {
+			e.onSend(channelID, content)
+		}
+		if e.onAction != nil {
+			source, _ := action.Payload["source"].(string)
+			e.onAction("send_message", channelID, content, source)
+		}
 	}
 	return err
 }
@@ -151,7 +163,12 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 		return fmt.Errorf("missing emoji")
 	}
 
-	return e.session.MessageReactionAdd(channelID, messageID, emoji)
+	err := e.session.MessageReactionAdd(channelID, messageID, emoji)
+	if err == nil && e.onAction != nil {
+		source, _ := action.Payload["source"].(string)
+		e.onAction("add_reaction", channelID, emoji, source)
+	}
+	return err
 }
 
 // StartTyping starts showing the typing indicator in a channel.
