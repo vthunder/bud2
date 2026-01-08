@@ -307,17 +307,15 @@ func importTasks(db *sql.DB, headingMap map[string]string) ([]Task, error) {
 			completedAt = &t
 		}
 
-		// Inbox detection: unorganized tasks (no project, no area, anytime)
-		finalWhen := when
-		if when == "anytime" && project == "" && area == "" && gtdStatus == "open" {
-			finalWhen = "inbox"
-		}
+		// Note: Things doesn't have a persistent "inbox" state - it's a virtual view.
+		// We import tasks with their actual start value (anytime, someday, today, or date).
+		// The GTD inbox is for new captures, not imported historical data.
 
 		task := Task{
 			ID:          uuid,
 			Title:       title,
 			Notes:       notes,
-			When:        finalWhen,
+			When:        when,
 			Project:     project,
 			Heading:     headingTitle,
 			Area:        area,
