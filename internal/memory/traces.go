@@ -277,3 +277,45 @@ func (p *TracePool) SetCore(id string, isCore bool) bool {
 	}
 	return false
 }
+
+// Delete removes a trace by ID, returns true if found
+func (p *TracePool) Delete(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, ok := p.traces[id]; ok {
+		delete(p.traces, id)
+		return true
+	}
+	return false
+}
+
+// ClearNonCore removes all non-core traces, returns count deleted
+func (p *TracePool) ClearNonCore() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	cleared := 0
+	for id, trace := range p.traces {
+		if !trace.IsCore {
+			delete(p.traces, id)
+			cleared++
+		}
+	}
+	return cleared
+}
+
+// ClearCore removes all core traces, returns count deleted
+func (p *TracePool) ClearCore() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	cleared := 0
+	for id, trace := range p.traces {
+		if trace.IsCore {
+			delete(p.traces, id)
+			cleared++
+		}
+	}
+	return cleared
+}
