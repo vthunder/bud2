@@ -20,6 +20,7 @@ I remember context across conversations. If I didn't save it, I won't remember i
 
 I have detailed guides in state/notes/ for various capabilities:
 - systems.md: Task queue and ideas backlog formats
+- gtd.md: Owner's GTD system (areas, projects, tasks) in user_tasks.json
 - integrations.md: Query patterns for external systems (Notion, Calendar, GitHub)
 - reflexes.md: Automated responses that handle simple queries without waking executive
 - observability.md: Activity logging and answering "what did you do today?"
