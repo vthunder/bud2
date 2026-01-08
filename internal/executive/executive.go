@@ -26,16 +26,24 @@ type Executive struct {
 	config ExecutiveConfig
 }
 
+// ReflexLogEntry represents a reflex interaction for context
+type ReflexLogEntry struct {
+	Query    string
+	Response string
+	Intent   string
+}
+
 // ExecutiveConfig holds executive configuration
 type ExecutiveConfig struct {
-	Model           string                                              // Claude model to use
-	WorkDir         string                                              // Working directory
-	UseInteractive  bool                                                // Use tmux interactive mode (for debugging)
-	GetActiveTraces func(limit int, excludeSources []string, contextEmb []float64) []*types.Trace // function to get activated memory traces
-	GetCoreTraces   func() []*types.Trace                               // function to get core identity traces
-	SessionTracker  *budget.SessionTracker                              // tracks thinking time
-	StartTyping     func(channelID string)                              // start typing indicator
-	StopTyping      func(channelID string)                              // stop typing indicator
+	Model             string                                                                       // Claude model to use
+	WorkDir           string                                                                       // Working directory
+	UseInteractive    bool                                                                         // Use tmux interactive mode (for debugging)
+	GetActiveTraces   func(limit int, excludeSources []string, contextEmb []float64) []*types.Trace // function to get activated memory traces
+	GetCoreTraces     func() []*types.Trace                                                        // function to get core identity traces
+	GetUnsentReflex   func() []ReflexLogEntry                                                      // function to get unsent reflex interactions
+	SessionTracker    *budget.SessionTracker                                                       // tracks thinking time
+	StartTyping       func(channelID string)                                                       // start typing indicator
+	StopTyping        func(channelID string)                                                       // stop typing indicator
 }
 
 // New creates a new Executive
@@ -222,6 +230,19 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 			prompt.WriteString("## Identity\n")
 			for _, t := range coreTraces {
 				prompt.WriteString(fmt.Sprintf("- %s\n", t.Content))
+			}
+			prompt.WriteString("\n")
+		}
+	}
+
+	// Include unsent reflex interactions (recent reflex activity not yet seen by executive)
+	if e.config.GetUnsentReflex != nil {
+		reflexEntries := e.config.GetUnsentReflex()
+		if len(reflexEntries) > 0 {
+			prompt.WriteString("## Recent Reflex Activity\n")
+			prompt.WriteString("(These interactions were handled by reflexes without executive involvement)\n")
+			for _, entry := range reflexEntries {
+				prompt.WriteString(fmt.Sprintf("- User: %s\n  Bud: %s\n", entry.Query, entry.Response))
 			}
 			prompt.WriteString("\n")
 		}

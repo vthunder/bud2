@@ -161,6 +161,9 @@ func main() {
 	}
 	reflexEngine.SetGTDStore(gtdStore)
 
+	// Initialize reflex log for short-term context
+	reflexLog := reflex.NewLog(20) // Keep last 20 reflex interactions
+
 	// Set up reflex reply callback (will wire to outbox after effector is created)
 	var reflexReplyCallback func(channelID, message string) error
 	reflexEngine.SetReplyCallback(func(channelID, message string) error {
@@ -177,7 +180,19 @@ func main() {
 		UseInteractive:  useInteractive,
 		GetActiveTraces: attn.GetActivatedTraces,
 		GetCoreTraces:   attn.GetCoreTraces,
-		SessionTracker:  sessionTracker,
+		GetUnsentReflex: func() []executive.ReflexLogEntry {
+			entries := reflexLog.GetUnsent()
+			result := make([]executive.ReflexLogEntry, len(entries))
+			for i, e := range entries {
+				result[i] = executive.ReflexLogEntry{
+					Query:    e.Query,
+					Response: e.Response,
+					Intent:   e.Intent,
+				}
+			}
+			return result
+		},
+		SessionTracker: sessionTracker,
 	})
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
@@ -203,16 +218,24 @@ func main() {
 			if result.Stopped {
 				log.Printf("[main] Reflex %s passed (gate stopped) - routing to executive", result.ReflexName)
 			} else if result.Success {
-				// Create immediate traces for follow-up context
-				attn.CreateImmediateTrace(
-					fmt.Sprintf("User asked: %s", content),
-					"reflex-query",
-				)
-				if response, ok := result.Output["response"].(string); ok {
+				response, _ := result.Output["response"].(string)
+				intent, _ := result.Output["intent"].(string)
+
+				// Add to reflex log for short-term context (always)
+				reflexLog.Add(content, response, intent, result.ReflexName)
+
+				// Only create traces for mutations (state changes worth remembering)
+				if reflex.IsMutation(intent) {
 					attn.CreateImmediateTrace(
-						fmt.Sprintf("Bud responded: %s", response),
-						"reflex-response",
+						fmt.Sprintf("User added via reflex: %s", content),
+						"reflex-mutation",
 					)
+					if response != "" {
+						attn.CreateImmediateTrace(
+							fmt.Sprintf("Bud: %s", response),
+							"reflex-mutation-response",
+						)
+					}
 				}
 
 				// Mark percept as processed by reflex
@@ -221,7 +244,7 @@ func main() {
 				percept.Tags = append(percept.Tags, "reflex-handled")
 				percept.Intensity *= 0.3 // Lower intensity since reflex handled it
 
-				log.Printf("[main] Percept %s handled by reflex %s", percept.ID, result.ReflexName)
+				log.Printf("[main] Percept %s handled by reflex %s (intent: %s)", percept.ID, result.ReflexName, intent)
 
 				// Reflex handled it - add to pool for memory but skip executive
 				perceptPool.Add(percept)
