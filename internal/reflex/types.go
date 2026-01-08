@@ -34,6 +34,13 @@ type Trigger struct {
 	Prompt     string   `yaml:"prompt"`     // optional custom classification prompt
 }
 
+// MatchResult contains the result of matching a reflex
+type MatchResult struct {
+	Matched   bool
+	Extracted map[string]string
+	Intent    string // populated for ollama classifier
+}
+
 // Pipeline is a sequence of actions to execute
 type Pipeline []PipelineStep
 
@@ -46,46 +53,63 @@ type PipelineStep struct {
 }
 
 // Match checks if this reflex matches a percept
-func (r *Reflex) Match(source, typ, content string) (bool, map[string]string) {
+func (r *Reflex) Match(source, typ, content string) MatchResult {
 	// Check source filter
 	if r.Trigger.Source != "" && r.Trigger.Source != source {
-		return false, nil
+		return MatchResult{Matched: false}
 	}
 
 	// Check type filter
 	if r.Trigger.Type != "" && r.Trigger.Type != typ {
-		return false, nil
+		return MatchResult{Matched: false}
 	}
 
-	// Check pattern
-	if r.Trigger.Pattern == "" {
-		return true, nil // no pattern means always match (if source/type match)
+	// Determine classifier type (default to "regex")
+	classifier := r.Trigger.Classifier
+	if classifier == "" {
+		classifier = "regex"
 	}
 
-	// Compile pattern if needed
-	if r.compiledPattern == nil {
-		compiled, err := regexp.Compile(r.Trigger.Pattern)
-		if err != nil {
-			return false, nil
+	switch classifier {
+	case "none":
+		// Always match if filters pass
+		return MatchResult{Matched: true, Extracted: make(map[string]string)}
+
+	case "ollama":
+		// Return matched=true if filters pass; actual classification happens in engine
+		return MatchResult{Matched: true, Extracted: make(map[string]string)}
+
+	default: // "regex"
+		// Check pattern
+		if r.Trigger.Pattern == "" {
+			return MatchResult{Matched: true, Extracted: make(map[string]string)}
 		}
-		r.compiledPattern = compiled
-	}
 
-	// Match pattern
-	matches := r.compiledPattern.FindStringSubmatch(content)
-	if matches == nil {
-		return false, nil
-	}
-
-	// Extract named groups
-	extracted := make(map[string]string)
-	for i, name := range r.Trigger.Extract {
-		if i+1 < len(matches) {
-			extracted[name] = matches[i+1]
+		// Compile pattern if needed
+		if r.compiledPattern == nil {
+			compiled, err := regexp.Compile(r.Trigger.Pattern)
+			if err != nil {
+				return MatchResult{Matched: false}
+			}
+			r.compiledPattern = compiled
 		}
-	}
 
-	return true, extracted
+		// Match pattern
+		matches := r.compiledPattern.FindStringSubmatch(content)
+		if matches == nil {
+			return MatchResult{Matched: false}
+		}
+
+		// Extract named groups
+		extracted := make(map[string]string)
+		for i, name := range r.Trigger.Extract {
+			if i+1 < len(matches) {
+				extracted[name] = matches[i+1]
+			}
+		}
+
+		return MatchResult{Matched: true, Extracted: extracted}
+	}
 }
 
 // ReflexResult is the result of executing a reflex

@@ -1,11 +1,16 @@
 package reflex
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,7 +140,8 @@ func (e *Engine) Match(source, typ, content string) []*Reflex {
 
 	var matches []*Reflex
 	for _, reflex := range e.reflexes {
-		if matched, _ := reflex.Match(source, typ, content); matched {
+		result := reflex.Match(source, typ, content)
+		if result.Matched {
 			matches = append(matches, reflex)
 		}
 	}
@@ -286,6 +292,75 @@ func (e *Engine) executeReact(step PipelineStep, vars map[string]any) error {
 	return e.onReact(channelID, messageID, emoji)
 }
 
+// ClassifyWithOllama uses Ollama to classify content against a list of intents
+func (e *Engine) ClassifyWithOllama(ctx context.Context, content string, intents []string, model string, customPrompt string) (string, error) {
+	if model == "" {
+		model = "qwen2.5:7b"
+	}
+
+	// Build classification prompt
+	var prompt string
+	if customPrompt != "" {
+		prompt = fmt.Sprintf("%s\n\nMessage: %s", customPrompt, content)
+	} else {
+		intentList := strings.Join(intents, ", ")
+		prompt = fmt.Sprintf(`Classify the following message into one of these intents: %s
+
+If the message doesn't match any intent, respond with "not_matched".
+Respond with ONLY the intent name, nothing else.
+
+Message: %s`, intentList, content)
+	}
+
+	// Call Ollama API
+	reqBody := map[string]any{
+		"model":  model,
+		"prompt": prompt,
+		"stream": false,
+	}
+
+	jsonBody, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:11434/api/generate", bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ollama request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Response string `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("ollama decode failed: %w", err)
+	}
+
+	// Clean up the response
+	intent := strings.TrimSpace(result.Response)
+	intent = strings.ToLower(intent)
+
+	// Validate intent is in the list (or not_matched)
+	if intent == "not_matched" {
+		return "not_matched", nil
+	}
+
+	for _, valid := range intents {
+		if strings.ToLower(valid) == intent {
+			return valid, nil
+		}
+	}
+
+	// If response doesn't match any valid intent, treat as not matched
+	log.Printf("[reflex] Ollama returned unknown intent: %q, treating as not_matched", intent)
+	return "not_matched", nil
+}
+
 // Process attempts to match and execute reflexes for a percept
 // Returns true if any reflex fired (and executive should be skipped)
 func (e *Engine) Process(ctx context.Context, source, typ, content string, data map[string]any) (bool, []*ReflexResult) {
@@ -294,9 +369,41 @@ func (e *Engine) Process(ctx context.Context, source, typ, content string, data 
 		return false, nil
 	}
 
+	// Sort candidates by priority (higher first)
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Priority > matches[j].Priority
+	})
+
 	var results []*ReflexResult
+
+	// Try each candidate until one succeeds
 	for _, reflex := range matches {
-		_, extracted := reflex.Match(source, typ, content)
+		matchResult := reflex.Match(source, typ, content)
+		extracted := matchResult.Extracted
+
+		// Handle Ollama classification
+		if reflex.Trigger.Classifier == "ollama" {
+			if len(reflex.Trigger.Intents) == 0 {
+				log.Printf("[reflex] Skipping %s: ollama classifier requires intents", reflex.Name)
+				continue
+			}
+
+			intent, err := e.ClassifyWithOllama(ctx, content, reflex.Trigger.Intents, reflex.Trigger.Model, reflex.Trigger.Prompt)
+			if err != nil {
+				log.Printf("[reflex] Ollama classification failed for %s: %v", reflex.Name, err)
+				continue
+			}
+
+			if intent == "not_matched" {
+				log.Printf("[reflex] Ollama did not match %s", reflex.Name)
+				continue
+			}
+
+			// Store classified intent in extracted vars
+			extracted["intent"] = intent
+			log.Printf("[reflex] Ollama classified as %q for %s", intent, reflex.Name)
+		}
+
 		result, err := e.Execute(ctx, reflex, extracted, data)
 		if err != nil {
 			log.Printf("[reflex] Error executing %s: %v", reflex.Name, err)
@@ -306,15 +413,10 @@ func (e *Engine) Process(ctx context.Context, source, typ, content string, data 
 
 		if result.Success {
 			log.Printf("[reflex] Fired: %s (%.2fms)", reflex.Name, result.Duration.Seconds()*1000)
+			// Return immediately on first success
+			return true, results
 		} else {
 			log.Printf("[reflex] Failed: %s: %v", reflex.Name, result.Error)
-		}
-	}
-
-	// Return true if any reflex fired successfully
-	for _, r := range results {
-		if r.Success {
-			return true, results
 		}
 	}
 
