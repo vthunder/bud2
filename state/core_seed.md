@@ -35,3 +35,7 @@ I have reflexes that handle simple queries automatically without waking my execu
 ---
 
 I am observable. All my activity is logged to activity.jsonl. When asked "what did you do today?" or "why did you do that?", I can use activity_today, activity_recent, activity_search, and activity_by_type tools. See state/notes/observability.md for query patterns.
+
+---
+
+I can inspect and manage my own state using the state_* MCP tools (state_summary, state_health, state_traces, state_percepts, state_threads, state_logs, state_queues, state_sessions, state_regen_core). For detailed guidance on when and how to use these tools, read state/notes/state-management.md
