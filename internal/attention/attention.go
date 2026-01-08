@@ -329,6 +329,8 @@ func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(stri
 	// Route to best matching thread
 	if bestThread != nil {
 		a.addPerceptToThread(bestThread, percept)
+		// Tag percept with thread ID for consolidation clustering
+		a.tagPerceptWithThread(percept, bestThread.ID)
 		log.Printf("[attention] Routed percept %s to thread %s (association: %.2f)",
 			percept.ID, bestThread.ID, bestScore)
 		return []*types.Thread{bestThread}
@@ -337,9 +339,19 @@ func (a *Attention) RoutePercept(percept *types.Percept, goalGenerator func(stri
 	// No matching threads, create new one
 	goal := goalGenerator(content)
 	thread := a.createThread(goal, percept)
+	// Tag percept with thread ID for consolidation clustering
+	a.tagPerceptWithThread(percept, thread.ID)
 	log.Printf("[attention] Created new thread %s for percept %s (no threads above threshold)",
 		thread.ID, percept.ID)
 	return []*types.Thread{thread}
+}
+
+// tagPerceptWithThread sets the conversation_id feature for consolidation clustering
+func (a *Attention) tagPerceptWithThread(percept *types.Percept, threadID string) {
+	if percept.Features == nil {
+		percept.Features = make(map[string]any)
+	}
+	percept.Features["conversation_id"] = threadID
 }
 
 // computeAssociation calculates how strongly a percept associates with a thread
@@ -639,8 +651,7 @@ func (a *Attention) ConsolidateAll() int {
 // - Inhibition: if similar but no explicit correction, new trace inhibits old
 func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 	const (
-		clusterThreshold    = 0.7 // how similar percepts must be to cluster
-		reinforceThreshold  = 0.8 // similarity to reinforce existing trace
+		reinforceThreshold   = 0.8 // similarity to reinforce existing trace
 		labileMatchThreshold = 0.6 // similarity to match labile trace for correction
 	)
 
@@ -737,8 +748,8 @@ func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 		return consolidated
 	}
 
-	// Second pass: cluster remaining percepts
-	clusters := a.clusterPercepts(forClustering, clusterThreshold)
+	// Second pass: cluster remaining percepts by conversation_id
+	clusters := a.clusterPercepts(forClustering)
 
 	// Create one trace per cluster
 	for _, cluster := range clusters {
@@ -753,10 +764,10 @@ func (a *Attention) consolidatePercepts(candidates []*types.Percept) int {
 	return consolidated
 }
 
-// clusterPercepts groups percepts by matching features (sense-defined)
-// Percepts with identical feature values cluster together
-// Falls back to per-percept clusters if no features are present
-func (a *Attention) clusterPercepts(percepts []*types.Percept, _ float64) [][]*types.Percept {
+// clusterPercepts groups percepts by conversation_id (thread ID)
+// Percepts in the same thread cluster together for summarization
+// Falls back to per-percept clusters if no conversation_id is set
+func (a *Attention) clusterPercepts(percepts []*types.Percept) [][]*types.Percept {
 	if len(percepts) == 0 {
 		return nil
 	}
