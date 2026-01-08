@@ -4,6 +4,7 @@ state/*.jsonl
 
 # Go build artifacts
 /bud2
+/bud-state
 /bin/
 *.exe
 
