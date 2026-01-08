@@ -11,7 +11,8 @@ type Reflex struct {
 	Description string   `yaml:"description"`
 	Trigger     Trigger  `yaml:"trigger"`
 	Pipeline    Pipeline `yaml:"pipeline"`
-	Level       int      `yaml:"level"` // 0=pattern, 1=heuristic, 2=ollama, 3=executive
+	Level       int      `yaml:"level"`    // 0=pattern, 1=heuristic, 2=ollama, 3=executive
+	Priority    int      `yaml:"priority"` // higher = fires first when multiple match
 
 	// Runtime state
 	compiledPattern *regexp.Regexp
@@ -25,6 +26,12 @@ type Trigger struct {
 	Extract []string `yaml:"extract"` // named capture groups to extract
 	Source  string   `yaml:"source"`  // optional: only match specific sources (discord, github, etc)
 	Type    string   `yaml:"type"`    // optional: only match specific types (message, notification, etc)
+
+	// Classifier configuration
+	Classifier string   `yaml:"classifier"` // "regex" (default), "ollama", or "none"
+	Model      string   `yaml:"model"`      // Ollama model for classifier:ollama (default: qwen2.5:7b)
+	Intents    []string `yaml:"intents"`    // valid intents for Ollama classification
+	Prompt     string   `yaml:"prompt"`     // optional custom classification prompt
 }
 
 // Pipeline is a sequence of actions to execute
