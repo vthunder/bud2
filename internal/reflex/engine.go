@@ -624,7 +624,9 @@ func (e *Engine) createGTDActions() {
 
 			task := &gtd.Task{Title: item, When: "inbox"}
 			e.gtdStore.AddTask(task)
-			e.gtdStore.Save()
+			if err := e.gtdStore.Save(); err != nil {
+				return nil, fmt.Errorf("failed to save: %w", err)
+			}
 			return fmt.Sprintf("Added '%s' to inbox", item), nil
 
 		case "gtd_complete":

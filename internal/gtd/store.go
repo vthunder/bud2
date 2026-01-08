@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -97,8 +98,8 @@ func (s *GTDStore) Save() error {
 var idCounter int64
 
 func generateID() string {
-	idCounter++
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), idCounter)
+	count := atomic.AddInt64(&idCounter, 1)
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), count)
 }
 
 // AddArea adds a new area to the store
