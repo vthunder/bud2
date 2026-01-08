@@ -1175,17 +1175,22 @@ func (a *Attention) BootstrapCore(seedPath string) error {
 	defer file.Close()
 
 	// Parse entries separated by "---"
+	// Lines starting with # are section headers (for human readability) and are stripped
 	var entries []string
 	var current strings.Builder
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == "---" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
 			if current.Len() > 0 {
 				entries = append(entries, strings.TrimSpace(current.String()))
 				current.Reset()
 			}
+		} else if strings.HasPrefix(trimmed, "#") {
+			// Skip markdown headers - they're for human readability only
+			continue
 		} else {
 			current.WriteString(line)
 			current.WriteString("\n")
