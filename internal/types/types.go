@@ -13,6 +13,10 @@ type Percept struct {
 	Data      map[string]any    `json:"data"`      // source-specific payload
 	Features  map[string]any    `json:"features,omitempty"` // sense-defined clustering features
 	Embedding []float64         `json:"embedding,omitempty"` // semantic embedding
+
+	// Reflex processing metadata
+	RawInput    string   `json:"raw_input,omitempty"`    // original input before reflex processing
+	ProcessedBy []string `json:"processed_by,omitempty"` // reflex names that processed this
 }
 
 // Recency returns seconds since percept was created
