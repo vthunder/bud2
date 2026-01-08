@@ -110,7 +110,7 @@ func TestEngineLoadSave(t *testing.T) {
 	}
 
 	// Check file exists
-	filename := filepath.Join(tmpDir, "reflexes", "test-reflex.yaml")
+	filename := filepath.Join(tmpDir, "system", "reflexes", "test-reflex.yaml")
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		t.Error("Expected reflex file to exist")
 	}

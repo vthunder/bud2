@@ -45,7 +45,7 @@ func NewEngine(statePath string) *Engine {
 	e := &Engine{
 		reflexes:  make(map[string]*Reflex),
 		actions:   NewActionRegistry(),
-		reflexDir: filepath.Join(statePath, "reflexes"),
+		reflexDir: filepath.Join(statePath, "system", "reflexes"),
 	}
 	e.createGTDActions()
 	return e
