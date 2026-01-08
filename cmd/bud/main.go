@@ -355,10 +355,18 @@ func main() {
 			func() (int, error) { return outbox.Poll() },
 			func() []*types.Action { return outbox.GetPending() },
 			func(id string) { outbox.MarkComplete(id) },
+			func(id string) { outbox.MarkFailed(id) },
 		)
 		discordEffector.SetOnSend(captureResponse)
 		discordEffector.SetOnAction(func(actionType, channelID, content, source string) {
 			activityLog.LogAction(fmt.Sprintf("%s: %s", actionType, truncate(content, 80)), source, channelID, content)
+		})
+		discordEffector.SetOnError(func(actionID, actionType, errMsg string) {
+			activityLog.LogError(
+				fmt.Sprintf("Discord %s failed: %s", actionType, truncate(errMsg, 100)),
+				fmt.Errorf("%s", errMsg),
+				map[string]any{"action_id": actionID, "action_type": actionType},
+			)
 		})
 		discordEffector.Start()
 

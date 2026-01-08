@@ -17,8 +17,10 @@ type DiscordEffector struct {
 	pollFile     func() (int, error) // Poll for new actions from file (MCP writes)
 	getActions   func() []*types.Action
 	markComplete func(id string)
-	onSend       func(channelID, content string)                   // called when message is sent (for memory)
+	markFailed   func(id string)
+	onSend       func(channelID, content string)                     // called when message is sent (for memory)
 	onAction     func(actionType, channelID, content, source string) // called when action is executed (for activity log)
+	onError      func(actionID, actionType, errMsg string)           // called when action fails permanently
 	stopChan     chan struct{}
 
 	// Typing indicator state
@@ -33,6 +35,7 @@ func NewDiscordEffector(
 	pollFile func() (int, error),
 	getActions func() []*types.Action,
 	markComplete func(id string),
+	markFailed func(id string),
 ) *DiscordEffector {
 	return &DiscordEffector{
 		session:      session,
@@ -40,6 +43,7 @@ func NewDiscordEffector(
 		pollFile:     pollFile,
 		getActions:   getActions,
 		markComplete: markComplete,
+		markFailed:   markFailed,
 		stopChan:     make(chan struct{}),
 		typingChans:  make(map[string]chan struct{}),
 	}
@@ -53,6 +57,11 @@ func (e *DiscordEffector) SetOnSend(callback func(channelID, content string)) {
 // SetOnAction sets a callback for when actions are executed (for activity logging)
 func (e *DiscordEffector) SetOnAction(callback func(actionType, channelID, content, source string)) {
 	e.onAction = callback
+}
+
+// SetOnError sets a callback for when actions fail permanently (for activity logging)
+func (e *DiscordEffector) SetOnError(callback func(actionID, actionType, errMsg string)) {
+	e.onError = callback
 }
 
 // Start begins polling the outbox for actions
@@ -102,14 +111,36 @@ func (e *DiscordEffector) processActions() {
 
 		err := e.executeAction(action)
 		if err != nil {
-			log.Printf("[discord-effector] Failed action %s: %v", action.ID, err)
-			// TODO: mark as failed, retry logic
+			// Check if this is a non-retryable error (4xx client errors)
+			if isNonRetryableError(err) {
+				log.Printf("[discord-effector] Action %s failed permanently (non-retryable): %v", action.ID, err)
+				if e.markFailed != nil {
+					e.markFailed(action.ID)
+				}
+				if e.onError != nil {
+					e.onError(action.ID, action.Type, err.Error())
+				}
+			} else {
+				// Retryable error - log but don't mark failed (will retry on next poll)
+				log.Printf("[discord-effector] Action %s failed (will retry): %v", action.ID, err)
+			}
 			continue
 		}
 
 		e.markComplete(action.ID)
 		log.Printf("[discord-effector] Completed action %s (%s)", action.ID, action.Type)
 	}
+}
+
+// isNonRetryableError checks if an error is a client error (4xx) that shouldn't be retried
+func isNonRetryableError(err error) bool {
+	if restErr, ok := err.(*discordgo.RESTError); ok {
+		// 4xx errors are client errors - don't retry
+		if restErr.Response != nil && restErr.Response.StatusCode >= 400 && restErr.Response.StatusCode < 500 {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *DiscordEffector) executeAction(action *types.Action) error {
