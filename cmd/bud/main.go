@@ -432,6 +432,10 @@ func main() {
 				if n > 0 {
 					log.Printf("[main] Consolidated %d percepts into traces (total: %d)", n, attn.TraceCount())
 				}
+				// Periodic save of traces (prevents loss on crash)
+				if err := tracePool.Save(); err != nil {
+					log.Printf("[main] Warning: failed to save traces: %v", err)
+				}
 			}
 		}
 	}()
