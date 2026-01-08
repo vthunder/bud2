@@ -127,3 +127,20 @@ func (p *PerceptPool) Save() error {
 	}
 	return os.WriteFile(p.path, data, 0644)
 }
+
+// Clear removes all percepts, returns count deleted
+func (p *PerceptPool) Clear() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	count := len(p.percepts)
+	p.percepts = make(map[string]*types.Percept)
+	return count
+}
+
+// Count returns the number of percepts
+func (p *PerceptPool) Count() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.percepts)
+}
