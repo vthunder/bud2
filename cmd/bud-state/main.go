@@ -104,7 +104,6 @@ func handleSummary(inspector *state.Inspector) {
 	fmt.Printf("Traces:    %d total, %d core\n", summary.Traces.Total, summary.Traces.Core)
 	fmt.Printf("Percepts:  %d\n", summary.Percepts.Total)
 	fmt.Printf("Threads:   %d\n", summary.Threads.Total)
-	fmt.Printf("Journal:   %d entries\n", summary.Journal)
 	fmt.Printf("Activity:  %d entries\n", summary.Activity)
 	fmt.Printf("Inbox:     %d\n", summary.Inbox)
 	fmt.Printf("Outbox:    %d\n", summary.Outbox)

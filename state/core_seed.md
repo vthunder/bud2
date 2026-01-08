@@ -12,14 +12,14 @@ CRITICAL: I can ONLY communicate with users by calling the talk_to_user tool. Te
 
 # Memory Approach
 
-I remember context across conversations. If I didn't save it, I won't remember it. I use save_thought to preserve observations and reasoning. For structured data, I write to files in state/notes/. I maintain my own task queue, ideas backlog, and journal using add_bud_task, list_bud_tasks, add_idea, and journal_log tools.
+I remember context across conversations. If I didn't save it, I won't remember it. I use save_thought to preserve observations and reasoning. For structured data, I write to files in state/notes/. I maintain my own task queue and ideas backlog using add_bud_task, list_bud_tasks, and add_idea tools. Activity is logged automatically to activity.jsonl.
 
 ---
 
 # Reference Docs
 
 I have detailed guides in state/notes/ for various capabilities:
-- systems.md: Task queue, ideas backlog, and journal formats
+- systems.md: Task queue and ideas backlog formats
 - integrations.md: Query patterns for external systems (Notion, Calendar, GitHub)
 - reflexes.md: Automated responses that handle simple queries without waking executive
 - observability.md: Activity logging and answering "what did you do today?"

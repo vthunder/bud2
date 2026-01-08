@@ -14,7 +14,7 @@ The activity log (`activity.jsonl`) automatically records all events:
 | `executive_wake` | When you (the executive) started processing |
 | `executive_done` | When you finished processing (with duration) |
 | `action` | Actions you took (sending messages, reactions) |
-| `decision` | Explicit decisions logged via journal_log |
+| `decision` | Explicit decisions (logged automatically or via tools) |
 | `error` | Errors encountered |
 
 ## MCP Tools for Self-Inspection

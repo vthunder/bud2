@@ -33,7 +33,6 @@ type StateSummary struct {
 	Traces   ComponentSummary `json:"traces"`
 	Percepts ComponentSummary `json:"percepts"`
 	Threads  ComponentSummary `json:"threads"`
-	Journal  int              `json:"journal_entries"`
 	Activity int              `json:"activity_entries"`
 	Inbox    int              `json:"inbox_entries"`
 	Outbox   int              `json:"outbox_entries"`
@@ -75,7 +74,6 @@ func (i *Inspector) Summary() (*StateSummary, error) {
 	}
 
 	// Count JSONL files
-	summary.Journal = i.countJSONL("journal.jsonl")
 	summary.Activity = i.countJSONL("activity.jsonl")
 	summary.Inbox = i.countJSONL("inbox.jsonl")
 	summary.Outbox = i.countJSONL("outbox.jsonl")
@@ -106,9 +104,9 @@ func (i *Inspector) Health() (*HealthReport, error) {
 		report.Recommendations = append(report.Recommendations, "Run --regen-core to bootstrap from core_seed.md")
 	}
 
-	if summary.Journal > 10000 {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("Large journal: %d entries", summary.Journal))
-		report.Recommendations = append(report.Recommendations, "Consider truncating old journal entries")
+	if summary.Activity > 10000 {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("Large activity log: %d entries", summary.Activity))
+		report.Recommendations = append(report.Recommendations, "Consider truncating old activity entries")
 	}
 
 	if len(report.Warnings) > 0 {
@@ -364,33 +362,15 @@ func (i *Inspector) ClearThreads(status *types.ThreadStatus) (int, error) {
 	return cleared, nil
 }
 
-// TailLogs returns recent entries from journal and activity logs
+// TailLogs returns recent entries from activity log
 func (i *Inspector) TailLogs(count int) ([]map[string]any, error) {
-	var entries []map[string]any
-
-	// Read journal
-	journalEntries := i.tailJSONL("journal.jsonl", count)
-	for _, e := range journalEntries {
-		e["_source"] = "journal"
-		entries = append(entries, e)
-	}
-
-	// Read activity
-	activityEntries := i.tailJSONL("activity.jsonl", count)
-	for _, e := range activityEntries {
-		e["_source"] = "activity"
-		entries = append(entries, e)
-	}
-
-	return entries, nil
+	return i.tailJSONL("activity.jsonl", count), nil
 }
 
-// TruncateLogs keeps only the last N entries in each log
+// TruncateLogs keeps only the last N entries in the activity log
 func (i *Inspector) TruncateLogs(keep int) error {
-	for _, name := range []string{"journal.jsonl", "activity.jsonl"} {
-		if err := i.truncateJSONL(name, keep); err != nil {
-			return fmt.Errorf("failed to truncate %s: %w", name, err)
-		}
+	if err := i.truncateJSONL("activity.jsonl", keep); err != nil {
+		return fmt.Errorf("failed to truncate activity.jsonl: %w", err)
 	}
 	return nil
 }

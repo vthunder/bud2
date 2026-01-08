@@ -14,7 +14,6 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/notion"
-	"github.com/vthunder/bud2/internal/journal"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/reflex"
@@ -233,12 +232,12 @@ func main() {
 		return "Done signal recorded. Ready for new prompts.", nil
 	})
 
-	// Initialize journal
-	j := journal.New(statePath)
+	// Initialize activity log for observability
+	activityLog := activity.New(statePath)
 
-	// Register journal_log tool (log a decision or action for observability)
+	// Register journal_log tool (writes to activity.jsonl for unified logging)
+	// Kept for backwards compatibility - all logging now goes to activity.jsonl
 	server.RegisterTool("journal_log", func(ctx any, args map[string]any) (string, error) {
-		entryType, _ := args["type"].(string)
 		summary, _ := args["summary"].(string)
 		context, _ := args["context"].(string)
 		reasoning, _ := args["reasoning"].(string)
@@ -248,78 +247,50 @@ func main() {
 			return "", fmt.Errorf("summary is required")
 		}
 
-		// Map type string to EntryType
-		var t journal.EntryType
-		switch entryType {
-		case "decision":
-			t = journal.EntryDecision
-		case "impulse":
-			t = journal.EntryImpulse
-		case "reflex":
-			t = journal.EntryReflex
-		case "exploration":
-			t = journal.EntryExploration
-		case "action":
-			t = journal.EntryAction
-		case "observation":
-			t = journal.EntryObservation
-		default:
-			t = journal.EntryAction
+		// All journal entries now logged as activity decisions
+		err := activityLog.LogDecision(summary, reasoning, context, outcome)
+		if err != nil {
+			return "", fmt.Errorf("failed to log entry: %w", err)
 		}
 
-		entry := journal.Entry{
-			Type:      t,
-			Summary:   summary,
-			Context:   context,
-			Reasoning: reasoning,
-			Outcome:   outcome,
-		}
-
-		if err := j.Log(entry); err != nil {
-			return "", fmt.Errorf("failed to log journal entry: %w", err)
-		}
-
-		log.Printf("Journal entry: [%s] %s", entryType, truncate(summary, 50))
-		return "Logged to journal.", nil
+		log.Printf("Activity logged: %s", truncate(summary, 50))
+		return "Logged to activity.", nil
 	})
 
-	// Register journal_recent tool (get recent journal entries for observability)
+	// Register journal_recent tool (reads from activity.jsonl)
 	server.RegisterTool("journal_recent", func(ctx any, args map[string]any) (string, error) {
 		count := 20 // default
 		if n, ok := args["count"].(float64); ok && n > 0 {
 			count = int(n)
 		}
 
-		entries, err := j.Recent(count)
+		entries, err := activityLog.Recent(count)
 		if err != nil {
-			return "", fmt.Errorf("failed to get journal entries: %w", err)
+			return "", fmt.Errorf("failed to get entries: %w", err)
 		}
 
 		if len(entries) == 0 {
-			return "No journal entries yet.", nil
+			return "No activity entries yet.", nil
 		}
 
 		data, _ := json.MarshalIndent(entries, "", "  ")
 		return string(data), nil
 	})
 
-	// Register journal_today tool (get today's journal entries)
+	// Register journal_today tool (reads from activity.jsonl)
 	server.RegisterTool("journal_today", func(ctx any, args map[string]any) (string, error) {
-		entries, err := j.Today()
+		entries, err := activityLog.Today()
 		if err != nil {
 			return "", fmt.Errorf("failed to get today's entries: %w", err)
 		}
 
 		if len(entries) == 0 {
-			return "No journal entries today yet.", nil
+			return "No activity entries today yet.", nil
 		}
 
 		data, _ := json.MarshalIndent(entries, "", "  ")
 		return string(data), nil
 	})
-
-	// Initialize activity log for observability queries
-	activityLog := activity.New(statePath)
 
 	// Register activity_recent tool (get recent activity entries)
 	server.RegisterTool("activity_recent", func(ctx any, args map[string]any) (string, error) {

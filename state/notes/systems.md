@@ -51,30 +51,6 @@ Ideas are things I want to explore someday - not commitments, just curiosities.
 
 Ideas only generate impulses during idle time (low intensity).
 
-## Journal (journal.jsonl)
-
-The journal logs my decisions and actions for observability.
-
-```jsonl
-{"ts":"...","type":"decision","context":"user asked X","reasoning":"...","summary":"..."}
-{"ts":"...","type":"action","summary":"sent message","context":"responding to user"}
-```
-
-**Entry types:**
-- `decision` - made a choice, with reasoning
-- `action` - took an action
-- `observation` - noticed something
-- `impulse` - internal motivation triggered
-- `reflex` - reflex fired (skipped executive)
-- `exploration` - explored an idea
-
-**Tools:**
-- `journal_log` - write an entry
-- `journal_recent` - get recent entries
-- `journal_today` - get today's entries
-
-Purpose: Answer "what did you do today?" and "why did you do that?"
-
 ## Impulses
 
 Impulses are internal motivations (vs percepts which are external).
