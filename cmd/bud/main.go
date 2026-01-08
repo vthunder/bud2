@@ -218,10 +218,14 @@ func main() {
 				percept.Intensity *= 0.3 // Lower intensity since reflex handled it
 
 				log.Printf("[main] Percept %s handled by reflex %s", percept.ID, result.ReflexName)
+
+				// Reflex handled it - add to pool for memory but skip executive
+				perceptPool.Add(percept)
+				return
 			}
 		}
 
-		// Always add to percept pool and route (even if reflex handled)
+		// No reflex handled it - route to attention/executive
 		perceptPool.Add(percept)
 		threads := attn.RoutePercept(percept, func(content string) string {
 			return "respond to: " + truncate(content, 50)
