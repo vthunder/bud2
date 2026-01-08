@@ -7,7 +7,7 @@ Reflexes are automated responses that run without waking the executive (Claude).
 - Pluggable pipelines defined in YAML
 - I can write my own reflexes
 - Composable actions chained together
-- Located in state/reflexes/
+- Located in state/system/reflexes/
 
 ## Reflex Levels
 
@@ -143,7 +143,7 @@ Conditionally stop pipeline execution:
 
 To create a new reflex:
 1. Write YAML definition following the format above
-2. Save to state/reflexes/
+2. Save to state/system/reflexes/
 3. Reflexes are loaded on next restart
 
 ## MCP Tools
