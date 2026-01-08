@@ -192,7 +192,8 @@ func main() {
 		}
 
 		// Try reflexes first
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		handled, results := reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
 
 		if handled && len(results) > 0 {
@@ -213,6 +214,7 @@ func main() {
 				// Mark percept as processed by reflex
 				percept.RawInput = content
 				percept.ProcessedBy = []string{result.ReflexName}
+				percept.Tags = append(percept.Tags, "reflex-handled")
 				percept.Intensity *= 0.3 // Lower intensity since reflex handled it
 
 				log.Printf("[main] Percept %s handled by reflex %s", percept.ID, result.ReflexName)
