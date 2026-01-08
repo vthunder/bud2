@@ -357,6 +357,7 @@ func (a *Attention) tagPerceptWithThread(percept *types.Percept, threadID string
 // computeAssociation calculates how strongly a percept associates with a thread
 func (a *Attention) computeAssociation(percept *types.Percept, thread *types.Thread) float64 {
 	score := 0.0
+	var maxSimilarity float64 // track max embedding similarity for decay override
 
 	// Source match (discord, github, etc)
 	if weight, ok := thread.Features.Sources[percept.Source]; ok {
@@ -382,18 +383,31 @@ func (a *Attention) computeAssociation(percept *types.Percept, thread *types.Thr
 		// Compare with thread centroid (accumulated percept embeddings)
 		if len(thread.Embeddings.Centroid) > 0 {
 			similarity := embedding.CosineSimilarity(percept.Embedding, thread.Embeddings.Centroid)
+			if similarity > maxSimilarity {
+				maxSimilarity = similarity
+			}
 			// Similarity is -1 to 1, normalize to 0-0.3 contribution
 			score += (similarity + 1) / 2 * 0.3
 		}
 		// Compare with thread topic (goal embedding)
 		if len(thread.Embeddings.Topic) > 0 {
 			similarity := embedding.CosineSimilarity(percept.Embedding, thread.Embeddings.Topic)
+			if similarity > maxSimilarity {
+				maxSimilarity = similarity
+			}
 			score += (similarity + 1) / 2 * 0.2
 		}
 	}
 
 	// Current activation level contributes
 	score += thread.Activation * 0.15
+
+	// Check for back-reference language (signals intent to continue old topic)
+	content := ""
+	if c, ok := percept.Data["content"].(string); ok {
+		content = c
+	}
+	hasBackReference := detectBackReference(content)
 
 	// Apply time decay as multiplier (old threads need much higher base score to match)
 	recencySeconds := time.Since(thread.LastActive).Seconds()
@@ -408,9 +422,63 @@ func (a *Attention) computeAssociation(percept *types.Percept, thread *types.Thr
 	default:
 		decay = 0.15 // 85% decay for threads >30 minutes old
 	}
+
+	// Override decay floor if there's a back-reference or very high semantic similarity
+	// This allows reviving old threads when user explicitly references them
+	if hasBackReference || maxSimilarity > 0.85 {
+		if decay < 0.5 {
+			decay = 0.5
+		}
+	}
+
 	score *= decay
 
 	return score
+}
+
+// backReferencePatterns are phrases that signal intent to continue a previous topic
+var backReferencePatterns = []string{
+	"about that",
+	"about the",
+	"regarding that",
+	"regarding the",
+	"going back to",
+	"back to the",
+	"as we discussed",
+	"as we talked about",
+	"as i mentioned",
+	"as you mentioned",
+	"like i said",
+	"like you said",
+	"remember when",
+	"remember that",
+	"earlier you",
+	"earlier we",
+	"before you",
+	"before we",
+	"you were saying",
+	"i was saying",
+	"we were talking",
+	"we were discussing",
+	"continuing from",
+	"following up on",
+	"to follow up",
+	"circling back",
+	"on that note",
+	"speaking of which",
+	"on that topic",
+	"about earlier",
+}
+
+// detectBackReference checks if content contains language referencing a previous conversation
+func detectBackReference(content string) bool {
+	lower := strings.ToLower(content)
+	for _, pattern := range backReferencePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // addPerceptToThread adds a percept to an existing thread and updates features
