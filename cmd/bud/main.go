@@ -351,7 +351,7 @@ func main() {
 		}
 
 		discordEffector = effectors.NewDiscordEffector(
-			discordSense.Session(),
+			discordSense.Session, // getter function, not called value
 			func() (int, error) { return outbox.Poll() },
 			func() []*types.Action { return outbox.GetPending() },
 			func(id string) { outbox.MarkComplete(id) },
@@ -383,6 +383,16 @@ func main() {
 			})
 		})
 		discordEffector.Start()
+
+		// Start health monitor for connection resilience
+		discordSense.SetOnProlongedOutage(func(duration time.Duration) {
+			activityLog.LogError(
+				fmt.Sprintf("Discord disconnected for %v, triggering hard reset", duration.Round(time.Second)),
+				fmt.Errorf("prolonged disconnection"),
+				map[string]any{"duration": duration.String()},
+			)
+		})
+		discordSense.StartHealthMonitor()
 
 		// Wire up typing indicator to executive
 		exec.SetTypingCallbacks(discordEffector.StartTyping, discordEffector.StopTyping)
@@ -564,6 +574,7 @@ func main() {
 		discordEffector.Stop()
 	}
 	if discordSense != nil {
+		discordSense.StopHealthMonitor()
 		discordSense.Stop()
 	}
 

@@ -19,7 +19,7 @@ type retryState struct {
 
 // DiscordEffector sends messages to Discord
 type DiscordEffector struct {
-	session          *discordgo.Session
+	getSession       func() *discordgo.Session // getter to always use current session
 	pollInterval     time.Duration
 	maxRetryDuration time.Duration // how long to retry before giving up (default 5 min)
 	pollFile         func() (int, error)
@@ -45,16 +45,16 @@ type DiscordEffector struct {
 const DefaultMaxRetryDuration = 5 * time.Minute
 
 // NewDiscordEffector creates a Discord effector
-// It shares the session with the sense (or creates its own)
+// getSession is a getter that returns the current session (supports reconnection/hard reset)
 func NewDiscordEffector(
-	session *discordgo.Session,
+	getSession func() *discordgo.Session,
 	pollFile func() (int, error),
 	getActions func() []*types.Action,
 	markComplete func(id string),
 	markFailed func(id string),
 ) *DiscordEffector {
 	return &DiscordEffector{
-		session:          session,
+		getSession:       getSession,
 		pollInterval:     100 * time.Millisecond,
 		maxRetryDuration: DefaultMaxRetryDuration,
 		pollFile:         pollFile,
@@ -265,7 +265,7 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 		return fmt.Errorf("missing content")
 	}
 
-	_, err := e.session.ChannelMessageSend(channelID, content)
+	_, err := e.getSession().ChannelMessageSend(channelID, content)
 	if err == nil {
 		if e.onSend != nil {
 			e.onSend(channelID, content)
@@ -294,7 +294,7 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 		return fmt.Errorf("missing emoji")
 	}
 
-	err := e.session.MessageReactionAdd(channelID, messageID, emoji)
+	err := e.getSession().MessageReactionAdd(channelID, messageID, emoji)
 	if err == nil && e.onAction != nil {
 		source, _ := action.Payload["source"].(string)
 		e.onAction("add_reaction", channelID, emoji, source)
@@ -305,7 +305,7 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 // StartTyping starts showing the typing indicator in a channel.
 // The indicator is maintained until StopTyping is called.
 func (e *DiscordEffector) StartTyping(channelID string) {
-	if channelID == "" || e.session == nil {
+	if channelID == "" || e.getSession() == nil {
 		return
 	}
 
@@ -323,7 +323,7 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 	// Start typing indicator goroutine
 	go func() {
 		// Send initial typing indicator
-		if err := e.session.ChannelTyping(channelID); err != nil {
+		if err := e.getSession().ChannelTyping(channelID); err != nil {
 			log.Printf("[discord-effector] Failed to start typing: %v", err)
 			return
 		}
@@ -339,7 +339,7 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 				log.Printf("[discord-effector] Stopped typing in channel %s", channelID)
 				return
 			case <-ticker.C:
-				if err := e.session.ChannelTyping(channelID); err != nil {
+				if err := e.getSession().ChannelTyping(channelID); err != nil {
 					log.Printf("[discord-effector] Failed to refresh typing: %v", err)
 					return
 				}
