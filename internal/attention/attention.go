@@ -1160,3 +1160,29 @@ func (a *Attention) GetCoreTraces() []*types.Trace {
 func (a *Attention) SetTraceCore(traceID string, isCore bool) bool {
 	return a.traces.SetCore(traceID, isCore)
 }
+
+// CreateImmediateTrace creates a trace that's immediately available
+// (bypasses consolidation delay) for reflex context continuity
+func (a *Attention) CreateImmediateTrace(content string, source string) *types.Trace {
+	// Generate embedding
+	emb, err := a.embedder.Embed(content)
+	if err != nil {
+		log.Printf("[attention] Failed to embed immediate trace: %v", err)
+	}
+
+	trace := &types.Trace{
+		ID:         generateTraceID(),
+		Content:    content,
+		Sources:    []string{source},
+		Embedding:  emb,
+		Activation: 0.8, // High activation for immediate relevance
+		Strength:   1,
+		CreatedAt:  time.Now(),
+		LastAccess: time.Now(),
+	}
+
+	a.traces.Add(trace)
+	log.Printf("[attention] Created immediate trace: %s", truncate(content, 50))
+
+	return trace
+}
