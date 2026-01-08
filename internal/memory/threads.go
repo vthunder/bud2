@@ -170,3 +170,35 @@ func (t *ThreadPool) Save() error {
 	}
 	return os.WriteFile(t.path, data, 0644)
 }
+
+// Clear removes all threads, returns count deleted
+func (t *ThreadPool) Clear() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	count := len(t.threads)
+	t.threads = make(map[string]*types.Thread)
+	return count
+}
+
+// ClearByStatus removes threads with given status, returns count deleted
+func (t *ThreadPool) ClearByStatus(status types.ThreadStatus) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cleared := 0
+	for id, thread := range t.threads {
+		if thread.Status == status {
+			delete(t.threads, id)
+			cleared++
+		}
+	}
+	return cleared
+}
+
+// Count returns the number of threads
+func (t *ThreadPool) Count() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.threads)
+}
