@@ -17,8 +17,10 @@ import (
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/executive"
+	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/motivation"
+	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/types"
 )
@@ -109,6 +111,12 @@ func main() {
 		log.Printf("Warning: failed to load tasks: %v", err)
 	}
 
+	// Initialize GTD store
+	gtdStore := gtd.NewGTDStore(statePath)
+	if err := gtdStore.Load(); err != nil {
+		log.Printf("Warning: failed to load GTD store: %v", err)
+	}
+
 	// Initialize session tracker and signal processor for thinking time budget
 	sessionTracker := budget.NewSessionTracker(statePath)
 	signalProcessor := budget.NewSignalProcessor(statePath, sessionTracker)
@@ -146,6 +154,22 @@ func main() {
 		log.Printf("Warning: failed to bootstrap core traces: %v", err)
 	}
 
+	// Initialize reflex engine
+	reflexEngine := reflex.NewEngine(statePath)
+	if err := reflexEngine.Load(); err != nil {
+		log.Printf("Warning: failed to load reflexes: %v", err)
+	}
+	reflexEngine.SetGTDStore(gtdStore)
+
+	// Set up reflex reply callback (will wire to outbox after effector is created)
+	var reflexReplyCallback func(channelID, message string) error
+	reflexEngine.SetReplyCallback(func(channelID, message string) error {
+		if reflexReplyCallback != nil {
+			return reflexReplyCallback(channelID, message)
+		}
+		return nil
+	})
+
 	// Initialize executive with trace retrieval functions
 	exec = executive.New(perceptPool, threadPool, outbox, executive.ExecutiveConfig{
 		Model:           claudeModel,
@@ -159,8 +183,43 @@ func main() {
 		log.Fatalf("Failed to start executive: %v", err)
 	}
 
-	// Process percept helper - used by both inbox polling and response capture
+	// Process percept helper - checks reflexes first, then routes to attention
 	processPercept := func(percept *types.Percept) {
+		// Extract content for reflex matching
+		content := ""
+		if c, ok := percept.Data["content"].(string); ok {
+			content = c
+		}
+
+		// Try reflexes first
+		ctx := context.Background()
+		handled, results := reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
+
+		if handled && len(results) > 0 {
+			result := results[0]
+			if result.Success {
+				// Create immediate traces for follow-up context
+				attn.CreateImmediateTrace(
+					fmt.Sprintf("User asked: %s", content),
+					"reflex-query",
+				)
+				if response, ok := result.Output["response"].(string); ok {
+					attn.CreateImmediateTrace(
+						fmt.Sprintf("Bud responded: %s", response),
+						"reflex-response",
+					)
+				}
+
+				// Mark percept as processed by reflex
+				percept.RawInput = content
+				percept.ProcessedBy = []string{result.ReflexName}
+				percept.Intensity *= 0.3 // Lower intensity since reflex handled it
+
+				log.Printf("[main] Percept %s handled by reflex %s", percept.ID, result.ReflexName)
+			}
+		}
+
+		// Always add to percept pool and route (even if reflex handled)
 		perceptPool.Add(percept)
 		threads := attn.RoutePercept(percept, func(content string) string {
 			return "respond to: " + truncate(content, 50)
@@ -221,6 +280,22 @@ func main() {
 
 		// Wire up typing indicator to executive
 		exec.SetTypingCallbacks(discordEffector.StartTyping, discordEffector.StopTyping)
+
+		// Wire reflex reply callback to outbox
+		reflexReplyCallback = func(channelID, message string) error {
+			action := &types.Action{
+				ID:   fmt.Sprintf("reflex-reply-%d", time.Now().UnixNano()),
+				Type: "send_message",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"content":    message,
+				},
+				Status:    "pending",
+				Timestamp: time.Now(),
+			}
+			outbox.Add(action)
+			return nil
+		}
 
 		log.Println("[main] Discord sense and effector started")
 	} else {
