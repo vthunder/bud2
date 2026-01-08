@@ -368,6 +368,20 @@ func main() {
 				map[string]any{"action_id": actionID, "action_type": actionType},
 			)
 		})
+		discordEffector.SetOnRetry(func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration) {
+			activityLog.Log(activity.Entry{
+				Type:    activity.TypeAction,
+				Summary: fmt.Sprintf("Discord %s retry (attempt %d, next in %v): %s", actionType, attempt, nextRetry, truncate(errMsg, 80)),
+				Data: map[string]any{
+					"action_id":   actionID,
+					"action_type": actionType,
+					"attempt":     attempt,
+					"next_retry":  nextRetry.String(),
+					"error":       errMsg,
+					"retrying":    true,
+				},
+			})
+		})
 		discordEffector.Start()
 
 		// Wire up typing indicator to executive

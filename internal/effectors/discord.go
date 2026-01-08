@@ -10,23 +10,39 @@ import (
 	"github.com/vthunder/bud2/internal/types"
 )
 
+// retryState tracks retry information for an action
+type retryState struct {
+	attempts     int
+	firstFailure time.Time
+	nextRetry    time.Time
+}
+
 // DiscordEffector sends messages to Discord
 type DiscordEffector struct {
-	session      *discordgo.Session
-	pollInterval time.Duration
-	pollFile     func() (int, error) // Poll for new actions from file (MCP writes)
-	getActions   func() []*types.Action
-	markComplete func(id string)
-	markFailed   func(id string)
-	onSend       func(channelID, content string)                     // called when message is sent (for memory)
-	onAction     func(actionType, channelID, content, source string) // called when action is executed (for activity log)
-	onError      func(actionID, actionType, errMsg string)           // called when action fails permanently
-	stopChan     chan struct{}
+	session          *discordgo.Session
+	pollInterval     time.Duration
+	maxRetryDuration time.Duration // how long to retry before giving up (default 5 min)
+	pollFile         func() (int, error)
+	getActions       func() []*types.Action
+	markComplete     func(id string)
+	markFailed       func(id string)
+	onSend           func(channelID, content string)
+	onAction         func(actionType, channelID, content, source string)
+	onError          func(actionID, actionType, errMsg string)           // permanent failure
+	onRetry          func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration) // transient failure, will retry
+	stopChan         chan struct{}
+
+	// Retry state tracking
+	retryMu     sync.Mutex
+	retryStates map[string]*retryState
 
 	// Typing indicator state
 	typingMu    sync.Mutex
-	typingChans map[string]chan struct{} // channel ID -> stop channel
+	typingChans map[string]chan struct{}
 }
+
+// DefaultMaxRetryDuration is how long to retry transient failures before giving up
+const DefaultMaxRetryDuration = 5 * time.Minute
 
 // NewDiscordEffector creates a Discord effector
 // It shares the session with the sense (or creates its own)
@@ -38,15 +54,22 @@ func NewDiscordEffector(
 	markFailed func(id string),
 ) *DiscordEffector {
 	return &DiscordEffector{
-		session:      session,
-		pollInterval: 100 * time.Millisecond,
-		pollFile:     pollFile,
-		getActions:   getActions,
-		markComplete: markComplete,
-		markFailed:   markFailed,
-		stopChan:     make(chan struct{}),
-		typingChans:  make(map[string]chan struct{}),
+		session:          session,
+		pollInterval:     100 * time.Millisecond,
+		maxRetryDuration: DefaultMaxRetryDuration,
+		pollFile:         pollFile,
+		getActions:       getActions,
+		markComplete:     markComplete,
+		markFailed:       markFailed,
+		stopChan:         make(chan struct{}),
+		retryStates:      make(map[string]*retryState),
+		typingChans:      make(map[string]chan struct{}),
 	}
+}
+
+// SetMaxRetryDuration configures how long to retry transient failures
+func (e *DiscordEffector) SetMaxRetryDuration(d time.Duration) {
+	e.maxRetryDuration = d
 }
 
 // SetOnSend sets a callback for when messages are sent (for memory capture)
@@ -62,6 +85,11 @@ func (e *DiscordEffector) SetOnAction(callback func(actionType, channelID, conte
 // SetOnError sets a callback for when actions fail permanently (for activity logging)
 func (e *DiscordEffector) SetOnError(callback func(actionID, actionType, errMsg string)) {
 	e.onError = callback
+}
+
+// SetOnRetry sets a callback for when actions fail transiently and will be retried
+func (e *DiscordEffector) SetOnRetry(callback func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration)) {
+	e.onRetry = callback
 }
 
 // Start begins polling the outbox for actions
@@ -100,6 +128,7 @@ func (e *DiscordEffector) processActions() {
 		}
 	}
 
+	now := time.Now()
 	actions := e.getActions()
 	for _, action := range actions {
 		if action.Effector != "discord" {
@@ -109,27 +138,98 @@ func (e *DiscordEffector) processActions() {
 			continue
 		}
 
-		err := e.executeAction(action)
-		if err != nil {
-			// Check if this is a non-retryable error (4xx client errors)
-			if isNonRetryableError(err) {
-				log.Printf("[discord-effector] Action %s failed permanently (non-retryable): %v", action.ID, err)
-				if e.markFailed != nil {
-					e.markFailed(action.ID)
-				}
-				if e.onError != nil {
-					e.onError(action.ID, action.Type, err.Error())
-				}
-			} else {
-				// Retryable error - log but don't mark failed (will retry on next poll)
-				log.Printf("[discord-effector] Action %s failed (will retry): %v", action.ID, err)
-			}
+		// Check if we should retry yet (exponential backoff)
+		if !e.shouldRetryNow(action.ID, now) {
 			continue
 		}
 
+		err := e.executeAction(action)
+		if err != nil {
+			e.handleActionError(action, err, now)
+			continue
+		}
+
+		// Success - clean up retry state and mark complete
+		e.clearRetryState(action.ID)
 		e.markComplete(action.ID)
 		log.Printf("[discord-effector] Completed action %s (%s)", action.ID, action.Type)
 	}
+}
+
+// shouldRetryNow checks if enough time has passed for the next retry attempt
+func (e *DiscordEffector) shouldRetryNow(actionID string, now time.Time) bool {
+	e.retryMu.Lock()
+	defer e.retryMu.Unlock()
+
+	state, exists := e.retryStates[actionID]
+	if !exists {
+		return true // First attempt
+	}
+	return now.After(state.nextRetry)
+}
+
+// handleActionError processes an error, implementing exponential backoff for retryable errors
+func (e *DiscordEffector) handleActionError(action *types.Action, err error, now time.Time) {
+	// Check if this is a non-retryable error (4xx client errors)
+	if isNonRetryableError(err) {
+		log.Printf("[discord-effector] Action %s failed permanently (non-retryable): %v", action.ID, err)
+		e.clearRetryState(action.ID)
+		if e.markFailed != nil {
+			e.markFailed(action.ID)
+		}
+		if e.onError != nil {
+			e.onError(action.ID, action.Type, err.Error())
+		}
+		return
+	}
+
+	// Retryable error - update retry state
+	e.retryMu.Lock()
+	state, exists := e.retryStates[action.ID]
+	if !exists {
+		state = &retryState{
+			attempts:     0,
+			firstFailure: now,
+		}
+		e.retryStates[action.ID] = state
+	}
+	state.attempts++
+
+	// Check if we've exceeded max retry duration
+	elapsed := now.Sub(state.firstFailure)
+	if elapsed >= e.maxRetryDuration {
+		e.retryMu.Unlock()
+		log.Printf("[discord-effector] Action %s failed permanently (max retry duration %v exceeded): %v", action.ID, e.maxRetryDuration, err)
+		e.clearRetryState(action.ID)
+		if e.markFailed != nil {
+			e.markFailed(action.ID)
+		}
+		if e.onError != nil {
+			e.onError(action.ID, action.Type, fmt.Sprintf("gave up after %v: %s", elapsed.Round(time.Second), err.Error()))
+		}
+		return
+	}
+
+	// Calculate next retry with exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, max 60s
+	backoff := time.Duration(1<<uint(state.attempts-1)) * time.Second
+	if backoff > 60*time.Second {
+		backoff = 60 * time.Second
+	}
+	state.nextRetry = now.Add(backoff)
+	attempt := state.attempts
+	e.retryMu.Unlock()
+
+	log.Printf("[discord-effector] Action %s failed (attempt %d, retry in %v): %v", action.ID, attempt, backoff, err)
+	if e.onRetry != nil {
+		e.onRetry(action.ID, action.Type, err.Error(), attempt, backoff)
+	}
+}
+
+// clearRetryState removes retry tracking for an action
+func (e *DiscordEffector) clearRetryState(actionID string) {
+	e.retryMu.Lock()
+	delete(e.retryStates, actionID)
+	e.retryMu.Unlock()
 }
 
 // isNonRetryableError checks if an error is a client error (4xx) that shouldn't be retried
