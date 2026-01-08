@@ -325,6 +325,49 @@ func TestGTDStore_TaskOrdering(t *testing.T) {
 	}
 }
 
+func TestGTDStore_FindTaskByTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewGTDStore(tmpDir)
+
+	store.AddTask(&Task{Title: "Buy groceries", When: "inbox"})
+	store.AddTask(&Task{Title: "Call the doctor", When: "today"})
+	store.AddTask(&Task{Title: "Review pull request", When: "today"})
+
+	// Should find by partial match (case-insensitive)
+	task := store.FindTaskByTitle("groceries")
+	if task == nil {
+		t.Fatal("Expected to find task by partial title")
+	}
+	if task.Title != "Buy groceries" {
+		t.Errorf("Expected 'Buy groceries', got '%s'", task.Title)
+	}
+
+	// Should find by case-insensitive match
+	task = store.FindTaskByTitle("CALL")
+	if task == nil {
+		t.Fatal("Expected to find task by case-insensitive match")
+	}
+	if task.Title != "Call the doctor" {
+		t.Errorf("Expected 'Call the doctor', got '%s'", task.Title)
+	}
+
+	// Should return nil for no match
+	task = store.FindTaskByTitle("nonexistent")
+	if task != nil {
+		t.Error("Expected nil for nonexistent task")
+	}
+
+	// Should find first match if multiple matches
+	task = store.FindTaskByTitle("the")
+	if task == nil {
+		t.Fatal("Expected to find task with 'the'")
+	}
+	// Should return the first task containing "the"
+	if task.Title != "Call the doctor" {
+		t.Errorf("Expected first match 'Call the doctor', got '%s'", task.Title)
+	}
+}
+
 func TestGTDStore_Validation(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := NewGTDStore(tmpDir)

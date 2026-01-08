@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vthunder/bud2/internal/gtd"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,15 +29,26 @@ type Engine struct {
 	// Callbacks for integration
 	onReply func(channelID, message string) error
 	onReact func(channelID, messageID, emoji string) error
+
+	// GTD store for gtd_* actions
+	gtdStore interface {
+		GetTasks(when, projectID, areaID string) []gtd.Task
+		AddTask(task *gtd.Task)
+		CompleteTask(id string) error
+		Save() error
+		FindTaskByTitle(title string) *gtd.Task
+	}
 }
 
 // NewEngine creates a new reflex engine
 func NewEngine(statePath string) *Engine {
-	return &Engine{
+	e := &Engine{
 		reflexes:  make(map[string]*Reflex),
 		actions:   NewActionRegistry(),
 		reflexDir: filepath.Join(statePath, "reflexes"),
 	}
+	e.createGTDActions()
+	return e
 }
 
 // SetReplyCallback sets the callback for reply actions
@@ -47,6 +59,17 @@ func (e *Engine) SetReplyCallback(cb func(channelID, message string) error) {
 // SetReactCallback sets the callback for react actions
 func (e *Engine) SetReactCallback(cb func(channelID, messageID, emoji string) error) {
 	e.onReact = cb
+}
+
+// SetGTDStore sets the GTD store for reflex actions
+func (e *Engine) SetGTDStore(store interface {
+	GetTasks(when, projectID, areaID string) []gtd.Task
+	AddTask(task *gtd.Task)
+	CompleteTask(id string) error
+	Save() error
+	FindTaskByTitle(title string) *gtd.Task
+}) {
+	e.gtdStore = store
 }
 
 // Load loads all reflexes from the reflexes directory
@@ -475,4 +498,140 @@ func (e *Engine) Delete(name string) error {
 
 	log.Printf("[reflex] Deleted: %s", name)
 	return nil
+}
+
+// createGTDActions registers GTD-related actions that need engine access
+func (e *Engine) createGTDActions() {
+	e.actions.Register("gtd_list", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.gtdStore == nil {
+			return nil, fmt.Errorf("GTD store not configured")
+		}
+
+		when := resolveVar(params, vars, "when")
+		if when == "" {
+			when = "today" // default
+		}
+
+		tasks := e.gtdStore.GetTasks(when, "", "")
+		if len(tasks) == 0 {
+			return fmt.Sprintf("No tasks for %s", when), nil
+		}
+
+		var lines []string
+		for i, t := range tasks {
+			lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
+		}
+		return strings.Join(lines, "\n"), nil
+	}))
+
+	e.actions.Register("gtd_add", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.gtdStore == nil {
+			return nil, fmt.Errorf("GTD store not configured")
+		}
+
+		title := resolveVar(params, vars, "title")
+		if title == "" {
+			return nil, fmt.Errorf("title is required")
+		}
+
+		task := &gtd.Task{
+			Title: title,
+			When:  "inbox",
+		}
+		if notes := resolveVar(params, vars, "notes"); notes != "" {
+			task.Notes = notes
+		}
+
+		e.gtdStore.AddTask(task)
+		if err := e.gtdStore.Save(); err != nil {
+			return nil, fmt.Errorf("failed to save: %w", err)
+		}
+
+		return fmt.Sprintf("Added '%s' to inbox", title), nil
+	}))
+
+	e.actions.Register("gtd_complete", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.gtdStore == nil {
+			return nil, fmt.Errorf("GTD store not configured")
+		}
+
+		identifier := resolveVar(params, vars, "id", "title")
+		if identifier == "" {
+			return nil, fmt.Errorf("id or title is required")
+		}
+
+		// Try to find task
+		task := e.gtdStore.FindTaskByTitle(identifier)
+		if task == nil {
+			return nil, fmt.Errorf("task not found: %s", identifier)
+		}
+
+		if err := e.gtdStore.CompleteTask(task.ID); err != nil {
+			return nil, err
+		}
+		if err := e.gtdStore.Save(); err != nil {
+			return nil, fmt.Errorf("failed to save: %w", err)
+		}
+
+		return fmt.Sprintf("Completed '%s'", task.Title), nil
+	}))
+
+	e.actions.Register("gtd_dispatch", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.gtdStore == nil {
+			return nil, fmt.Errorf("GTD store not configured")
+		}
+
+		intent, _ := vars["intent"].(string)
+		content, _ := vars["content"].(string)
+
+		switch intent {
+		case "gtd_show_today":
+			tasks := e.gtdStore.GetTasks("today", "", "")
+			if len(tasks) == 0 {
+				return "No tasks for today", nil
+			}
+			var lines []string
+			for i, t := range tasks {
+				lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
+			}
+			return "Today's tasks:\n" + strings.Join(lines, "\n"), nil
+
+		case "gtd_show_inbox":
+			tasks := e.gtdStore.GetTasks("inbox", "", "")
+			if len(tasks) == 0 {
+				return "Inbox is empty", nil
+			}
+			var lines []string
+			for i, t := range tasks {
+				lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
+			}
+			return "Inbox:\n" + strings.Join(lines, "\n"), nil
+
+		case "gtd_add_inbox":
+			// Extract what to add from content
+			item := content
+			if idx := strings.Index(strings.ToLower(content), "add "); idx >= 0 {
+				item = content[idx+4:]
+			}
+			if idx := strings.Index(strings.ToLower(item), " to inbox"); idx >= 0 {
+				item = item[:idx]
+			}
+			item = strings.TrimSpace(item)
+
+			if item == "" {
+				return nil, fmt.Errorf("couldn't extract item to add")
+			}
+
+			task := &gtd.Task{Title: item, When: "inbox"}
+			e.gtdStore.AddTask(task)
+			e.gtdStore.Save()
+			return fmt.Sprintf("Added '%s' to inbox", item), nil
+
+		case "gtd_complete":
+			return nil, fmt.Errorf("gtd_complete via dispatch not yet implemented - use direct action")
+
+		default:
+			return nil, fmt.Errorf("unknown GTD intent: %s", intent)
+		}
+	}))
 }

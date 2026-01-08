@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -389,4 +390,19 @@ func calculateNextDate(base time.Time, repeat string) time.Time {
 		// Default to daily if unknown
 		return base.AddDate(0, 0, 1)
 	}
+}
+
+// FindTaskByTitle finds a task by partial title match (case-insensitive)
+func (s *GTDStore) FindTaskByTitle(title string) *Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	title = strings.ToLower(title)
+	for i := range s.data.Tasks {
+		if strings.Contains(strings.ToLower(s.data.Tasks[i].Title), title) {
+			task := s.data.Tasks[i]
+			return &task
+		}
+	}
+	return nil
 }
