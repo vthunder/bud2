@@ -17,17 +17,17 @@ func TestReflexMatch(t *testing.T) {
 	}
 
 	// Should match
-	matched, extracted := reflex.Match("discord", "message", "summarize https://example.com/page")
-	if !matched {
+	result := reflex.Match("discord", "message", "summarize https://example.com/page")
+	if !result.Matched {
 		t.Error("Expected match")
 	}
-	if extracted["url"] != "https://example.com/page" {
-		t.Errorf("Expected url extraction, got: %v", extracted)
+	if result.Extracted["url"] != "https://example.com/page" {
+		t.Errorf("Expected url extraction, got: %v", result.Extracted)
 	}
 
 	// Should not match
-	matched, _ = reflex.Match("discord", "message", "hello world")
-	if matched {
+	result = reflex.Match("discord", "message", "hello world")
+	if result.Matched {
 		t.Error("Expected no match")
 	}
 }
@@ -42,14 +42,14 @@ func TestReflexMatchWithFilters(t *testing.T) {
 	}
 
 	// Should match discord
-	matched, _ := reflex.Match("discord", "message", "hello there")
-	if !matched {
+	result := reflex.Match("discord", "message", "hello there")
+	if !result.Matched {
 		t.Error("Expected match for discord")
 	}
 
 	// Should not match github
-	matched, _ = reflex.Match("github", "comment", "hello there")
-	if matched {
+	result = reflex.Match("github", "comment", "hello there")
+	if result.Matched {
 		t.Error("Expected no match for github")
 	}
 }
