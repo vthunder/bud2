@@ -18,6 +18,7 @@ import (
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/reflex"
+	"github.com/vthunder/bud2/internal/state"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -1294,6 +1295,271 @@ func main() {
 	} else {
 		log.Println("Notion integration disabled (NOTION_API_KEY not set)")
 	}
+
+	// State introspection tools
+	stateInspector := state.NewInspector(statePath)
+
+	server.RegisterTool("state_summary", func(ctx any, args map[string]any) (string, error) {
+		summary, err := stateInspector.Summary()
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.MarshalIndent(summary, "", "  ")
+		return string(data), nil
+	})
+
+	server.RegisterTool("state_health", func(ctx any, args map[string]any) (string, error) {
+		health, err := stateInspector.Health()
+		if err != nil {
+			return "", err
+		}
+		data, _ := json.MarshalIndent(health, "", "  ")
+		return string(data), nil
+	})
+
+	server.RegisterTool("state_traces", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			traces, err := stateInspector.ListTraces()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(traces, "", "  ")
+			return string(data), nil
+
+		case "show":
+			id, ok := args["id"].(string)
+			if !ok {
+				return "", fmt.Errorf("id required for show action")
+			}
+			trace, err := stateInspector.GetTrace(id)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(trace, "", "  ")
+			return string(data), nil
+
+		case "delete":
+			id, ok := args["id"].(string)
+			if !ok {
+				return "", fmt.Errorf("id required for delete action")
+			}
+			if err := stateInspector.DeleteTrace(id); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Deleted trace: %s", id), nil
+
+		case "clear":
+			clearCore, _ := args["clear_core"].(bool)
+			count, err := stateInspector.ClearTraces(clearCore)
+			if err != nil {
+				return "", err
+			}
+			if clearCore {
+				return fmt.Sprintf("Cleared %d core traces", count), nil
+			}
+			return fmt.Sprintf("Cleared %d non-core traces", count), nil
+
+		case "regen_core":
+			seedPath := filepath.Join(statePath, "core_seed.md")
+			count, err := stateInspector.RegenCore(seedPath)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Regenerated %d core traces", count), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_percepts", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			percepts, err := stateInspector.ListPercepts()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(percepts, "", "  ")
+			return string(data), nil
+
+		case "count":
+			percepts, err := stateInspector.ListPercepts()
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%d", len(percepts)), nil
+
+		case "clear":
+			olderThan, _ := args["older_than"].(string)
+			var dur time.Duration
+			if olderThan != "" {
+				var err error
+				dur, err = time.ParseDuration(olderThan)
+				if err != nil {
+					return "", fmt.Errorf("invalid duration: %w", err)
+				}
+			}
+			count, err := stateInspector.ClearPercepts(dur)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Cleared %d percepts", count), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_threads", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			threads, err := stateInspector.ListThreads()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(threads, "", "  ")
+			return string(data), nil
+
+		case "show":
+			id, ok := args["id"].(string)
+			if !ok {
+				return "", fmt.Errorf("id required for show action")
+			}
+			thread, err := stateInspector.GetThread(id)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(thread, "", "  ")
+			return string(data), nil
+
+		case "clear":
+			statusStr, _ := args["status"].(string)
+			var statusPtr *types.ThreadStatus
+			if statusStr != "" {
+				s := types.ThreadStatus(statusStr)
+				statusPtr = &s
+			}
+			count, err := stateInspector.ClearThreads(statusPtr)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Cleared %d threads", count), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_logs", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "tail"
+		}
+
+		switch action {
+		case "tail":
+			count := 20
+			if c, ok := args["count"].(float64); ok {
+				count = int(c)
+			}
+			entries, err := stateInspector.TailLogs(count)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(entries, "", "  ")
+			return string(data), nil
+
+		case "truncate":
+			keep := 100
+			if k, ok := args["keep"].(float64); ok {
+				keep = int(k)
+			}
+			if err := stateInspector.TruncateLogs(keep); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Truncated logs to %d entries", keep), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_queues", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			queues, err := stateInspector.ListQueues()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(queues, "", "  ")
+			return string(data), nil
+
+		case "clear":
+			if err := stateInspector.ClearQueues(); err != nil {
+				return "", err
+			}
+			return "Cleared all queues", nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_sessions", func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			sessions, err := stateInspector.ListSessions()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(sessions, "", "  ")
+			return string(data), nil
+
+		case "clear":
+			if err := stateInspector.ClearSessions(); err != nil {
+				return "", err
+			}
+			return "Cleared sessions", nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	server.RegisterTool("state_regen_core", func(ctx any, args map[string]any) (string, error) {
+		seedPath := filepath.Join(statePath, "core_seed.md")
+		count, err := stateInspector.RegenCore(seedPath)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Regenerated %d core traces from %s", count, seedPath), nil
+	})
 
 	// Run server
 	if err := server.Run(); err != nil {

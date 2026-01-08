@@ -751,6 +751,137 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Required: []string{"action"},
 			},
 		},
+		// State introspection tools
+		{
+			Name:        "state_summary",
+			Description: "Get summary of all state components (traces, percepts, threads, logs, queues).",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "state_health",
+			Description: "Run health checks on state and get recommendations for cleanup.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "state_traces",
+			Description: "Manage memory traces. Actions: list, show, delete, clear, regen_core.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: list (default), show, delete, clear, regen_core",
+					},
+					"id": {
+						Type:        "string",
+						Description: "Trace ID (for show/delete)",
+					},
+					"clear_core": {
+						Type:        "boolean",
+						Description: "If true with clear action, clears core traces instead of non-core",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_percepts",
+			Description: "Manage percepts (short-term memory). Actions: list, count, clear.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: list (default), count, clear",
+					},
+					"older_than": {
+						Type:        "string",
+						Description: "Duration for clear (e.g., '1h', '30m'). If omitted, clears all.",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_threads",
+			Description: "Manage threads (working memory). Actions: list, show, clear.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: list (default), show, clear",
+					},
+					"id": {
+						Type:        "string",
+						Description: "Thread ID (for show)",
+					},
+					"status": {
+						Type:        "string",
+						Description: "Filter for clear (active, paused, frozen, complete)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_logs",
+			Description: "Manage journal and activity logs. Actions: tail, truncate.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: tail (default), truncate",
+					},
+					"count": {
+						Type:        "integer",
+						Description: "Number of entries for tail (default 20)",
+					},
+					"keep": {
+						Type:        "integer",
+						Description: "Entries to keep for truncate (default 100)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_queues",
+			Description: "Manage message queues (inbox, outbox, signals). Actions: list, clear.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: list (default), clear",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_sessions",
+			Description: "Manage session tracking. Actions: list, clear.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"action": {
+						Type:        "string",
+						Description: "Action: list (default), clear",
+					},
+				},
+			},
+		},
+		{
+			Name:        "state_regen_core",
+			Description: "Regenerate core identity traces from core_seed.md. Clears existing core traces first.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{
