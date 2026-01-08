@@ -8,6 +8,7 @@ trigger:
   intents:
     - gtd_show_today
     - gtd_show_inbox
+    - gtd_show_logbook
     - gtd_add_inbox
     - gtd_complete
     - not_gtd

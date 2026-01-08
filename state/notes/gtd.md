@@ -107,20 +107,23 @@ gtd_add title="Write tests" project="proj-123"   # Add to project
 ```
 
 ### gtd_list
-List tasks with optional filters.
+List tasks with optional filters. By default, only shows open tasks.
 
 **Parameters:**
-- `when` - Filter by when value or date
+- `when` - Filter by when: inbox, today, anytime, someday, logbook, or YYYY-MM-DD
 - `project` - Filter by project ID
 - `area` - Filter by area ID
 - `status` - open (default), completed, canceled, or all
 
+The special `when=logbook` value shows completed and canceled tasks (like Things' Logbook view).
+
 **Examples:**
 ```
-gtd_list when="today"                # Today's tasks
-gtd_list when="inbox"                # Inbox tasks
-gtd_list project="proj-123"          # Tasks in project
-gtd_list status="completed"          # Completed tasks
+gtd_list when="today"                # Today's open tasks
+gtd_list when="inbox"                # Inbox tasks (open only)
+gtd_list when="logbook"              # Completed + canceled tasks
+gtd_list project="proj-123"          # Tasks in project (open only)
+gtd_list status="all"                # All tasks regardless of status
 ```
 
 ### gtd_update
@@ -165,7 +168,7 @@ gtd_areas action="update" id="area-123" title="Wellness"  # Rename
 ```
 
 ### gtd_projects
-Manage projects.
+Manage projects. By default, list only shows open projects.
 
 **Parameters:**
 - `action` (required) - list, add, or update
@@ -174,12 +177,14 @@ Manage projects.
 - `notes` - Project notes
 - `when` - anytime, someday, or YYYY-MM-DD
 - `area` - Area ID for filtering (list) or assignment (add/update)
+- `status` - Filter for list: open (default), completed, canceled, or all
 - `headings` - Ordered list of heading names
 
 **Examples:**
 ```
-gtd_projects action="list"                        # List all projects
-gtd_projects action="list" area="area-123"        # Projects in area
+gtd_projects action="list"                        # List open projects
+gtd_projects action="list" status="all"           # List all projects
+gtd_projects action="list" area="area-123"        # Open projects in area
 gtd_projects action="add" title="New Feature" area="area-123"
 gtd_projects action="update" id="proj-123" headings=["Todo", "Done"]
 ```

@@ -586,7 +586,8 @@ func (e *Engine) createGTDActions() {
 
 		switch intent {
 		case "gtd_show_today":
-			tasks := e.gtdStore.GetTasks("today", "", "")
+			allTasks := e.gtdStore.GetTasks("today", "", "")
+			tasks := filterOpenTasks(allTasks)
 			if len(tasks) == 0 {
 				return "No tasks for today", nil
 			}
@@ -598,7 +599,8 @@ func (e *Engine) createGTDActions() {
 			return header + strings.Join(lines, "\n"), nil
 
 		case "gtd_show_inbox":
-			tasks := e.gtdStore.GetTasks("inbox", "", "")
+			allTasks := e.gtdStore.GetTasks("inbox", "", "")
+			tasks := filterOpenTasks(allTasks)
 			if len(tasks) == 0 {
 				return "Inbox is empty", nil
 			}
@@ -606,6 +608,24 @@ func (e *Engine) createGTDActions() {
 			header := "Inbox:\n"
 			if len(lines) < len(tasks) {
 				header = fmt.Sprintf("Inbox (%d of %d):\n", len(lines), len(tasks))
+			}
+			return header + strings.Join(lines, "\n"), nil
+
+		case "gtd_show_logbook":
+			allTasks := e.gtdStore.GetTasks("", "", "")
+			var tasks []gtd.Task
+			for _, t := range allTasks {
+				if t.Status == "completed" || t.Status == "canceled" {
+					tasks = append(tasks, t)
+				}
+			}
+			if len(tasks) == 0 {
+				return "Logbook is empty", nil
+			}
+			lines := formatTaskList(tasks, 1800)
+			header := "Logbook:\n"
+			if len(lines) < len(tasks) {
+				header = fmt.Sprintf("Logbook (%d of %d):\n", len(lines), len(tasks))
 			}
 			return header + strings.Join(lines, "\n"), nil
 
@@ -638,6 +658,17 @@ func (e *Engine) createGTDActions() {
 			return nil, fmt.Errorf("unknown GTD intent: %s", intent)
 		}
 	}))
+}
+
+// filterOpenTasks returns only tasks with status "open"
+func filterOpenTasks(tasks []gtd.Task) []gtd.Task {
+	var result []gtd.Task
+	for _, t := range tasks {
+		if t.Status == "open" {
+			result = append(result, t)
+		}
+	}
+	return result
 }
 
 // formatTaskList formats tasks into numbered lines, truncating to fit within maxLen

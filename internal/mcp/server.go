@@ -618,7 +618,7 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Properties: map[string]property{
 					"when": {
 						Type:        "string",
-						Description: "Filter by when: inbox, today, anytime, someday, or a specific YYYY-MM-DD date",
+						Description: "Filter by when: inbox, today, anytime, someday, logbook (completed+canceled), or YYYY-MM-DD date",
 					},
 					"project": {
 						Type:        "string",
@@ -742,6 +742,10 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 					"area": {
 						Type:        "string",
 						Description: "Area ID for filtering (list) or assignment (add/update)",
+					},
+					"status": {
+						Type:        "string",
+						Description: "Filter by status (list only): open (default), completed, canceled, or all",
 					},
 					"headings": {
 						Type:        "array",

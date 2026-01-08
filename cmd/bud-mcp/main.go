@@ -699,7 +699,13 @@ func main() {
 		project, _ := args["project"].(string)
 		area, _ := args["area"].(string)
 		status, _ := args["status"].(string)
-		if status == "" {
+
+		// Handle "logbook" as a virtual when value (completed + canceled)
+		isLogbook := when == "logbook"
+		if isLogbook {
+			when = "" // get all tasks, filter by status below
+			status = "all"
+		} else if status == "" {
 			status = "open" // default to open tasks
 		}
 
@@ -708,7 +714,12 @@ func main() {
 		// Filter by status
 		var filtered []gtd.Task
 		for _, t := range tasks {
-			if status == "all" || t.Status == status {
+			if isLogbook {
+				// Logbook shows completed and canceled
+				if t.Status == "completed" || t.Status == "canceled" {
+					filtered = append(filtered, t)
+				}
+			} else if status == "all" || t.Status == status {
 				filtered = append(filtered, t)
 			}
 		}
@@ -919,8 +930,22 @@ func main() {
 		case "list":
 			when, _ := args["when"].(string)
 			area, _ := args["area"].(string)
+			status, _ := args["status"].(string)
+			if status == "" {
+				status = "open" // default to open projects
+			}
+
 			projects := gtdStore.GetProjects(when, area)
-			if len(projects) == 0 {
+
+			// Filter by status
+			var filtered []gtd.Project
+			for _, p := range projects {
+				if status == "all" || p.Status == status {
+					filtered = append(filtered, p)
+				}
+			}
+
+			if len(filtered) == 0 {
 				filterDesc := ""
 				if when != "" {
 					filterDesc += fmt.Sprintf(" when=%s", when)
@@ -928,12 +953,15 @@ func main() {
 				if area != "" {
 					filterDesc += fmt.Sprintf(" area=%s", area)
 				}
+				if status != "all" {
+					filterDesc += fmt.Sprintf(" status=%s", status)
+				}
 				if filterDesc == "" {
 					return "No projects found.", nil
 				}
 				return fmt.Sprintf("No projects found matching:%s", filterDesc), nil
 			}
-			data, _ := json.MarshalIndent(projects, "", "  ")
+			data, _ := json.MarshalIndent(filtered, "", "  ")
 			return string(data), nil
 
 		case "add":
