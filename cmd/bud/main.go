@@ -289,6 +289,7 @@ func main() {
 
 		// Wire reflex reply callback to outbox
 		reflexReplyCallback = func(channelID, message string) error {
+			log.Printf("[reflex] Sending reply to channel %s: %s", channelID, truncate(message, 50))
 			action := &types.Action{
 				ID:   fmt.Sprintf("reflex-reply-%d", time.Now().UnixNano()),
 				Type: "send_message",
