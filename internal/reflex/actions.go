@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// ErrStopPipeline signals the pipeline should stop (not an error, just early exit)
+var ErrStopPipeline = fmt.Errorf("pipeline stopped")
+
 // Action is the interface for reflex actions
 type Action interface {
 	Execute(ctx context.Context, params map[string]any, vars map[string]any) (any, error)
@@ -46,6 +49,7 @@ func NewActionRegistry() *ActionRegistry {
 	r.Register("template", ActionFunc(actionTemplate))
 	r.Register("log", ActionFunc(actionLog))
 	r.Register("shell", ActionFunc(actionShell))
+	r.Register("gate", ActionFunc(actionGate))
 
 	return r
 }
@@ -233,6 +237,35 @@ func actionShell(ctx context.Context, params map[string]any, vars map[string]any
 	}
 
 	return string(output), nil
+}
+
+func actionGate(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+	condition := ""
+	if c, ok := params["condition"].(string); ok {
+		condition = c
+	}
+
+	// Render the condition template
+	rendered, err := renderTemplate(condition, vars)
+	if err != nil {
+		return nil, fmt.Errorf("gate condition template failed: %w", err)
+	}
+
+	// Evaluate condition (simple string equality check)
+	// Format: "{{.intent}} == not_gtd" renders to "not_gtd == not_gtd"
+	parts := strings.Split(rendered, "==")
+	if len(parts) == 2 {
+		left := strings.TrimSpace(parts[0])
+		right := strings.TrimSpace(parts[1])
+		if left == right {
+			// Condition is true, check if we should stop
+			if stop, ok := params["stop"].(bool); ok && stop {
+				return nil, ErrStopPipeline
+			}
+		}
+	}
+
+	return "gate passed", nil
 }
 
 // Helper functions

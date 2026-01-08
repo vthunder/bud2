@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -213,6 +214,18 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 		// Execute action
 		result, err := action.Execute(ctx, params, vars)
 		if err != nil {
+			// Check if this is a pipeline stop (not an error)
+			if errors.Is(err, ErrStopPipeline) {
+				reflex.LastFired = time.Now()
+				reflex.FireCount++
+				return &ReflexResult{
+					ReflexName: reflex.Name,
+					Success:    true,
+					Stopped:    true,
+					Output:     vars,
+					Duration:   time.Since(start),
+				}, nil
+			}
 			return &ReflexResult{
 				ReflexName: reflex.Name,
 				Success:    false,

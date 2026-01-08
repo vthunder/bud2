@@ -116,6 +116,7 @@ func (r *Reflex) Match(source, typ, content string) MatchResult {
 type ReflexResult struct {
 	ReflexName string
 	Success    bool
+	Stopped    bool // true if pipeline stopped early via gate
 	Output     map[string]any
 	Error      error
 	Duration   time.Duration
