@@ -199,7 +199,7 @@ func runScenario(scenario *Scenario) bool {
 
 			// Clear per-session state but keep memory
 			os.Remove(filepath.Join(statePath, "threads.json"))
-			os.Remove(filepath.Join(statePath, "inbox.jsonl"))
+			os.Remove(filepath.Join(statePath, "queues", "inbox.jsonl"))
 			lastOutboxOffset = 0
 
 			if err := startBud(); err != nil {
@@ -324,7 +324,7 @@ func stopBud() {
 }
 
 func sendMessage(content string) {
-	inboxPath := filepath.Join(statePath, "inbox.jsonl")
+	inboxPath := filepath.Join(statePath, "queues", "inbox.jsonl")
 
 	msg := InboxMessage{
 		ID:        fmt.Sprintf("test-%d", time.Now().UnixNano()),
@@ -356,7 +356,7 @@ func sendMessage(content string) {
 }
 
 func waitForResponse(timeout time.Duration) string {
-	outboxPath := filepath.Join(statePath, "outbox.jsonl")
+	outboxPath := filepath.Join(statePath, "queues", "outbox.jsonl")
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {

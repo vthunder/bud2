@@ -75,9 +75,9 @@ func (i *Inspector) Summary() (*StateSummary, error) {
 
 	// Count JSONL files
 	summary.Activity = i.countJSONL("activity.jsonl")
-	summary.Inbox = i.countJSONL("inbox.jsonl")
-	summary.Outbox = i.countJSONL("outbox.jsonl")
-	summary.Signals = i.countJSONL("signals.jsonl")
+	summary.Inbox = i.countJSONL("queues/inbox.jsonl")
+	summary.Outbox = i.countJSONL("queues/outbox.jsonl")
+	summary.Signals = i.countJSONL("queues/signals.jsonl")
 
 	return summary, nil
 }
@@ -385,16 +385,17 @@ type QueuesSummary struct {
 // ListQueues returns queue entry counts
 func (i *Inspector) ListQueues() (*QueuesSummary, error) {
 	return &QueuesSummary{
-		Inbox:   i.countJSONL("inbox.jsonl"),
-		Outbox:  i.countJSONL("outbox.jsonl"),
-		Signals: i.countJSONL("signals.jsonl"),
+		Inbox:   i.countJSONL("queues/inbox.jsonl"),
+		Outbox:  i.countJSONL("queues/outbox.jsonl"),
+		Signals: i.countJSONL("queues/signals.jsonl"),
 	}, nil
 }
 
 // ClearQueues clears all queue files
 func (i *Inspector) ClearQueues() error {
+	queuesPath := filepath.Join(i.statePath, "queues")
 	for _, name := range []string{"inbox.jsonl", "outbox.jsonl", "signals.jsonl"} {
-		path := filepath.Join(i.statePath, name)
+		path := filepath.Join(queuesPath, name)
 		if err := os.WriteFile(path, []byte{}, 0644); err != nil {
 			return fmt.Errorf("failed to clear %s: %w", name, err)
 		}
@@ -558,7 +559,7 @@ func (i *Inspector) saveTraces(traces []*types.Trace) error {
 }
 
 func (i *Inspector) loadPercepts() ([]*types.Percept, error) {
-	path := filepath.Join(i.statePath, "percepts.json")
+	path := filepath.Join(i.statePath, "queues", "percepts.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -577,7 +578,7 @@ func (i *Inspector) loadPercepts() ([]*types.Percept, error) {
 }
 
 func (i *Inspector) savePercepts(percepts []*types.Percept) error {
-	path := filepath.Join(i.statePath, "percepts.json")
+	path := filepath.Join(i.statePath, "queues", "percepts.json")
 	file := struct {
 		Percepts []*types.Percept `json:"percepts"`
 	}{Percepts: percepts}

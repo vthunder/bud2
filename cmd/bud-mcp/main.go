@@ -39,7 +39,9 @@ func main() {
 		statePath = "state"
 	}
 
-	outboxPath := filepath.Join(statePath, "outbox.jsonl")
+	queuesPath := filepath.Join(statePath, "queues")
+	os.MkdirAll(queuesPath, 0755)
+	outboxPath := filepath.Join(queuesPath, "outbox.jsonl")
 	log.Printf("Outbox path: %s", outboxPath)
 
 	// Create MCP server
@@ -184,7 +186,7 @@ func main() {
 		}
 
 		// Append to inbox file
-		f, err := os.OpenFile(filepath.Join(statePath, "inbox.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(filepath.Join(queuesPath, "inbox.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return "", fmt.Errorf("failed to open inbox: %w", err)
 		}
@@ -216,7 +218,7 @@ func main() {
 		}
 
 		// Write to signals file (picked up by main bud process)
-		signalsPath := filepath.Join(statePath, "signals.jsonl")
+		signalsPath := filepath.Join(queuesPath, "signals.jsonl")
 		f, err := os.OpenFile(signalsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return "", fmt.Errorf("failed to open signals file: %w", err)

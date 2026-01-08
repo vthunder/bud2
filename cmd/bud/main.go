@@ -82,11 +82,13 @@ func main() {
 	}
 
 	// Initialize memory pools
-	inbox := memory.NewInbox(filepath.Join(statePath, "inbox.jsonl"))
-	perceptPool := memory.NewPerceptPool(filepath.Join(statePath, "percepts.json"))
+	queuesPath := filepath.Join(statePath, "queues")
+	os.MkdirAll(queuesPath, 0755)
+	inbox := memory.NewInbox(filepath.Join(queuesPath, "inbox.jsonl"))
+	perceptPool := memory.NewPerceptPool(filepath.Join(queuesPath, "percepts.json"))
 	threadPool := memory.NewThreadPool(filepath.Join(statePath, "threads.json"))
 	tracePool := memory.NewTracePool(filepath.Join(statePath, "traces.json"))
-	outbox := memory.NewOutbox(filepath.Join(statePath, "outbox.jsonl"))
+	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
 
 	// Load persisted state
 	if err := inbox.Load(); err != nil {
