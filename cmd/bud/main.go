@@ -198,7 +198,11 @@ func main() {
 
 		if handled && len(results) > 0 {
 			result := results[0]
-			if result.Success {
+			// Success && !Stopped means reflex actually handled it
+			// Stopped means gate fired (e.g., not_gtd) - let executive handle
+			if result.Stopped {
+				log.Printf("[main] Reflex %s passed (gate stopped) - routing to executive", result.ReflexName)
+			} else if result.Success {
 				// Create immediate traces for follow-up context
 				attn.CreateImmediateTrace(
 					fmt.Sprintf("User asked: %s", content),
