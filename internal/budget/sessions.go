@@ -142,7 +142,7 @@ func (t *SessionTracker) checkDayRollover() {
 // Persistence
 
 func (t *SessionTracker) filePath() string {
-	return filepath.Join(t.statePath, "sessions.json")
+	return filepath.Join(t.statePath, "system", "sessions.json")
 }
 
 func (t *SessionTracker) load() {

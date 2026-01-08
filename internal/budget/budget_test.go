@@ -64,7 +64,7 @@ func TestSignalProcessor(t *testing.T) {
 
 	// Write a signal file
 	signalData := `{"type":"session_done","session_id":"session-1","summary":"Test done","timestamp":"2026-01-06T12:00:00Z"}`
-	queuesPath := filepath.Join(statePath, "queues")
+	queuesPath := filepath.Join(statePath, "system", "queues")
 	os.MkdirAll(queuesPath, 0755)
 	signalsPath := filepath.Join(queuesPath, "signals.jsonl")
 	if err := os.WriteFile(signalsPath, []byte(signalData+"\n"), 0644); err != nil {

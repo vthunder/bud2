@@ -45,7 +45,7 @@ type Log struct {
 // New creates an activity logger
 func New(statePath string) *Log {
 	return &Log{
-		path: filepath.Join(statePath, "activity.jsonl"),
+		path: filepath.Join(statePath, "system", "activity.jsonl"),
 	}
 }
 

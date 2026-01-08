@@ -38,11 +38,12 @@ func TestInspector_Health(t *testing.T) {
 
 func setupTestState(t *testing.T, dir string) {
 	t.Helper()
-	os.WriteFile(filepath.Join(dir, "traces.json"), []byte(`{"traces":[]}`), 0644)
-	os.WriteFile(filepath.Join(dir, "threads.json"), []byte(`{"threads":[]}`), 0644)
-	os.WriteFile(filepath.Join(dir, "sessions.json"), []byte(`{}`), 0644)
-	// Create queues directory
-	queuesDir := filepath.Join(dir, "queues")
+	// Create system directory structure
+	systemDir := filepath.Join(dir, "system")
+	queuesDir := filepath.Join(systemDir, "queues")
 	os.MkdirAll(queuesDir, 0755)
+	os.WriteFile(filepath.Join(systemDir, "traces.json"), []byte(`{"traces":[]}`), 0644)
+	os.WriteFile(filepath.Join(systemDir, "threads.json"), []byte(`{"threads":[]}`), 0644)
+	os.WriteFile(filepath.Join(systemDir, "sessions.json"), []byte(`{}`), 0644)
 	os.WriteFile(filepath.Join(queuesDir, "percepts.json"), []byte(`{"percepts":[]}`), 0644)
 }

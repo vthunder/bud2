@@ -74,10 +74,10 @@ func (i *Inspector) Summary() (*StateSummary, error) {
 	}
 
 	// Count JSONL files
-	summary.Activity = i.countJSONL("activity.jsonl")
-	summary.Inbox = i.countJSONL("queues/inbox.jsonl")
-	summary.Outbox = i.countJSONL("queues/outbox.jsonl")
-	summary.Signals = i.countJSONL("queues/signals.jsonl")
+	summary.Activity = i.countJSONL("system/activity.jsonl")
+	summary.Inbox = i.countJSONL("system/queues/inbox.jsonl")
+	summary.Outbox = i.countJSONL("system/queues/outbox.jsonl")
+	summary.Signals = i.countJSONL("system/queues/signals.jsonl")
 
 	return summary, nil
 }
@@ -364,12 +364,12 @@ func (i *Inspector) ClearThreads(status *types.ThreadStatus) (int, error) {
 
 // TailLogs returns recent entries from activity log
 func (i *Inspector) TailLogs(count int) ([]map[string]any, error) {
-	return i.tailJSONL("activity.jsonl", count), nil
+	return i.tailJSONL("system/activity.jsonl", count), nil
 }
 
 // TruncateLogs keeps only the last N entries in the activity log
 func (i *Inspector) TruncateLogs(keep int) error {
-	if err := i.truncateJSONL("activity.jsonl", keep); err != nil {
+	if err := i.truncateJSONL("system/activity.jsonl", keep); err != nil {
 		return fmt.Errorf("failed to truncate activity.jsonl: %w", err)
 	}
 	return nil
@@ -385,15 +385,15 @@ type QueuesSummary struct {
 // ListQueues returns queue entry counts
 func (i *Inspector) ListQueues() (*QueuesSummary, error) {
 	return &QueuesSummary{
-		Inbox:   i.countJSONL("queues/inbox.jsonl"),
-		Outbox:  i.countJSONL("queues/outbox.jsonl"),
-		Signals: i.countJSONL("queues/signals.jsonl"),
+		Inbox:   i.countJSONL("system/queues/inbox.jsonl"),
+		Outbox:  i.countJSONL("system/queues/outbox.jsonl"),
+		Signals: i.countJSONL("system/queues/signals.jsonl"),
 	}, nil
 }
 
 // ClearQueues clears all queue files
 func (i *Inspector) ClearQueues() error {
-	queuesPath := filepath.Join(i.statePath, "queues")
+	queuesPath := filepath.Join(i.statePath, "system", "queues")
 	for _, name := range []string{"inbox.jsonl", "outbox.jsonl", "signals.jsonl"} {
 		path := filepath.Join(queuesPath, name)
 		if err := os.WriteFile(path, []byte{}, 0644); err != nil {
@@ -412,7 +412,7 @@ type SessionInfo struct {
 
 // ListSessions returns session info
 func (i *Inspector) ListSessions() ([]SessionInfo, error) {
-	path := filepath.Join(i.statePath, "sessions.json")
+	path := filepath.Join(i.statePath, "system", "sessions.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -442,7 +442,7 @@ func (i *Inspector) ListSessions() ([]SessionInfo, error) {
 
 // ClearSessions clears session tracking
 func (i *Inspector) ClearSessions() error {
-	path := filepath.Join(i.statePath, "sessions.json")
+	path := filepath.Join(i.statePath, "system", "sessions.json")
 	return os.WriteFile(path, []byte("{}"), 0644)
 }
 
@@ -525,7 +525,7 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 // Helper methods
 
 func (i *Inspector) loadTraces() ([]*types.Trace, error) {
-	path := filepath.Join(i.statePath, "traces.json")
+	path := filepath.Join(i.statePath, "system", "traces.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -544,7 +544,7 @@ func (i *Inspector) loadTraces() ([]*types.Trace, error) {
 }
 
 func (i *Inspector) saveTraces(traces []*types.Trace) error {
-	path := filepath.Join(i.statePath, "traces.json")
+	path := filepath.Join(i.statePath, "system", "traces.json")
 	file := struct {
 		Traces []*types.Trace `json:"traces"`
 	}{Traces: traces}
@@ -559,7 +559,7 @@ func (i *Inspector) saveTraces(traces []*types.Trace) error {
 }
 
 func (i *Inspector) loadPercepts() ([]*types.Percept, error) {
-	path := filepath.Join(i.statePath, "queues", "percepts.json")
+	path := filepath.Join(i.statePath, "system", "queues", "percepts.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -578,7 +578,7 @@ func (i *Inspector) loadPercepts() ([]*types.Percept, error) {
 }
 
 func (i *Inspector) savePercepts(percepts []*types.Percept) error {
-	path := filepath.Join(i.statePath, "queues", "percepts.json")
+	path := filepath.Join(i.statePath, "system", "queues", "percepts.json")
 	file := struct {
 		Percepts []*types.Percept `json:"percepts"`
 	}{Percepts: percepts}
@@ -593,7 +593,7 @@ func (i *Inspector) savePercepts(percepts []*types.Percept) error {
 }
 
 func (i *Inspector) loadThreads() ([]*types.Thread, error) {
-	path := filepath.Join(i.statePath, "threads.json")
+	path := filepath.Join(i.statePath, "system", "threads.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -612,7 +612,7 @@ func (i *Inspector) loadThreads() ([]*types.Thread, error) {
 }
 
 func (i *Inspector) saveThreads(threads []*types.Thread) error {
-	path := filepath.Join(i.statePath, "threads.json")
+	path := filepath.Join(i.statePath, "system", "threads.json")
 	file := struct {
 		Threads []*types.Thread `json:"threads"`
 	}{Threads: threads}

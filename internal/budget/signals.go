@@ -47,7 +47,7 @@ func (p *SignalProcessor) ProcessSignals() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	signalsPath := filepath.Join(p.statePath, "queues", "signals.jsonl")
+	signalsPath := filepath.Join(p.statePath, "system", "queues", "signals.jsonl")
 
 	f, err := os.Open(signalsPath)
 	if err != nil {

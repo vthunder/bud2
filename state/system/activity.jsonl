@@ -1,0 +1,15 @@
+{"ts":"2026-01-08T11:42:59.315354+01:00","type":"input","summary":"thunder05521: show my todos","source":"inbox","channel":"1454634002290970761"}
+{"ts":"2026-01-08T11:43:03.570361+01:00","type":"reflex","summary":"Handled gtd_show_inbox query","intent":"gtd_show_inbox","data":{"query":"show my todos","response":"Inbox is empty"}}
+{"ts":"2026-01-08T11:43:04.51823+01:00","type":"action","summary":"send_message: Inbox is empty","channel":"1454634002290970761","data":{"content":"Inbox is empty"}}
+{"ts":"2026-01-08T11:43:09.516191+01:00","type":"input","summary":"thunder05521: are you sure?","source":"inbox","channel":"1454634002290970761"}
+{"ts":"2026-01-08T11:43:10.167995+01:00","type":"reflex_pass","summary":"Not handled by gtd-handler, routing to executive","intent":"not_gtd","data":{"query":"are you sure?"}}
+{"ts":"2026-01-08T11:43:10.316279+01:00","type":"executive_wake","summary":"Executive processing","thread_id":"t-20260108-114310.232","data":{"context":"are you sure?"}}
+{"ts":"2026-01-08T11:43:30.147535+01:00","type":"action","summary":"send_message: Yes - I just double-checked. Your GTD inbox is empty, and so are your \"today\" an...","channel":"1454634002290970761","data":{"content":"Yes - I just double-checked. Your GTD inbox is empty, and so are your \"today\" and \"anytime\" lists. No open tasks anywhere.\n\nWere you expecting something to be there?"}}
+{"ts":"2026-01-08T13:25:54.736308+01:00","type":"executive_done","summary":"Completed via CPU idle detection","thread_id":"t-20260108-114310.232","data":{"completion":"signal_done","duration_sec":6164.418044}}
+{"ts":"2026-01-08T15:25:39.242928+01:00","type":"input","summary":"Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.","source":"impulse:system"}
+{"ts":"2026-01-08T15:25:39.941907+01:00","type":"executive_wake","summary":"Executive processing","thread_id":"t-20260108-152539.840","data":{"context":"Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work."}}
+{"ts":"2026-01-08T15:40:54.43834+01:00","type":"input","summary":"Bud: Explored bud2 codebase structure: CLI commands in cmd/bud and cmd/bud-mcp, state file patterns in in...","source":"bud","channel":"synthetic"}
+{"ts":"2026-01-08T15:40:54.938317+01:00","type":"executive_wake","summary":"Executive processing","thread_id":"t-20260108-154054.835","data":{"context":"Explored bud2 codebase structure: CLI commands in cmd/bud and cmd/bud-mcp, state file patterns in in..."}}
+{"ts":"2026-01-08T15:49:24.73833+01:00","type":"executive_done","summary":"Completed via CPU idle detection","thread_id":"t-20260108-152539.840","data":{"completion":"signal_done","duration_sec":1424.807802709}}
+{"ts":"2026-01-08T16:20:45.719792+01:00","type":"input","summary":"thunder05521: hi bud!","source":"inbox","channel":"1454634002290970761"}
+{"ts":"2026-01-08T16:20:50.834497+01:00","type":"reflex_pass","summary":"Not handled by gtd-handler, routing to executive","intent":"not_gtd","data":{"query":"hi bud!"}}

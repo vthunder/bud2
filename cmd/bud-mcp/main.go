@@ -39,7 +39,8 @@ func main() {
 		statePath = "state"
 	}
 
-	queuesPath := filepath.Join(statePath, "queues")
+	systemPath := filepath.Join(statePath, "system")
+	queuesPath := filepath.Join(systemPath, "queues")
 	os.MkdirAll(queuesPath, 0755)
 	outboxPath := filepath.Join(queuesPath, "outbox.jsonl")
 	log.Printf("Outbox path: %s", outboxPath)
@@ -101,7 +102,7 @@ func main() {
 		return "Message queued for sending to Discord", nil
 	})
 
-	tracesPath := filepath.Join(statePath, "traces.json")
+	tracesPath := filepath.Join(systemPath, "traces.json")
 
 	// Register list_traces tool (for discovering trace IDs)
 	server.RegisterTool("list_traces", func(ctx any, args map[string]any) (string, error) {

@@ -198,8 +198,8 @@ func runScenario(scenario *Scenario) bool {
 			time.Sleep(1 * time.Second)
 
 			// Clear per-session state but keep memory
-			os.Remove(filepath.Join(statePath, "threads.json"))
-			os.Remove(filepath.Join(statePath, "queues", "inbox.jsonl"))
+			os.Remove(filepath.Join(statePath, "system", "threads.json"))
+			os.Remove(filepath.Join(statePath, "system", "queues", "inbox.jsonl"))
 			lastOutboxOffset = 0
 
 			if err := startBud(); err != nil {
@@ -324,7 +324,7 @@ func stopBud() {
 }
 
 func sendMessage(content string) {
-	inboxPath := filepath.Join(statePath, "queues", "inbox.jsonl")
+	inboxPath := filepath.Join(statePath, "system", "queues", "inbox.jsonl")
 
 	msg := InboxMessage{
 		ID:        fmt.Sprintf("test-%d", time.Now().UnixNano()),
@@ -356,7 +356,7 @@ func sendMessage(content string) {
 }
 
 func waitForResponse(timeout time.Duration) string {
-	outboxPath := filepath.Join(statePath, "queues", "outbox.jsonl")
+	outboxPath := filepath.Join(statePath, "system", "queues", "outbox.jsonl")
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -398,7 +398,7 @@ func waitForResponse(timeout time.Duration) string {
 }
 
 func showTraces() {
-	tracesPath := filepath.Join(statePath, "traces.json")
+	tracesPath := filepath.Join(statePath, "system", "traces.json")
 
 	data, err := os.ReadFile(tracesPath)
 	if err != nil {

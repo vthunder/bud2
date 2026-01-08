@@ -82,12 +82,13 @@ func main() {
 	}
 
 	// Initialize memory pools
-	queuesPath := filepath.Join(statePath, "queues")
+	systemPath := filepath.Join(statePath, "system")
+	queuesPath := filepath.Join(systemPath, "queues")
 	os.MkdirAll(queuesPath, 0755)
 	inbox := memory.NewInbox(filepath.Join(queuesPath, "inbox.jsonl"))
 	perceptPool := memory.NewPerceptPool(filepath.Join(queuesPath, "percepts.json"))
-	threadPool := memory.NewThreadPool(filepath.Join(statePath, "threads.json"))
-	tracePool := memory.NewTracePool(filepath.Join(statePath, "traces.json"))
+	threadPool := memory.NewThreadPool(filepath.Join(systemPath, "threads.json"))
+	tracePool := memory.NewTracePool(filepath.Join(systemPath, "traces.json"))
 	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
 
 	// Load persisted state

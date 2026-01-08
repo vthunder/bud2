@@ -25,13 +25,14 @@ func main() {
 	statePath := "/tmp/bud2-memory-test"
 	os.RemoveAll(statePath)
 	os.MkdirAll(statePath, 0755)
-	queuesPath := filepath.Join(statePath, "queues")
+	systemPath := filepath.Join(statePath, "system")
+	queuesPath := filepath.Join(systemPath, "queues")
 	os.MkdirAll(queuesPath, 0755)
 
 	// Initialize pools
 	perceptPool := memory.NewPerceptPool(filepath.Join(queuesPath, "percepts.json"))
-	threadPool := memory.NewThreadPool(filepath.Join(statePath, "threads.json"))
-	tracePool := memory.NewTracePool(filepath.Join(statePath, "traces.json"))
+	threadPool := memory.NewThreadPool(filepath.Join(systemPath, "threads.json"))
+	tracePool := memory.NewTracePool(filepath.Join(systemPath, "traces.json"))
 	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
 
 	// Track responses from Claude
