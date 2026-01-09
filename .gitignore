@@ -16,3 +16,4 @@ state/*.jsonl
 .idea/
 .vscode/
 *.swp
+bud
