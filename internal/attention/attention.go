@@ -268,6 +268,7 @@ func (a *Attention) selectThread() *types.Thread {
 
 	// Prioritize threads with new content - these need attention
 	// Only consider already-processed threads if no new content threads exist
+	hasNewContent := len(withNewContent) > 0
 	candidates := withNewContent
 	if len(candidates) == 0 {
 		candidates = alreadyProcessed
@@ -303,10 +304,21 @@ func (a *Attention) selectThread() *types.Thread {
 		return current
 	}
 
-	// No active thread, pick highest salience if above threshold
+	// No active thread - select highest salience thread
 	top := candidates[0]
-	if top.Salience >= threshold {
-		return top
+
+	// Threads with new content MUST be processed (use minimal threshold)
+	// The salience threshold is meant to prevent context-switching, not block new work
+	if hasNewContent {
+		// Very low threshold for new content - it needs to be processed
+		if top.Salience >= 0.1 {
+			return top
+		}
+	} else {
+		// For already-processed threads, use normal threshold
+		if top.Salience >= threshold {
+			return top
+		}
 	}
 	return nil
 }
