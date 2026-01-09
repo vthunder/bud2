@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -290,9 +291,14 @@ func (e *Executive) buildPrompt(thread *types.Thread, session *ClaudeSession, is
 			includedTraceIDs = append(includedTraceIDs, t.ID)
 		}
 		if len(newTraces) > 0 {
-			prompt.WriteString("## Relevant Memories\n")
+			// Sort by CreatedAt (oldest first) so LLM sees chronological sequence
+			sort.Slice(newTraces, func(i, j int) bool {
+				return newTraces[i].CreatedAt.Before(newTraces[j].CreatedAt)
+			})
+			prompt.WriteString("## Relevant Memories (oldest first)\n")
 			for _, t := range newTraces {
-				prompt.WriteString(fmt.Sprintf("- %s\n", t.Content))
+				ts := t.CreatedAt.Format("2006-01-02 15:04")
+				prompt.WriteString(fmt.Sprintf("- [%s] %s\n", ts, t.Content))
 			}
 			prompt.WriteString("\n")
 		}
