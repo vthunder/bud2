@@ -290,11 +290,17 @@ func (a *Attention) selectThread() *types.Thread {
 
 	current := a.threads.Active()
 
-	// If we have an active thread, require significant salience difference to switch
+	// If we have an active thread, decide whether to switch
 	if current != nil {
 		top := candidates[0]
 		if top.ID == current.ID {
 			return current // keep current
+		}
+
+		// If current thread is already processed and there are threads with new content,
+		// switch to the new content thread (it needs processing)
+		if hasNewContent && current.ProcessedAt != nil {
+			return top // switch to thread with new content
 		}
 
 		// Need to beat current by threshold margin
