@@ -1,6 +1,9 @@
 # Runtime state (regenerated)
+state/**/*.json
+state/**/*.jsonl
 state/*.json
 state/*.jsonl
+state/bud.pid
 
 # Go build artifacts
 /bud2
