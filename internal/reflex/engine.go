@@ -77,9 +77,20 @@ func (e *Engine) Load() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Check if directory exists
+	dirExists := true
+	if _, err := os.Stat(e.reflexDir); os.IsNotExist(err) {
+		dirExists = false
+	}
+
 	// Ensure directory exists
 	if err := os.MkdirAll(e.reflexDir, 0755); err != nil {
 		return fmt.Errorf("failed to create reflexes dir: %w", err)
+	}
+
+	// If directory was just created, seed from seed/reflexes/
+	if !dirExists {
+		e.seedFromDefaults()
 	}
 
 	// Find all YAML files
@@ -126,6 +137,37 @@ func (e *Engine) loadReflexFile(path string) (*Reflex, error) {
 	}
 
 	return &reflex, nil
+}
+
+// seedFromDefaults copies seed reflexes to the reflexes directory
+func (e *Engine) seedFromDefaults() {
+	seedDir := "seed/reflexes"
+	files, err := filepath.Glob(filepath.Join(seedDir, "*.yaml"))
+	if err != nil {
+		log.Printf("[reflex] Failed to glob seed reflexes: %v", err)
+		return
+	}
+
+	ymlFiles, err := filepath.Glob(filepath.Join(seedDir, "*.yml"))
+	if err == nil {
+		files = append(files, ymlFiles...)
+	}
+
+	for _, src := range files {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			log.Printf("[reflex] Failed to read seed %s: %v", src, err)
+			continue
+		}
+
+		dst := filepath.Join(e.reflexDir, filepath.Base(src))
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			log.Printf("[reflex] Failed to write %s: %v", dst, err)
+			continue
+		}
+
+		log.Printf("[reflex] Seeded: %s", filepath.Base(src))
+	}
 }
 
 // SaveReflex saves a reflex to a YAML file
