@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/vthunder/bud2/internal/state"
@@ -141,7 +140,7 @@ func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 	fs.Parse(args)
 
 	if *regenCore {
-		seedPath := filepath.Join(statePath, "core_seed.md")
+		seedPath := "seed/core_seed.md"
 		count, err := inspector.RegenCore(seedPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)

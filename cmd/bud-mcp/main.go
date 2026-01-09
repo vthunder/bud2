@@ -1368,7 +1368,7 @@ func main() {
 			return fmt.Sprintf("Cleared %d non-core traces", count), nil
 
 		case "regen_core":
-			seedPath := filepath.Join(statePath, "core_seed.md")
+			seedPath := "seed/core_seed.md"
 			count, err := stateInspector.RegenCore(seedPath)
 			if err != nil {
 				return "", err
@@ -1555,7 +1555,7 @@ func main() {
 	})
 
 	server.RegisterTool("state_regen_core", func(ctx any, args map[string]any) (string, error) {
-		seedPath := filepath.Join(statePath, "core_seed.md")
+		seedPath := "seed/core_seed.md"
 		count, err := stateInspector.RegenCore(seedPath)
 		if err != nil {
 			return "", err

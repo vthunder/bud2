@@ -165,7 +165,7 @@ func runScenario(scenario *Scenario) bool {
 	os.MkdirAll(filepath.Join(statePath, "notes"), 0755)
 
 	// Copy core seed
-	seedSrc := "state/core_seed.md"
+	seedSrc := "seed/core_seed.md"
 	seedDst := filepath.Join(statePath, "core_seed.md")
 	if seedData, err := os.ReadFile(seedSrc); err == nil {
 		os.WriteFile(seedDst, seedData, 0644)

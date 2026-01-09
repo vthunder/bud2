@@ -106,7 +106,7 @@ Traces are consolidated memories - the output of processing percepts into durabl
 | **IsLabile** | Recently created, subject to reconsolidation |
 | **Inhibits** | Trace IDs this trace supersedes |
 
-**Core Traces**: Bootstrapped from `state/core_seed.md` on first run. Define identity, values, and system knowledge. Always included in executive context.
+**Core Traces**: Bootstrapped from `seed/core_seed.md` on first run. Define identity, values, and system knowledge. Always included in executive context.
 
 ## Memory Model
 
