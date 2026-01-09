@@ -98,6 +98,39 @@ func (a *Attention) loop() {
 			// Select highest salience thread
 			selected := a.selectThread()
 
+			// Debug: log thread selection periodically (every ~10 seconds)
+			if time.Now().Second()%10 == 0 {
+				threads := a.threads.All()
+				var withNew, processed []string
+				for _, t := range threads {
+					if t.Status == types.StatusActive || t.Status == types.StatusPaused {
+						id := t.ID
+						if len(id) > 20 {
+							id = id[:20]
+						}
+						entry := fmt.Sprintf("%s(%.2f)", id, t.Salience)
+						if t.ProcessedAt == nil {
+							withNew = append(withNew, entry)
+						} else {
+							processed = append(processed, entry)
+						}
+					}
+				}
+				if len(withNew) > 0 || len(processed) > 0 {
+					selectedID := "nil"
+					hasNew := false
+					if selected != nil {
+						selectedID = selected.ID
+						if len(selectedID) > 20 {
+							selectedID = selectedID[:20]
+						}
+						hasNew = selected.ProcessedAt == nil
+					}
+					log.Printf("[attention-debug] new=%v processed=%v selected=%s(new=%v) threshold=%.2f",
+						withNew, processed, selectedID, hasNew, 0.6-(a.arousal.Level*0.3))
+				}
+			}
+
 			// Notify if:
 			// 1. Active thread changed, OR
 			// 2. Current thread has new unprocessed content
@@ -220,11 +253,24 @@ func (a *Attention) selectThread() *types.Thread {
 	}
 
 	// Filter to active/paused threads (frozen threads can't become active directly)
-	candidates := make([]*types.Thread, 0)
+	// Also separate threads with new content (ProcessedAt == nil) from already-processed ones
+	var withNewContent []*types.Thread
+	var alreadyProcessed []*types.Thread
 	for _, t := range threads {
 		if t.Status == types.StatusActive || t.Status == types.StatusPaused {
-			candidates = append(candidates, t)
+			if t.ProcessedAt == nil {
+				withNewContent = append(withNewContent, t)
+			} else {
+				alreadyProcessed = append(alreadyProcessed, t)
+			}
 		}
+	}
+
+	// Prioritize threads with new content - these need attention
+	// Only consider already-processed threads if no new content threads exist
+	candidates := withNewContent
+	if len(candidates) == 0 {
+		candidates = alreadyProcessed
 	}
 
 	if len(candidates) == 0 {

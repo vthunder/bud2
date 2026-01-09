@@ -145,6 +145,10 @@ func (t *ThreadPool) Load() error {
 
 	t.threads = make(map[string]*types.Thread)
 	for _, thread := range file.Threads {
+		// Reset "active" threads to "paused" on load - there's no active session on restart
+		if thread.Status == types.StatusActive {
+			thread.Status = types.StatusPaused
+		}
 		t.threads[thread.ID] = thread
 	}
 	return nil
