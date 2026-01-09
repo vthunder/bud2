@@ -1,0 +1,10 @@
+[
+  {
+    "id": "task-wellness-daily",
+    "task": "Daily wellness check",
+    "priority": 3,
+    "context": "Regular housekeeping per wellness.md - review logs, check state health, look for reflex opportunities, review ideas",
+    "status": "pending",
+    "recurrence": "daily"
+  }
+]
