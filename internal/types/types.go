@@ -60,6 +60,11 @@ type Thread struct {
 	// Session management
 	SessionID    string       `json:"session_id,omitempty"`    // Claude session ID for resume
 	SessionState SessionState `json:"session_state,omitempty"` // runtime state: focused/active/frozen
+	WindowName   string       `json:"window_name,omitempty"`   // human-readable tmux window name
+
+	// Error tracking for backoff
+	ErrorCount int        `json:"error_count,omitempty"` // consecutive executive failures
+	LastError  *time.Time `json:"last_error,omitempty"`  // when last error occurred
 
 	// Feature accumulation (for association matching)
 	Features    ThreadFeatures    `json:"features"`

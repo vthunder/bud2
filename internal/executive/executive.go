@@ -92,6 +92,9 @@ func (e *Executive) getChannelID(thread *types.Thread) string {
 
 // ProcessThread processes an active thread
 func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) error {
+	log.Printf("[executive] ProcessThread called for %s (window: %s, session: %s, state: %s)",
+		thread.ID, thread.WindowName, thread.SessionID, thread.SessionState)
+
 	// Check if already processed (prevent re-processing on restart)
 	if thread.ProcessedAt != nil {
 		// Check if any percepts are newer than ProcessedAt
@@ -185,8 +188,26 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 
 		// Interactive mode - shows in tmux
 		if err := session.SendPromptInteractive(prompt, claudeCfg); err != nil {
+			// Track error for backoff
+			now := time.Now()
+			thread.LastError = &now
+			thread.ErrorCount++
+
+			// Clear session ID if too many errors (force fresh session)
+			if thread.ErrorCount >= 3 {
+				oldSessionID := thread.SessionID
+				thread.SessionID = ""
+				log.Printf("[executive] CLEARING session ID due to %d errors: thread=%s, oldSessionID='%s' -> ''",
+					thread.ErrorCount, thread.ID, oldSessionID)
+			}
+
 			return fmt.Errorf("interactive prompt failed: %w", err)
 		}
+
+		// Success - clear error state
+		thread.ErrorCount = 0
+		thread.LastError = nil
+
 		// Mark first message sent (so subsequent prompts skip boilerplate)
 		session.MarkFirstMessageSent()
 		// Mark percepts and traces as seen (so they're not repeated)

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"sync"
 
@@ -150,6 +151,9 @@ func (t *ThreadPool) Load() error {
 			thread.Status = types.StatusPaused
 		}
 		t.threads[thread.ID] = thread
+		// Log session info for debugging
+		log.Printf("[threads] Loaded thread %s: sessionID='%s', sessionState=%s, windowName=%s",
+			thread.ID, thread.SessionID, thread.SessionState, thread.WindowName)
 	}
 	return nil
 }

@@ -41,6 +41,10 @@ type claudeProcessState struct {
 	idleSince     time.Time // when it went idle
 	status        string    // "unknown", "active", "idle", "completed"
 	completedOnce bool      // prevent duplicate completion signals
+
+	// For delta-based CPU calculation
+	lastCPUTime   float64   // total CPU seconds at last poll
+	lastPollTime  time.Time // when we last polled
 }
 
 // NewCPUWatcher creates a new CPU-based session watcher
@@ -117,6 +121,9 @@ func (w *CPUWatcher) poll() {
 	// Find all Claude processes
 	claudeProcs := w.findClaudeProcesses()
 
+	// Only log when there's something interesting
+	// (skip verbose polling logs for completed sessions)
+
 	// Update state for each process
 	now := time.Now()
 	seenPIDs := make(map[int32]bool)
@@ -133,16 +140,35 @@ func (w *CPUWatcher) poll() {
 				cpuHistory: make([]float64, 0, 5),
 				lastActive: now,
 				status:     "unknown",
+				lastPollTime: now,
 			}
 			w.processes[pid] = state
 			log.Printf("[cpuwatcher] Discovered Claude process %d", pid)
 		}
 
-		// Get CPU usage
-		cpu, err := proc.CPUPercent()
+		// Get CPU times for delta calculation
+		times, err := proc.Times()
 		if err != nil {
+			log.Printf("[cpuwatcher] Failed to get CPU times for pid %d: %v", pid, err)
 			continue
 		}
+
+		// Calculate current CPU percentage based on delta since last poll
+		totalCPU := times.User + times.System
+		elapsed := now.Sub(state.lastPollTime).Seconds()
+		var cpu float64
+		if elapsed > 0 && state.lastCPUTime > 0 {
+			// CPU% = (delta CPU seconds / delta wall seconds) * 100
+			cpuDelta := totalCPU - state.lastCPUTime
+			cpu = (cpuDelta / elapsed) * 100
+		} else {
+			// First reading - use instantaneous from CPUPercent as fallback
+			cpu, _ = proc.CPUPercent()
+		}
+
+		// Update tracking for next delta calculation
+		state.lastCPUTime = totalCPU
+		state.lastPollTime = now
 
 		// Update history (keep last 5 readings)
 		state.cpuHistory = append(state.cpuHistory, cpu)
@@ -180,9 +206,10 @@ func (w *CPUWatcher) findClaudeProcesses() []*process.Process {
 			continue
 		}
 
-		// Only track Claude CLI sessions that bud spawned
-		// These have --session-id in the command line
-		if strings.Contains(cmdline, "claude") && strings.Contains(cmdline, "--session-id") {
+		// Track Claude CLI sessions that bud spawned
+		// These have either --session-id (new sessions) or --continue (resumed sessions)
+		if strings.Contains(cmdline, "claude") &&
+			(strings.Contains(cmdline, "--session-id") || strings.Contains(cmdline, "--continue")) {
 			result = append(result, proc)
 		}
 	}

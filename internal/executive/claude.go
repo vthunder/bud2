@@ -8,12 +8,26 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/process"
+)
+
+// ProcessState represents the state of the Claude process
+type ProcessState string
+
+const (
+	ProcessNone     ProcessState = ""         // no process
+	ProcessStarting ProcessState = "starting" // process launched, waiting for ready
+	ProcessReady    ProcessState = "ready"    // accepting input
+	ProcessBusy     ProcessState = "busy"     // processing a prompt
+	ProcessDead     ProcessState = "dead"     // process exited (need cleanup)
 )
 
 // ClaudeSession manages a Claude Code session for a thread
@@ -23,10 +37,17 @@ type ClaudeSession struct {
 	tmux      *Tmux
 	mu        sync.Mutex
 
+	// Process tracking (NEW)
+	pid          int          // Claude process PID
+	windowName   string       // human-readable tmux window name
+	processState ProcessState // current process state
+	startedAt    time.Time    // when process was started
+
 	// State
-	firstMessageSent bool              // track if we've sent the first message (for boilerplate)
-	seenPerceptIDs   map[string]bool   // track which percepts have been sent to Claude
-	seenTraceIDs     map[string]bool   // track which traces have been sent to Claude
+	sessionInitialized bool            // true if Claude has been started with this session ID (exists on disk)
+	firstMessageSent   bool            // track if we've sent the first message (for boilerplate)
+	seenPerceptIDs     map[string]bool // track which percepts have been sent to Claude
+	seenTraceIDs       map[string]bool // track which traces have been sent to Claude
 
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
@@ -337,52 +358,27 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Sanitize thread ID for tmux window name (replace dots with dashes)
-	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
-	windowName := fmt.Sprintf("thread-%s", safeThreadID)
+	log.Printf("[claude] SendPromptInteractive called: windowName=%s, sessionID=%s, pid=%d",
+		c.windowName, c.sessionID, c.pid)
 
-	// Ensure tmux session exists
-	if err := c.tmux.EnsureSession(); err != nil {
-		return fmt.Errorf("failed to ensure tmux session: %w", err)
+	// Ensure Claude is running and ready
+	if err := c.ensureClaudeRunning(cfg); err != nil {
+		return fmt.Errorf("failed to ensure Claude running: %w", err)
 	}
 
-	// Check if window already exists (resuming session)
-	isNewWindow := !c.tmux.WindowExists(windowName)
-	if isNewWindow {
-		// Create window and start Claude
-		if err := c.tmux.CreateWindow(windowName); err != nil {
-			return fmt.Errorf("failed to create window: %w", err)
+	// Mark busy while sending
+	c.processState = ProcessBusy
+	defer func() {
+		if c.processState == ProcessBusy {
+			c.processState = ProcessReady
 		}
-
-		// Start Claude in autonomous mode (like gastown)
-		// --dangerously-skip-permissions allows autonomous operation
-		claudeCmd := fmt.Sprintf("claude --dangerously-skip-permissions --session-id %s", c.sessionID)
-		if cfg.Model != "" {
-			claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
-		}
-
-		// Small delay then start Claude
-		time.Sleep(100 * time.Millisecond)
-		if err := c.tmux.SendKeys(windowName, claudeCmd); err != nil {
-			return fmt.Errorf("failed to start claude: %w", err)
-		}
-
-		// Wait for Claude to fully initialize (OAuth, plugins, etc.)
-		// Use CPU-based detection - more reliable than looking for terminal strings
-		log.Printf("[claude] Waiting for Claude to initialize in window %s...", windowName)
-		if err := c.waitForCPUIdle(60 * time.Second); err != nil {
-			// Fall back to string-based detection if CPU detection fails
-			log.Printf("[claude] CPU-based detection failed, trying string detection: %v", err)
-			if err := c.waitForReady(windowName, 30*time.Second); err != nil {
-				return fmt.Errorf("claude failed to initialize: %w", err)
-			}
-		}
-	}
+	}()
 
 	// Send the prompt
-	log.Printf("[claude] Sending interactive prompt to window %s: %s", windowName, truncatePrompt(prompt, 100))
+	log.Printf("[claude] Sending interactive prompt to window %s (pid=%d): %s",
+		c.windowName, c.pid, truncatePrompt(prompt, 100))
 
-	target := fmt.Sprintf("%s:%s", c.tmux.session, windowName)
+	target := fmt.Sprintf("%s:%s", c.tmux.session, c.windowName)
 
 	// Send the prompt text literally (the -l flag preserves newlines and special chars)
 	cmdText := exec.Command("tmux", "send-keys", "-t", target, "-l", prompt)
@@ -410,143 +406,335 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 	return fmt.Errorf("failed to send Enter after 3 attempts: %w", lastErr)
 }
 
-// GetWindowOutput captures recent output from the tmux window
-func (c *ClaudeSession) GetWindowOutput(lines int) (string, error) {
-	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
-	windowName := fmt.Sprintf("thread-%s", safeThreadID)
-	return c.tmux.CapturePane(windowName, lines)
-}
-
-// Interrupt sends Ctrl+C to stop Claude
-func (c *ClaudeSession) Interrupt() error {
-	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
-	windowName := fmt.Sprintf("thread-%s", safeThreadID)
-	return c.tmux.SendInterrupt(windowName)
-}
-
-// Close destroys the tmux window for this session
-func (c *ClaudeSession) Close() error {
-	safeThreadID := strings.ReplaceAll(c.threadID, ".", "-")
-	windowName := fmt.Sprintf("thread-%s", safeThreadID)
-	return c.tmux.KillWindow(windowName)
-}
-
-// waitForReady polls the tmux window until Claude shows the ">" prompt
-func (c *ClaudeSession) waitForReady(windowName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		// Capture recent output from the window
-		output, err := c.tmux.CapturePane(windowName, 50)
-		if err != nil {
-			time.Sleep(500 * time.Millisecond)
-			continue
+// ensureClaudeRunning verifies Claude is running or starts it
+func (c *ClaudeSession) ensureClaudeRunning(cfg ClaudeConfig) error {
+	// If we have a PID, verify it's still good
+	if c.pid != 0 {
+		if err := c.verifyReady(); err == nil {
+			return nil // All good
 		}
-
-		// Strip ANSI escape codes for reliable matching
-		output = stripANSI(output)
-
-		// Look for Claude Code ready indicators:
-		// 1. "⏵⏵" - the actual input prompt
-		// 2. "> Try" - suggestion prompt means initialized
-		// 3. "bypass permissions" - bottom status indicator
-		if strings.Contains(output, "⏵⏵") ||
-			strings.Contains(output, "> Try") ||
-			strings.Contains(output, "bypass permissions") {
-			log.Printf("[claude] Claude ready in window %s", windowName)
-			return nil
-		}
-
-		time.Sleep(500 * time.Millisecond)
+		// Process died or invalid - clean up
+		log.Printf("[claude] Process verification failed, cleaning up...")
+		c.cleanup()
 	}
 
-	return fmt.Errorf("timeout waiting for Claude to be ready")
+	// Need to start fresh
+	if err := c.tmux.EnsureSession(); err != nil {
+		return fmt.Errorf("failed to ensure tmux session: %w", err)
+	}
+
+	// Generate window name if needed
+	if c.windowName == "" {
+		c.windowName = c.generateWindowName()
+	}
+
+	// Kill any existing window with this name (stale state)
+	if c.tmux.WindowExists(c.windowName) {
+		log.Printf("[claude] Killing stale window %s", c.windowName)
+		c.tmux.KillWindow(c.windowName)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Create window
+	if err := c.tmux.CreateWindow(c.windowName); err != nil {
+		return fmt.Errorf("failed to create window: %w", err)
+	}
+
+	// Start Claude and capture PID
+	if err := c.startClaude(cfg); err != nil {
+		c.tmux.KillWindow(c.windowName)
+		return fmt.Errorf("failed to start Claude: %w", err)
+	}
+
+	// Mark session as initialized immediately after startClaude succeeds
+	// Claude Code creates the session file on startup, before it's "ready"
+	// So even if initialization fails later, we need to use --continue next time
+	c.sessionInitialized = true
+
+	// Wait for ready via CPU monitoring
+	log.Printf("[claude] Waiting for Claude to initialize (pid=%d)...", c.pid)
+	if err := c.waitForReadyByPID(90 * time.Second); err != nil {
+		c.cleanup()
+		return fmt.Errorf("Claude failed to initialize: %w", err)
+	}
+
+	log.Printf("[claude] Claude ready in window %s (pid=%d)", c.windowName, c.pid)
+	return nil
 }
 
-// waitForCPUIdle waits for Claude process to go idle (indicating it's ready for input)
-// This is more reliable than looking for specific terminal strings
-func (c *ClaudeSession) waitForCPUIdle(timeout time.Duration) error {
-	const (
-		pollInterval    = 500 * time.Millisecond
-		idleThreshold   = 5.0  // CPU % below which we consider idle
-		activeThreshold = 20.0 // CPU % above which we consider active (loading)
-		minReadings     = 3    // minimum readings before deciding
-		idleReadings    = 2    // consecutive idle readings needed
-	)
+// startClaude starts Claude and captures its PID
+func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
+	log.Printf("[claude] startClaude called: sessionID=%s, windowName=%s", c.sessionID, c.windowName)
 
-	deadline := time.Now().Add(timeout)
-	var cpuHistory []float64
-	var consecutiveIdle int
+	// Validate session ID
+	if c.sessionID == "" {
+		return fmt.Errorf("cannot start Claude: empty session ID")
+	}
 
-	log.Printf("[claude] Waiting for Claude to initialize (CPU-based detection)...")
+	// Decide whether to resume or start fresh
+	// ALWAYS check disk - sessionInitialized might be true but the session file
+	// might not exist (e.g., if Claude was killed before saving the session)
+	sessionExistsOnDisk := c.claudeSessionExistsOnDisk()
+	shouldResume := sessionExistsOnDisk
+	log.Printf("[claude] sessionInitialized=%v, sessionExistsOnDisk=%v, shouldResume=%v",
+		c.sessionInitialized, sessionExistsOnDisk, shouldResume)
 
+	// Build claude command
+	var claudeCmd string
+	if shouldResume {
+		// Resume existing session
+		claudeCmd = fmt.Sprintf("claude --dangerously-skip-permissions --continue %s", c.sessionID)
+		log.Printf("[claude] RESUMING existing session: sessionID=%s", c.sessionID)
+	} else {
+		// Fresh session - use --session-id to create new
+		claudeCmd = fmt.Sprintf("claude --dangerously-skip-permissions --session-id %s", c.sessionID)
+		log.Printf("[claude] STARTING fresh session: sessionID=%s", c.sessionID)
+	}
+	log.Printf("[claude] Full command: %s", claudeCmd)
+	if cfg.Model != "" {
+		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
+	}
+
+	// Create PID file path
+	pidFile := fmt.Sprintf("/tmp/bud-claude-%s.pid", c.windowName)
+
+	// Clean up any old PID file
+	os.Remove(pidFile)
+
+	// Wrapper: write PID then exec claude
+	// Using bash -c with $$ to get shell PID, then exec replaces it with claude
+	wrapper := fmt.Sprintf("echo $$ > %s && exec %s", pidFile, claudeCmd)
+
+	// Send to tmux
+	c.processState = ProcessStarting
+	c.startedAt = time.Now()
+
+	if err := c.tmux.SendKeys(c.windowName, wrapper); err != nil {
+		c.processState = ProcessDead
+		return fmt.Errorf("failed to send claude command: %w", err)
+	}
+
+	// Poll for PID file (10 second timeout - Claude may take a while to start)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		// Find Claude process with our session ID
-		procs, err := process.Processes()
-		if err != nil {
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		var claudeProc *process.Process
-		for _, p := range procs {
-			cmdline, err := p.Cmdline()
-			if err != nil {
-				continue
-			}
-			if strings.Contains(cmdline, "claude") && strings.Contains(cmdline, c.sessionID) {
-				claudeProc = p
-				break
-			}
-		}
-
-		if claudeProc == nil {
-			// Claude not started yet, wait
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		// Get CPU usage
-		cpu, err := claudeProc.CPUPercent()
-		if err != nil {
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		cpuHistory = append(cpuHistory, cpu)
-		if len(cpuHistory) > 10 {
-			cpuHistory = cpuHistory[1:] // keep last 10
-		}
-
-		// Need minimum readings
-		if len(cpuHistory) < minReadings {
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		// Calculate recent average
-		var sum float64
-		for _, v := range cpuHistory[len(cpuHistory)-minReadings:] {
-			sum += v
-		}
-		avgCPU := sum / float64(minReadings)
-
-		// Track consecutive idle readings
-		if avgCPU < idleThreshold {
-			consecutiveIdle++
-			if consecutiveIdle >= idleReadings {
-				log.Printf("[claude] Claude ready (CPU idle: %.1f%%)", avgCPU)
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			pidStr := strings.TrimSpace(string(data))
+			if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
+				c.pid = pid
+				os.Remove(pidFile) // cleanup
+				log.Printf("[claude] Captured PID %d from %s", c.pid, pidFile)
 				return nil
 			}
-		} else if avgCPU > activeThreshold {
-			// Still loading, reset idle counter
-			consecutiveIdle = 0
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	c.processState = ProcessDead
+	return fmt.Errorf("timeout waiting for Claude PID file")
+}
+
+// waitForReadyByPID waits for Claude to be ready to receive input
+// We wait for Claude to become active (startup), then go idle (ready for input).
+func (c *ClaudeSession) waitForReadyByPID(timeout time.Duration) error {
+	if c.pid == 0 {
+		return fmt.Errorf("no PID to monitor")
+	}
+
+	const (
+		pollInterval    = 500 * time.Millisecond
+		activeThreshold = 10.0 // CPU% indicating activity
+		idleThreshold   = 5.0  // CPU% indicating idle/ready
+		minIdleReadings = 2    // consecutive idle readings needed
+	)
+
+	proc, err := process.NewProcess(int32(c.pid))
+	if err != nil {
+		c.processState = ProcessDead
+		return fmt.Errorf("process %d not found: %w", c.pid, err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	var consecutiveErrors int
+	var lastCPUTime float64
+	var lastPollTime time.Time
+	var sawActive bool
+	var idleCount int
+
+	for time.Now().Before(deadline) {
+		// Get CPU times for delta calculation
+		times, err := proc.Times()
+		if err != nil {
+			consecutiveErrors++
+			if consecutiveErrors >= 3 {
+				output, _ := c.tmux.CapturePane(c.windowName, 20)
+				c.processState = ProcessDead
+				if output != "" {
+					return fmt.Errorf("Claude process %d died during startup. Window output:\n%s", c.pid, output)
+				}
+				return fmt.Errorf("Claude process %d died during startup (no output captured)", c.pid)
+			}
+			time.Sleep(pollInterval)
+			continue
+		}
+		consecutiveErrors = 0
+
+		// Calculate CPU delta
+		now := time.Now()
+		totalCPU := times.User + times.System
+		var cpu float64
+		if lastCPUTime > 0 {
+			elapsed := now.Sub(lastPollTime).Seconds()
+			if elapsed > 0 {
+				cpu = ((totalCPU - lastCPUTime) / elapsed) * 100
+			}
+		}
+		lastCPUTime = totalCPU
+		lastPollTime = now
+
+		// State machine: wait for active, then wait for idle
+		if cpu > activeThreshold {
+			if !sawActive {
+				log.Printf("[claude] Process %d became active (cpu=%.1f%%)", c.pid, cpu)
+			}
+			sawActive = true
+			idleCount = 0
+		} else if sawActive && cpu < idleThreshold {
+			idleCount++
+			if idleCount >= minIdleReadings {
+				log.Printf("[claude] Process %d ready (cpu=%.1f%%, idle count=%d)", c.pid, cpu, idleCount)
+				c.processState = ProcessReady
+				return nil
+			}
 		}
 
 		time.Sleep(pollInterval)
 	}
 
-	return fmt.Errorf("timeout waiting for Claude to be ready (CPU-based)")
+	return fmt.Errorf("timeout waiting for Claude ready (sawActive=%v, pid=%d)", sawActive, c.pid)
+}
+
+// verifyReady checks that Claude is running and ready
+func (c *ClaudeSession) verifyReady() error {
+	// 1. Check window exists
+	if c.windowName == "" || !c.tmux.WindowExists(c.windowName) {
+		return fmt.Errorf("window %s does not exist", c.windowName)
+	}
+
+	// 2. Check PID is valid
+	if c.pid == 0 {
+		return fmt.Errorf("no PID tracked")
+	}
+
+	// 3. Check process is running
+	proc, err := process.NewProcess(int32(c.pid))
+	if err != nil {
+		c.processState = ProcessDead
+		return fmt.Errorf("process %d not found: %w", c.pid, err)
+	}
+
+	running, _ := proc.IsRunning()
+	if !running {
+		c.processState = ProcessDead
+		return fmt.Errorf("process %d not running", c.pid)
+	}
+
+	// 4. Verify it's OUR Claude (cmdline contains session ID)
+	cmdline, err := proc.Cmdline()
+	if err != nil {
+		return fmt.Errorf("failed to get cmdline for process %d: %w", c.pid, err)
+	}
+	if !strings.Contains(cmdline, c.sessionID) {
+		c.processState = ProcessDead
+		return fmt.Errorf("process %d cmdline does not contain session ID", c.pid)
+	}
+
+	// 5. Check state
+	if c.processState != ProcessReady && c.processState != ProcessBusy {
+		return fmt.Errorf("session state is %s, not ready", c.processState)
+	}
+
+	return nil
+}
+
+// cleanup kills the Claude process and removes the window
+func (c *ClaudeSession) cleanup() {
+	if c.pid != 0 {
+		log.Printf("[claude] Cleaning up process %d", c.pid)
+		// Try graceful kill first, then force
+		syscall.Kill(c.pid, syscall.SIGTERM)
+		time.Sleep(200 * time.Millisecond)
+		syscall.Kill(c.pid, syscall.SIGKILL)
+		c.pid = 0
+	}
+	if c.windowName != "" && c.tmux.WindowExists(c.windowName) {
+		c.tmux.KillWindow(c.windowName)
+	}
+	c.processState = ProcessDead
+}
+
+// generateWindowName creates a human-readable window name
+func (c *ClaudeSession) generateWindowName() string {
+	word := randomWord()
+	b := make([]byte, 1)
+	rand.Read(b)
+	num := int(b[0])%99 + 1
+	return fmt.Sprintf("%s-%d", word, num)
+}
+
+// claudeSessionExistsOnDisk checks if a Claude Code session file exists
+// Claude Code stores sessions in ~/.claude/projects/<project>/<session-id>.jsonl
+func (c *ClaudeSession) claudeSessionExistsOnDisk() bool {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[claude] claudeSessionExistsOnDisk: failed to get home dir: %v", err)
+		return false
+	}
+
+	// Check for session file in any project directory
+	projectsDir := homeDir + "/.claude/projects"
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		log.Printf("[claude] claudeSessionExistsOnDisk: failed to read projects dir: %v", err)
+		return false
+	}
+
+	sessionFile := c.sessionID + ".jsonl"
+	log.Printf("[claude] claudeSessionExistsOnDisk: looking for %s in %d project dirs", sessionFile, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			path := projectsDir + "/" + entry.Name() + "/" + sessionFile
+			if _, err := os.Stat(path); err == nil {
+				log.Printf("[claude] claudeSessionExistsOnDisk: FOUND session file at %s", path)
+				return true
+			}
+		}
+	}
+
+	log.Printf("[claude] claudeSessionExistsOnDisk: session file NOT found")
+	return false
+}
+
+// GetWindowOutput captures recent output from the tmux window
+func (c *ClaudeSession) GetWindowOutput(lines int) (string, error) {
+	if c.windowName == "" {
+		return "", fmt.Errorf("no window name set")
+	}
+	return c.tmux.CapturePane(c.windowName, lines)
+}
+
+// Interrupt sends Ctrl+C to stop Claude
+func (c *ClaudeSession) Interrupt() error {
+	if c.windowName == "" {
+		return fmt.Errorf("no window name set")
+	}
+	return c.tmux.SendInterrupt(c.windowName)
+}
+
+// Close destroys the tmux window for this session
+func (c *ClaudeSession) Close() error {
+	c.cleanup()
+	return nil
 }
 
 // stripANSI removes ANSI escape codes from a string

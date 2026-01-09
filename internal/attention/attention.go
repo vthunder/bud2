@@ -100,10 +100,10 @@ func (a *Attention) loop() {
 
 			// Notify if:
 			// 1. Active thread changed, OR
-			// 2. Current thread has new unprocessed content
+			// 2. Current thread has new unprocessed content (never processed OR has new percepts)
 			if selected != nil {
 				threadChanged := selected.ID != lastActive
-				hasNewContent := selected.ProcessedAt == nil
+				hasNewContent := a.threadHasNewContent(selected)
 
 				if threadChanged || hasNewContent {
 					if threadChanged {
@@ -117,6 +117,24 @@ func (a *Attention) loop() {
 			}
 		}
 	}
+}
+
+// threadHasNewContent checks if a thread has content that hasn't been processed yet
+func (a *Attention) threadHasNewContent(thread *types.Thread) bool {
+	// Never processed = definitely has new content
+	if thread.ProcessedAt == nil {
+		return true
+	}
+
+	// Check if any percepts are newer than the last processing time
+	percepts := a.percepts.GetMany(thread.PerceptRefs)
+	for _, p := range percepts {
+		if p.Timestamp.After(*thread.ProcessedAt) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // decayActivation reduces activation levels over time
@@ -221,10 +239,20 @@ func (a *Attention) selectThread() *types.Thread {
 
 	// Filter to active/paused threads (frozen threads can't become active directly)
 	// Also separate threads with new content (ProcessedAt == nil) from already-processed ones
+	// Skip threads in error backoff
 	var withNewContent []*types.Thread
 	var alreadyProcessed []*types.Thread
+	now := time.Now()
 	for _, t := range threads {
 		if t.Status == types.StatusActive || t.Status == types.StatusPaused {
+			// Skip threads in error backoff
+			if t.LastError != nil && t.ErrorCount > 0 {
+				backoff := a.calculateBackoff(t.ErrorCount)
+				if now.Sub(*t.LastError) < backoff {
+					continue // still in backoff
+				}
+			}
+
 			if t.ProcessedAt == nil {
 				withNewContent = append(withNewContent, t)
 			} else {
@@ -1300,4 +1328,20 @@ func (a *Attention) CreateImmediateTrace(content string, source string) *types.T
 	log.Printf("[attention] Created immediate trace: %s", truncate(content, 50))
 
 	return trace
+}
+
+// calculateBackoff returns how long to wait before retrying a thread with errors
+func (a *Attention) calculateBackoff(errorCount int) time.Duration {
+	switch errorCount {
+	case 1:
+		return 1 * time.Second
+	case 2:
+		return 5 * time.Second
+	case 3:
+		return 30 * time.Second
+	case 4:
+		return 5 * time.Minute
+	default:
+		return 1 * time.Hour // effectively paused after 5+ errors
+	}
 }

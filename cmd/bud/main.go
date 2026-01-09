@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,10 +10,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/attention"
 	"github.com/vthunder/bud2/internal/budget"
@@ -26,8 +29,79 @@ import (
 	"github.com/vthunder/bud2/internal/types"
 )
 
+const Version = "2026-01-09-v2-session-fix"
+
+// checkPidFile checks for an existing bud process and handles it
+// Returns a cleanup function to remove the pid file on exit
+func checkPidFile(statePath string) func() {
+	pidFile := filepath.Join(statePath, "bud.pid")
+
+	// Check if pid file exists
+	if data, err := os.ReadFile(pidFile); err == nil {
+		pidStr := strings.TrimSpace(string(data))
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			// Check if process is running
+			proc, err := process.NewProcess(int32(pid))
+			if err == nil {
+				running, _ := proc.IsRunning()
+				if running {
+					// Check if it's actually bud (not a recycled PID)
+					name, _ := proc.Name()
+					cmdline, _ := proc.Cmdline()
+					if strings.Contains(name, "bud") || strings.Contains(cmdline, "bud") {
+						// Another bud is running - ask user what to do
+						fmt.Printf("\n⚠️  Another bud process is running (PID %d)\n", pid)
+						fmt.Printf("   Started: %s\n", getProcessStartTime(proc))
+						fmt.Printf("\nOptions:\n")
+						fmt.Printf("  [k] Kill it and continue\n")
+						fmt.Printf("  [q] Quit (let the other process run)\n")
+						fmt.Printf("\nChoice [k/q]: ")
+
+						reader := bufio.NewReader(os.Stdin)
+						choice, _ := reader.ReadString('\n')
+						choice = strings.TrimSpace(strings.ToLower(choice))
+
+						if choice == "k" {
+							log.Printf("[main] Killing existing bud process (PID %d)...", pid)
+							proc.Kill()
+							time.Sleep(500 * time.Millisecond) // Give it time to die
+						} else {
+							log.Println("[main] Exiting to let existing process run")
+							os.Exit(0)
+						}
+					}
+				}
+			}
+		}
+		// Stale pid file - remove it
+		os.Remove(pidFile)
+	}
+
+	// Write our PID
+	myPid := os.Getpid()
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(myPid)), 0644); err != nil {
+		log.Printf("Warning: failed to write pid file: %v", err)
+	} else {
+		log.Printf("[main] PID file created: %s (pid=%d)", pidFile, myPid)
+	}
+
+	// Return cleanup function
+	return func() {
+		os.Remove(pidFile)
+		log.Printf("[main] PID file removed")
+	}
+}
+
+func getProcessStartTime(proc *process.Process) string {
+	createTime, err := proc.CreateTime()
+	if err != nil {
+		return "unknown"
+	}
+	return time.UnixMilli(createTime).Format("2006-01-02 15:04:05")
+}
+
 func main() {
-	log.Println("bud2 - subsumption-inspired agent")
+	log.Printf("bud2 - subsumption-inspired agent [%s]", Version)
 	log.Println("==================================")
 
 	// Load .env file (optional - won't error if missing)
@@ -48,6 +122,11 @@ func main() {
 	claudeModel := os.Getenv("CLAUDE_MODEL")
 	useInteractive := os.Getenv("EXECUTIVE_INTERACTIVE") == "true"
 	syntheticMode := os.Getenv("SYNTHETIC_MODE") == "true"
+
+	// Check for existing bud process (before creating state directory)
+	os.MkdirAll(statePath, 0755) // Ensure state dir exists for pid file
+	cleanupPidFile := checkPidFile(statePath)
+	defer cleanupPidFile()
 	autonomousEnabled := os.Getenv("AUTONOMOUS_ENABLED") == "true"
 	autonomousIntervalStr := os.Getenv("AUTONOMOUS_INTERVAL")
 	dailyBudgetStr := os.Getenv("DAILY_THINKING_BUDGET")
