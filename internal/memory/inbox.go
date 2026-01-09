@@ -41,7 +41,7 @@ func NewInbox(path string) *Inbox {
 	}
 }
 
-// Add queues a new message
+// Add queues a new message (only if not already present)
 func (i *Inbox) Add(msg *InboxMessage) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -49,6 +49,13 @@ func (i *Inbox) Add(msg *InboxMessage) {
 	if msg.ID == "" {
 		msg.ID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
 	}
+
+	// Don't overwrite existing messages - prevents duplicate processing
+	// if Discord delivers the same message multiple times
+	if _, exists := i.messages[msg.ID]; exists {
+		return
+	}
+
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now()
 	}
