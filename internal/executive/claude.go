@@ -481,61 +481,59 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 
 	pidFile := fmt.Sprintf("/tmp/bud-claude-%s.pid", c.windowName)
 
-	// Try --session-id first
+	// Determine which flag to use based on session file state
 	sessionFlag := "--session-id"
-	for attempt := 0; attempt < 2; attempt++ {
-		os.Remove(pidFile)
+	sessionFile, sessionFileSize := c.findSessionFile()
 
-		claudeCmd := fmt.Sprintf("claude --dangerously-skip-permissions %s %s", sessionFlag, c.sessionID)
-		if cfg.Model != "" {
-			claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
+	if sessionFile != "" {
+		if sessionFileSize < 100 {
+			// Session file exists but is empty/tiny - invalid session from interrupted startup
+			// Delete it so we can create a fresh one
+			log.Printf("[claude] Found invalid session file (%d bytes), deleting: %s", sessionFileSize, sessionFile)
+			os.Remove(sessionFile)
+			sessionFlag = "--session-id"
+		} else {
+			// Session file exists and has content - use --continue
+			log.Printf("[claude] Found valid session file (%d bytes), using --continue", sessionFileSize)
+			sessionFlag = "--continue"
 		}
+	} else {
+		log.Printf("[claude] No session file found, using --session-id")
+	}
 
-		wrapper := fmt.Sprintf("echo $$ > %s && exec %s", pidFile, claudeCmd)
-		log.Printf("[claude] Attempt %d: %s", attempt+1, claudeCmd)
+	// Now start Claude properly with PID tracking
+	os.Remove(pidFile)
+	claudeCmd := fmt.Sprintf("claude --dangerously-skip-permissions %s %s", sessionFlag, c.sessionID)
+	if cfg.Model != "" {
+		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
+	}
 
-		if err := c.tmux.SendKeys(c.windowName, wrapper); err != nil {
-			c.processState = ProcessDead
-			return fmt.Errorf("failed to send claude command: %w", err)
-		}
+	wrapper := fmt.Sprintf("echo $$ > %s && exec %s", pidFile, claudeCmd)
+	log.Printf("[claude] Starting with PID tracking: %s", claudeCmd)
 
-		// Wait and check for "already in use" error
-		time.Sleep(1 * time.Second)
-		output, _ := c.tmux.CapturePane(c.windowName, 10)
-
-		if strings.Contains(output, "is already in use") {
-			if attempt == 0 {
-				log.Printf("[claude] Session already in use, retrying with --continue")
-				sessionFlag = "--continue"
-				continue // retry
-			}
-			// Shouldn't happen on second attempt
-			c.processState = ProcessDead
-			return fmt.Errorf("session still in use after retry")
-		}
-
-		// No error - poll for PID file
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			data, err := os.ReadFile(pidFile)
-			if err == nil {
-				pidStr := strings.TrimSpace(string(data))
-				if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
-					c.pid = pid
-					os.Remove(pidFile)
-					log.Printf("[claude] Captured PID %d", c.pid)
-					return nil
-				}
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-
+	if err := c.tmux.SendKeys(c.windowName, wrapper); err != nil {
 		c.processState = ProcessDead
-		return fmt.Errorf("timeout waiting for Claude PID file")
+		return fmt.Errorf("failed to send claude command: %w", err)
+	}
+
+	// Poll for PID file
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			pidStr := strings.TrimSpace(string(data))
+			if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
+				c.pid = pid
+				os.Remove(pidFile)
+				log.Printf("[claude] Captured PID %d", c.pid)
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	c.processState = ProcessDead
-	return fmt.Errorf("failed to start Claude after retries")
+	return fmt.Errorf("timeout waiting for Claude PID file")
 }
 
 // waitForReadyByStatus waits for Claude to be ready using the /status command.
@@ -686,42 +684,33 @@ func (c *ClaudeSession) generateWindowName() string {
 	return fmt.Sprintf("%s-%d", word, num)
 }
 
-// claudeSessionExistsOnDisk checks if a Claude Code session file exists AND has content
+// findSessionFile looks for a Claude Code session file and returns its path and size
+// Returns ("", 0) if not found
 // Claude Code stores sessions in ~/.claude/projects/<project>/<session-id>.jsonl
-func (c *ClaudeSession) claudeSessionExistsOnDisk() bool {
+func (c *ClaudeSession) findSessionFile() (string, int64) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("[claude] claudeSessionExistsOnDisk: failed to get home dir: %v", err)
-		return false
+		return "", 0
 	}
 
-	// Check for session file in any project directory
 	projectsDir := homeDir + "/.claude/projects"
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
-		log.Printf("[claude] claudeSessionExistsOnDisk: failed to read projects dir: %v", err)
-		return false
+		return "", 0
 	}
 
 	sessionFile := c.sessionID + ".jsonl"
-	log.Printf("[claude] claudeSessionExistsOnDisk: looking for %s in %d project dirs", sessionFile, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			path := projectsDir + "/" + entry.Name() + "/" + sessionFile
 			info, err := os.Stat(path)
 			if err == nil {
-				// File exists - verify it has content (not just created but empty)
-				if info.Size() > 0 {
-					log.Printf("[claude] claudeSessionExistsOnDisk: FOUND valid session file at %s (size=%d)", path, info.Size())
-					return true
-				}
-				log.Printf("[claude] claudeSessionExistsOnDisk: found EMPTY session file at %s, ignoring", path)
+				return path, info.Size()
 			}
 		}
 	}
 
-	log.Printf("[claude] claudeSessionExistsOnDisk: session file NOT found")
-	return false
+	return "", 0
 }
 
 // GetWindowOutput captures recent output from the tmux window

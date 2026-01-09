@@ -49,20 +49,23 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 	log.Printf("[session] Focus called: thread=%s, windowName=%s, sessionID=%s, state=%s",
 		thread.ID, thread.WindowName, thread.SessionID, thread.SessionState)
 
-	// If already focused and session exists, return it
+	// If already focused and session exists with matching ID, return it
 	if thread.SessionState == types.SessionFocused {
 		if session, ok := m.sessions[thread.ID]; ok {
-			log.Printf("[session] EARLY RETURN: Returning existing session for focused thread")
-			log.Printf("[session]   thread.SessionID=%s", thread.SessionID)
-			log.Printf("[session]   session.sessionID=%s", session.sessionID)
-			log.Printf("[session]   session.windowName=%s", session.windowName)
-			if thread.SessionID != session.sessionID {
-				log.Printf("[session]   WARNING: thread.SessionID != session.sessionID!")
+			// Check if session ID matches - if not, the session is stale (e.g., cleared after errors)
+			if thread.SessionID != "" && thread.SessionID == session.sessionID {
+				log.Printf("[session] EARLY RETURN: Returning existing session for focused thread")
+				log.Printf("[session]   thread.SessionID=%s", thread.SessionID)
+				log.Printf("[session]   session.sessionID=%s", session.sessionID)
+				return session, nil
 			}
-			return session, nil
+			// Session ID mismatch or thread has no session ID - invalidate cached session
+			log.Printf("[session] Cached session stale (thread.SessionID=%s, session.sessionID=%s), recreating",
+				thread.SessionID, session.sessionID)
+			delete(m.sessions, thread.ID)
 		}
-		// Session doesn't exist (e.g., after restart) - fall through to create one
-		log.Printf("[session] Thread is focused but no session in memory, creating new one")
+		// Session doesn't exist or was invalidated - fall through to create one
+		log.Printf("[session] Thread is focused but needs new session")
 	}
 
 	// Find current focused thread (if any) and move it to active
