@@ -46,6 +46,8 @@ func (s *TaskStore) Load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Try to seed from defaults
+			s.seedFromDefaults()
 			return nil
 		}
 		return err
@@ -61,6 +63,30 @@ func (s *TaskStore) Load() error {
 		s.tasks[t.ID] = t
 	}
 	return nil
+}
+
+// seedFromDefaults copies seed tasks if available (must hold lock)
+func (s *TaskStore) seedFromDefaults() {
+	seedPath := "seed/bud_tasks.json"
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		return // no seed file, that's fine
+	}
+
+	var tasks []*Task
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		return
+	}
+
+	s.tasks = make(map[string]*Task)
+	for _, t := range tasks {
+		s.tasks[t.ID] = t
+	}
+
+	// Write directly to create the runtime file (we hold the lock)
+	if saveData, err := json.MarshalIndent(tasks, "", "  "); err == nil {
+		os.WriteFile(s.path, saveData, 0644)
+	}
 }
 
 // Save writes tasks to file
