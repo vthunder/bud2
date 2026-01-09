@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 // ClaudeSession manages a Claude Code session for a thread
@@ -366,9 +368,14 @@ func (c *ClaudeSession) SendPromptInteractive(prompt string, cfg ClaudeConfig) e
 		}
 
 		// Wait for Claude to fully initialize (OAuth, plugins, etc.)
+		// Use CPU-based detection - more reliable than looking for terminal strings
 		log.Printf("[claude] Waiting for Claude to initialize in window %s...", windowName)
-		if err := c.waitForReady(windowName, 60*time.Second); err != nil {
-			return fmt.Errorf("claude failed to initialize: %w", err)
+		if err := c.waitForCPUIdle(60 * time.Second); err != nil {
+			// Fall back to string-based detection if CPU detection fails
+			log.Printf("[claude] CPU-based detection failed, trying string detection: %v", err)
+			if err := c.waitForReady(windowName, 30*time.Second); err != nil {
+				return fmt.Errorf("claude failed to initialize: %w", err)
+			}
 		}
 	}
 
@@ -454,6 +461,92 @@ func (c *ClaudeSession) waitForReady(windowName string, timeout time.Duration) e
 	}
 
 	return fmt.Errorf("timeout waiting for Claude to be ready")
+}
+
+// waitForCPUIdle waits for Claude process to go idle (indicating it's ready for input)
+// This is more reliable than looking for specific terminal strings
+func (c *ClaudeSession) waitForCPUIdle(timeout time.Duration) error {
+	const (
+		pollInterval    = 500 * time.Millisecond
+		idleThreshold   = 5.0  // CPU % below which we consider idle
+		activeThreshold = 20.0 // CPU % above which we consider active (loading)
+		minReadings     = 3    // minimum readings before deciding
+		idleReadings    = 2    // consecutive idle readings needed
+	)
+
+	deadline := time.Now().Add(timeout)
+	var cpuHistory []float64
+	var consecutiveIdle int
+
+	log.Printf("[claude] Waiting for Claude to initialize (CPU-based detection)...")
+
+	for time.Now().Before(deadline) {
+		// Find Claude process with our session ID
+		procs, err := process.Processes()
+		if err != nil {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		var claudeProc *process.Process
+		for _, p := range procs {
+			cmdline, err := p.Cmdline()
+			if err != nil {
+				continue
+			}
+			if strings.Contains(cmdline, "claude") && strings.Contains(cmdline, c.sessionID) {
+				claudeProc = p
+				break
+			}
+		}
+
+		if claudeProc == nil {
+			// Claude not started yet, wait
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// Get CPU usage
+		cpu, err := claudeProc.CPUPercent()
+		if err != nil {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		cpuHistory = append(cpuHistory, cpu)
+		if len(cpuHistory) > 10 {
+			cpuHistory = cpuHistory[1:] // keep last 10
+		}
+
+		// Need minimum readings
+		if len(cpuHistory) < minReadings {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// Calculate recent average
+		var sum float64
+		for _, v := range cpuHistory[len(cpuHistory)-minReadings:] {
+			sum += v
+		}
+		avgCPU := sum / float64(minReadings)
+
+		// Track consecutive idle readings
+		if avgCPU < idleThreshold {
+			consecutiveIdle++
+			if consecutiveIdle >= idleReadings {
+				log.Printf("[claude] Claude ready (CPU idle: %.1f%%)", avgCPU)
+				return nil
+			}
+		} else if avgCPU > activeThreshold {
+			// Still loading, reset idle counter
+			consecutiveIdle = 0
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("timeout waiting for Claude to be ready (CPU-based)")
 }
 
 // stripANSI removes ANSI escape codes from a string
