@@ -442,10 +442,14 @@ func main() {
 				}
 
 				// Process all pending messages
-				for _, msg := range inbox.GetPending() {
+				// Get pending and mark them immediately to prevent duplicate processing
+				pending := inbox.GetPending()
+				for _, msg := range pending {
+					inbox.MarkProcessed(msg.ID) // Mark BEFORE processing to prevent race
+				}
+				for _, msg := range pending {
 					percept := msg.ToPercept()
 					processPercept(percept)
-					inbox.MarkProcessed(msg.ID)
 				}
 			}
 		}
