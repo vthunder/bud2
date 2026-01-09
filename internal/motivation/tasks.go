@@ -13,12 +13,14 @@ import (
 
 // Task represents a commitment ("I will do X")
 type Task struct {
-	ID       string     `json:"id"`
-	Task     string     `json:"task"`
-	Due      *time.Time `json:"due,omitempty"`
-	Priority int        `json:"priority"` // 1 = highest
-	Context  string     `json:"context"`  // why this task exists
-	Status   string     `json:"status"`   // pending, in_progress, done
+	ID         string     `json:"id"`
+	Task       string     `json:"task"`
+	Due        *time.Time `json:"due,omitempty"`
+	Priority   int        `json:"priority"`            // 1 = highest
+	Context    string     `json:"context"`             // why this task exists
+	Status     string     `json:"status"`              // pending, in_progress, done
+	Recurrence string     `json:"recurrence,omitempty"` // "daily", "weekly", "monthly", or duration like "24h"
+	LastRun    *time.Time `json:"last_run,omitempty"`   // when this recurring task last ran
 }
 
 // TaskStore manages bud_tasks.json (Bud's commitments)
@@ -106,12 +108,19 @@ func (s *TaskStore) Remove(id string) {
 	delete(s.tasks, id)
 }
 
-// Complete marks a task as done
+// Complete marks a task as done, or updates LastRun for recurring tasks
 func (s *TaskStore) Complete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t, ok := s.tasks[id]; ok {
-		t.Status = "done"
+		if t.Recurrence != "" {
+			// Recurring task: update LastRun, keep status pending
+			now := time.Now()
+			t.LastRun = &now
+			t.Status = "pending"
+		} else {
+			t.Status = "done"
+		}
 	}
 }
 
@@ -160,6 +169,57 @@ func (s *TaskStore) GetUpcoming(within time.Duration) []*Task {
 	return result
 }
 
+// parseRecurrence converts recurrence string to duration
+func parseRecurrence(rec string) time.Duration {
+	switch rec {
+	case "hourly":
+		return time.Hour
+	case "daily":
+		return 24 * time.Hour
+	case "weekly":
+		return 7 * 24 * time.Hour
+	case "monthly":
+		return 30 * 24 * time.Hour // approximate
+	default:
+		// Try parsing as duration string (e.g., "24h", "12h")
+		if d, err := time.ParseDuration(rec); err == nil {
+			return d
+		}
+		return 0
+	}
+}
+
+// GetRecurringDue returns recurring tasks that are due based on their interval
+func (s *TaskStore) GetRecurringDue() []*Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	var result []*Task
+	for _, t := range s.tasks {
+		if t.Recurrence == "" || t.Status == "done" {
+			continue
+		}
+
+		interval := parseRecurrence(t.Recurrence)
+		if interval == 0 {
+			continue
+		}
+
+		// If never run, it's due
+		if t.LastRun == nil {
+			result = append(result, t)
+			continue
+		}
+
+		// If interval has passed since last run, it's due
+		if now.Sub(*t.LastRun) >= interval {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
 // GenerateImpulses creates impulses for due and upcoming tasks
 func (s *TaskStore) GenerateImpulses() []*types.Impulse {
 	var impulses []*types.Impulse
@@ -198,6 +258,32 @@ func (s *TaskStore) GenerateImpulses() []*types.Impulse {
 				"due":      t.Due,
 				"priority": t.Priority,
 				"context":  t.Context,
+			},
+		})
+	}
+
+	// Medium-low priority for recurring tasks that are due
+	for _, t := range s.GetRecurringDue() {
+		var lastRunStr string
+		if t.LastRun != nil {
+			lastRunStr = t.LastRun.Format("2006-01-02 15:04")
+		} else {
+			lastRunStr = "never"
+		}
+		impulses = append(impulses, &types.Impulse{
+			ID:          fmt.Sprintf("impulse-task-recurring-%s", t.ID),
+			Source:      types.ImpulseTask,
+			Type:        "recurring",
+			Intensity:   0.5, // lower than due/upcoming, but still notable
+			Timestamp:   time.Now(),
+			Description: fmt.Sprintf("Recurring (%s): %s (last: %s)", t.Recurrence, t.Task, lastRunStr),
+			Data: map[string]any{
+				"task_id":    t.ID,
+				"task":       t.Task,
+				"recurrence": t.Recurrence,
+				"last_run":   t.LastRun,
+				"priority":   t.Priority,
+				"context":    t.Context,
 			},
 		})
 	}

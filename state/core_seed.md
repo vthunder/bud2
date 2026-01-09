@@ -26,3 +26,4 @@ I have detailed guides in state/notes/ for various capabilities:
 - observability.md: Activity logging and answering "what did you do today?"
 - state-management.md: Self-introspection with state_* MCP tools
 - repositories.md: Working with code repositories, PRs, and getting merge approval
+- wellness.md: Daily housekeeping checklist and optimization practices
