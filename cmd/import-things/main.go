@@ -374,17 +374,25 @@ func convertWhen(start int, startDate sql.NullInt64, hasProjectOrArea bool) stri
 		}
 		return "inbox"
 	case startToday:
-		if startDate.Valid && startDate.Int64 > 0 && startDate.Int64 < 50000 {
-			// Convert Apple date integer (days since 2001-01-01) to YYYY-MM-DD
-			// Sanity check: 50000 days = ~137 years, anything larger is invalid
-			date := appleEpoch.AddDate(0, 0, int(startDate.Int64))
-			today := time.Now().Truncate(24 * time.Hour)
-			if date.Equal(today) || date.Before(today) {
-				return "today"
-			}
-			return date.Format("2006-01-02")
+		// start=2 means "scheduled" - but only if startDate is set
+		// If startDate is NOT set, these are old tasks in limbo - treat as anytime
+		if !startDate.Valid || startDate.Int64 == 0 {
+			return "anytime"
 		}
-		return "today"
+		// Decode startDate: format is (year << 16) | encoded_month_day
+		// The year is in the high 16 bits
+		year := int(startDate.Int64 >> 16)
+		if year < 2000 || year > 2100 {
+			// Invalid year, treat as anytime
+			return "anytime"
+		}
+		// If the scheduled year is current year or past, show as "today"
+		currentYear := time.Now().Year()
+		if year <= currentYear {
+			return "today"
+		}
+		// Future year - just use Jan 1 of that year as approximation
+		return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 	default: // startAnytime or unknown
 		return "anytime"
 	}
