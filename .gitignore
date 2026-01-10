@@ -1,9 +1,5 @@
-# Runtime state (regenerated)
-state/**/*.json
-state/**/*.jsonl
-state/*.json
-state/*.jsonl
-state/bud.pid
+# Runtime state (seeded from seed/ on first run)
+state/
 
 # Go build artifacts
 /bud2
