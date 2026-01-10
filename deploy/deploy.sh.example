@@ -4,7 +4,7 @@
 
 set -e
 
-BUD_DIR="${BUD_DIR:-$HOME/bud2}"
+BUD_DIR="${BUD_DIR:-$HOME/src/bud2}"
 LOG_FILE="${BUD_LOG:-$HOME/Library/Logs/bud.log}"
 
 cd "$BUD_DIR"

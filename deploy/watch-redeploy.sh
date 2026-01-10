@@ -3,7 +3,8 @@
 # This script is run by launchd and uses fswatch to monitor for changes
 
 TRIGGER_FILE="${TRIGGER_FILE:-/tmp/bud-redeploy}"
-BUD_DIR="${BUD_DIR:-$HOME/bud2}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUD_DIR="${BUD_DIR:-$(dirname "$SCRIPT_DIR")}"
 LOG_FILE="${BUD_LOG:-$HOME/Library/Logs/bud.log}"
 
 echo "$(date): Watcher started, monitoring $TRIGGER_FILE" >> "$LOG_FILE"

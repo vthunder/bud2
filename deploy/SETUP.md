@@ -19,50 +19,58 @@ npm install -g @anthropic-ai/claude-code
 claude  # Run once to authenticate
 ```
 
-## Initial Setup
+## Quick Setup
 
-1. **Clone the repo** on Mac Mini:
-   ```bash
-   cd ~
-   git clone https://github.com/vthunder/bud2.git
-   mkdir -p ~/bud2/bin
-   ```
+```bash
+# Clone the repo
+git clone https://github.com/vthunder/bud2.git ~/bud2
+cd ~/bud2
 
-2. **Create .env file**:
-   ```bash
-   cp ~/bud2/.env.example ~/bud2/.env
-   # Edit with your Discord token, channel ID, etc.
-   ```
+# Create .env with your tokens
+cp .env.example .env
+nano .env  # Add Discord token, channel ID, etc.
 
-3. **Update plist files** - replace `YOU` with your username:
+# Run setup script (builds, generates plists, optionally installs services)
+./deploy/setup.sh
+```
+
+The setup script will:
+1. Generate `deploy.sh` and launchd plists with correct paths
+2. Build the bud binaries
+3. Optionally install and load launchd services
+
+## Manual Setup
+
+If you prefer to set things up manually:
+
+1. **Generate files from examples:**
    ```bash
    cd ~/bud2/deploy
-   sed -i '' "s|/Users/YOU|$HOME|g" com.bud.daemon.plist
-   sed -i '' "s|/Users/YOU|$HOME|g" com.bud.watcher.plist
+
+   # Generate deploy.sh
+   sed "s|\$HOME/src/bud2|$HOME/bud2|g" deploy.sh.example > deploy.sh
+   chmod +x deploy.sh
+
+   # Generate plists
+   sed "s|/Users/YOU|$HOME|g; s|/Users/thunder/src/bud2|$HOME/bud2|g" \
+       com.bud.daemon.plist.example > com.bud.daemon.plist
+   sed "s|/Users/YOU|$HOME|g; s|/Users/thunder/src/bud2|$HOME/bud2|g" \
+       com.bud.watcher.plist.example > com.bud.watcher.plist
    ```
 
-4. **Initial build**:
+2. **Build:**
    ```bash
    cd ~/bud2
+   mkdir -p bin
    go build -o bin/bud ./cmd/bud
    go build -o bin/bud-mcp ./cmd/bud-mcp
    ```
 
-5. **Install launchd services**:
+3. **Install services:**
    ```bash
-   # Copy plists to LaunchAgents
-   cp ~/bud2/deploy/com.bud.daemon.plist ~/Library/LaunchAgents/
-   cp ~/bud2/deploy/com.bud.watcher.plist ~/Library/LaunchAgents/
-
-   # Load services
+   cp ~/bud2/deploy/com.bud.*.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.bud.daemon.plist
    launchctl load ~/Library/LaunchAgents/com.bud.watcher.plist
-   ```
-
-6. **Verify it's running**:
-   ```bash
-   launchctl list | grep bud
-   tail -f ~/Library/Logs/bud.log
    ```
 
 ## Deploying from Laptop
@@ -91,6 +99,11 @@ Bud can request a redeploy by touching the trigger file:
 ```go
 // In bud code or via MCP tool
 os.WriteFile("/tmp/bud-redeploy", []byte(time.Now().String()), 0644)
+```
+
+Or use the MCP tool:
+```
+trigger_redeploy(reason="Updated code ready")
 ```
 
 The watcher will detect this and run deploy.sh automatically.

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.bud.watcher</string>
+    <string>com.bud.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/YOU/bud2/deploy/watch-redeploy.sh</string>
+        <string>/Users/thunder/src/bud2/bin/bud</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -19,8 +19,6 @@
         <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
         <key>HOME</key>
         <string>/Users/YOU</string>
-        <key>BUD_DIR</key>
-        <string>/Users/YOU/bud2</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -30,9 +28,12 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOU/Library/Logs/bud-watcher.log</string>
+    <string>/Users/YOU/Library/Logs/bud.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/YOU/Library/Logs/bud-watcher.log</string>
+    <string>/Users/YOU/Library/Logs/bud.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
 </dict>
 </plist>
