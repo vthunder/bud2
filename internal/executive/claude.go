@@ -538,8 +538,8 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 
 // waitForReadyByStatus waits for Claude to be ready using the /status command.
 // Repeatedly sends /status until Claude responds with the dialog (Claude doesn't
-// queue input during startup, only during active work). Once we see "Esc to cancel",
-// sends ESC to dismiss and returns.
+// queue input during startup, only during active work). Once we see "escape to cancel"
+// (or "Esc to cancel"), sends ESC to dismiss and returns.
 func (c *ClaudeSession) waitForReadyByStatus(timeout time.Duration) error {
 	target := fmt.Sprintf("%s:%s", c.tmux.session, c.windowName)
 
@@ -570,9 +570,9 @@ func (c *ClaudeSession) waitForReadyByStatus(timeout time.Duration) error {
 			lastStatusSent = time.Now()
 		}
 
-		// Check for "Esc to cancel" in output
+		// Check for "escape to cancel" or "Esc to cancel" in output (case-insensitive)
 		output, err := c.tmux.CapturePane(c.windowName, 30)
-		if err == nil && strings.Contains(output, "Esc to cancel") {
+		if err == nil && strings.Contains(strings.ToLower(output), "to cancel") {
 			// Found the status dialog - send ESC to dismiss
 			log.Printf("[claude] Detected /status dialog after %.1fs, sending ESC",
 				time.Since(startTime).Seconds())
