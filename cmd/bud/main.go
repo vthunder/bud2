@@ -383,7 +383,26 @@ func main() {
 			}
 		}
 
-		// No reflex handled it - route to attention/executive
+		// No reflex handled it - check budget before routing to executive
+		// (Reflexes already ran above - they're cheap. Executive is expensive.)
+		isAutonomous := percept.Source == "impulse" || percept.Source == "system"
+		if isAutonomous {
+			// Check if this is a high-priority urgent task that bypasses budget
+			priority, _ := percept.Data["priority"].(int)
+			impulseType, _ := percept.Data["type"].(string)
+			isUrgent := priority == 1 && (impulseType == "due" || impulseType == "upcoming")
+
+			if !isUrgent {
+				if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
+					log.Printf("[main] Autonomous percept blocked from executive: %s", reason)
+					return
+				}
+			} else {
+				log.Printf("[main] High-priority urgent task bypassing budget check")
+			}
+		}
+
+		// Route to attention/executive
 		perceptPool.Add(percept)
 		threads := attn.RoutePercept(percept, func(content string) string {
 			return "respond to: " + truncate(content, 50)
@@ -587,19 +606,18 @@ func main() {
 					return
 				}
 
-				// Check budget before triggering
-				if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
-					log.Printf("[autonomous] Task impulse blocked: %s", reason)
-					return
-				}
-
 				// Process the highest priority impulse
+				// Budget is checked in processPercept() after reflexes run
 				impulse := impulses[0]
-				log.Printf("[autonomous] Triggering wake-up via task impulse: %s", impulse.Description)
-				thinkingBudget.LogStatus()
+				log.Printf("[autonomous] Processing task impulse: %s", impulse.Description)
 
-				// Convert to percept (Bud knows owner's default channel from core memory)
-				processPercept(impulse.ToPercept())
+				// Convert to percept - include type and priority for budget bypass logic
+				percept := impulse.ToPercept()
+				percept.Data["type"] = impulse.Type
+				if priority, ok := impulse.Data["priority"].(int); ok {
+					percept.Data["priority"] = priority
+				}
+				processPercept(percept)
 
 				// Auto-complete recurring tasks after processing
 				// The task's job is to remind on a schedule - once the executive wakes, it's done for this interval

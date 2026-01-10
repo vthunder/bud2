@@ -98,18 +98,18 @@ func (a *Attention) loop() {
 			// Select highest salience thread
 			selected := a.selectThread()
 
-			// Notify if:
-			// 1. Active thread changed, OR
-			// 2. Current thread has new unprocessed content (never processed OR has new percepts)
+			// Only activate and notify when there's new content to process
+			// This prevents alternating between processed threads
 			if selected != nil {
-				threadChanged := selected.ID != lastActive
 				hasNewContent := a.threadHasNewContent(selected)
 
-				if threadChanged || hasNewContent {
-					if threadChanged {
+				if hasNewContent {
+					// Thread has new content - activate it and notify
+					if selected.ID != lastActive {
 						a.activateThread(selected)
 						lastActive = selected.ID
 					}
+
 					if a.onChange != nil {
 						a.onChange(selected)
 					}
