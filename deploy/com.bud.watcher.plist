@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bud.watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/bud2/deploy/watch-redeploy.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/bud2</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/YOU</string>
+        <key>BUD_DIR</key>
+        <string>/Users/YOU/bud2</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/bud-watcher.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/bud-watcher.log</string>
+</dict>
+</plist>

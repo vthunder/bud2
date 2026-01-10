@@ -242,6 +242,24 @@ func main() {
 		return "Done signal recorded. Ready for new prompts.", nil
 	})
 
+	// Register trigger_redeploy tool - allows bud to request its own redeployment
+	server.RegisterTool("trigger_redeploy", func(ctx any, args map[string]any) (string, error) {
+		reason, _ := args["reason"].(string)
+		if reason == "" {
+			reason = "Redeploy requested"
+		}
+
+		triggerFile := "/tmp/bud-redeploy"
+		content := fmt.Sprintf("%s: %s\n", time.Now().Format(time.RFC3339), reason)
+		err := os.WriteFile(triggerFile, []byte(content), 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to trigger redeploy: %w", err)
+		}
+
+		log.Printf("Redeploy triggered: %s", reason)
+		return "Redeploy triggered. The watcher will pick this up and restart bud with latest code.", nil
+	})
+
 	// Initialize activity log for observability
 	activityLog := activity.New(statePath)
 
