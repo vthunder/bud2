@@ -4,6 +4,9 @@
 
 set -e
 
+# Ensure Homebrew paths are available (Apple Silicon + Intel)
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 BUD_DIR="${BUD_DIR:-$HOME/src/bud2}"
 LOG_FILE="${BUD_LOG:-$HOME/Library/Logs/bud.log}"
 

@@ -2,6 +2,9 @@
 # Watch for redeploy trigger file
 # This script is run by launchd and uses fswatch to monitor for changes
 
+# Ensure Homebrew paths are available (Apple Silicon + Intel)
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 TRIGGER_FILE="${TRIGGER_FILE:-/tmp/bud-redeploy}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUD_DIR="${BUD_DIR:-$(dirname "$SCRIPT_DIR")}"
