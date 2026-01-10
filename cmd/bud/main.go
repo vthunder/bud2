@@ -256,6 +256,7 @@ func main() {
 		log.Printf("Warning: failed to load reflexes: %v", err)
 	}
 	reflexEngine.SetGTDStore(gtdStore)
+	reflexEngine.SetBudTaskStore(taskStore)
 
 	// Initialize reflex log for short-term context
 	reflexLog := reflex.NewLog(20) // Keep last 20 reflex interactions

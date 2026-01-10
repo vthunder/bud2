@@ -1,0 +1,15 @@
+name: state-sync
+description: Sync state directory to git when triggered by recurring task
+priority: 20
+trigger:
+  source: impulse:task
+  type: recurring
+  pattern: "Sync state to git"
+pipeline:
+  - action: shell
+    command: "cd state && git add -A && git diff --cached --quiet || (git commit -m \"auto sync $(date +%Y-%m-%d-%H%M)\" && git push)"
+    output: result
+  - action: log
+    message: "State sync: {{.result}}"
+  - action: complete_bud_task
+    task_id: "task-state-sync"

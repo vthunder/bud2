@@ -6,5 +6,13 @@
     "context": "Regular housekeeping per wellness.md - review logs, check state health, look for reflex opportunities, review ideas",
     "status": "pending",
     "recurrence": "daily"
+  },
+  {
+    "id": "task-state-sync",
+    "task": "Sync state to git",
+    "priority": 3,
+    "context": "Commit and push state directory to bud2-state repo",
+    "status": "pending",
+    "recurrence": "1h"
   }
 ]
