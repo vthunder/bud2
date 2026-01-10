@@ -46,17 +46,11 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	log.Printf("[session] Focus called: thread=%s, windowName=%s, sessionID=%s, state=%s",
-		thread.ID, thread.WindowName, thread.SessionID, thread.SessionState)
-
 	// If already focused and session exists with matching ID, return it
 	if thread.SessionState == types.SessionFocused {
 		if session, ok := m.sessions[thread.ID]; ok {
 			// Check if session ID matches - if not, the session is stale (e.g., cleared after errors)
 			if thread.SessionID != "" && thread.SessionID == session.sessionID {
-				log.Printf("[session] EARLY RETURN: Returning existing session for focused thread")
-				log.Printf("[session]   thread.SessionID=%s", thread.SessionID)
-				log.Printf("[session]   session.sessionID=%s", session.sessionID)
 				return session, nil
 			}
 			// Session ID mismatch or thread has no session ID - invalidate cached session
@@ -64,8 +58,6 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 				thread.SessionID, session.sessionID)
 			delete(m.sessions, thread.ID)
 		}
-		// Session doesn't exist or was invalidated - fall through to create one
-		log.Printf("[session] Thread is focused but needs new session")
 	}
 
 	// Find current focused thread (if any) and move it to active
@@ -89,14 +81,10 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 
 	// Track if we're generating a fresh session ID (vs reusing existing)
 	isNewSessionID := thread.SessionID == ""
-	log.Printf("[session] Session ID check: thread.SessionID='%s', isNewSessionID=%v", thread.SessionID, isNewSessionID)
 
 	// Ensure thread has a session ID
 	if isNewSessionID {
 		thread.SessionID = m.generateSessionID()
-		log.Printf("[session] GENERATED new session ID %s for thread %s", thread.SessionID, thread.ID)
-	} else {
-		log.Printf("[session] REUSING existing session ID %s for thread %s", thread.SessionID, thread.ID)
 	}
 
 	// Ensure thread has a window name
@@ -107,9 +95,7 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 	// Get or create Claude session
 	session, exists := m.sessions[thread.ID]
 	if !exists {
-		log.Printf("[session] CREATING new ClaudeSession for thread %s", thread.ID)
 		session = NewClaudeSession(thread.ID, m.tmux)
-		log.Printf("[session]   NewClaudeSession generated sessionID=%s (will be overwritten)", session.sessionID)
 		session.sessionID = thread.SessionID
 		session.windowName = thread.WindowName
 		// If thread already had a session ID (not newly generated), the Claude Code
@@ -117,16 +103,10 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 		// Claude Code creates the session file on startup, even if it dies later.
 		session.sessionInitialized = !isNewSessionID
 		m.sessions[thread.ID] = session
-		log.Printf("[session]   Final session: sessionID=%s, windowName=%s, initialized=%v",
-			session.sessionID, session.windowName, session.sessionInitialized)
+		log.Printf("[session] Created session for thread %s (window: %s)", thread.ID, thread.WindowName)
 	} else {
-		log.Printf("[session] EXISTING session found in memory for thread %s", thread.ID)
-		log.Printf("[session]   existing session.sessionID=%s", session.sessionID)
-		log.Printf("[session]   thread.SessionID=%s", thread.SessionID)
-
 		// Check if session ID changed (was regenerated due to errors)
 		sessionIDChanged := session.sessionID != thread.SessionID
-		log.Printf("[session]   sessionIDChanged=%v", sessionIDChanged)
 
 		// Sync session ID and window name
 		session.sessionID = thread.SessionID
@@ -136,19 +116,16 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 		if sessionIDChanged {
 			session.sessionInitialized = false
 			session.firstMessageSent = false
-			log.Printf("[session] Session ID CHANGED for thread %s: %s -> %s, resetting session state",
-				thread.ID, session.sessionID, thread.SessionID)
+			log.Printf("[session] Session ID changed for thread %s, resetting state", thread.ID)
 		} else if !isNewSessionID {
 			// Session ID didn't change and wasn't newly generated - session exists on disk
 			session.sessionInitialized = true
 		}
-		log.Printf("[session]   After sync: sessionID=%s, initialized=%v", session.sessionID, session.sessionInitialized)
 	}
 
 	// Mark as focused
 	thread.SessionState = types.SessionFocused
 	thread.LastActive = time.Now()
-	log.Printf("[session] Focused thread %s (session: %s, window: %s)", thread.ID, thread.SessionID, thread.WindowName)
 
 	return session, nil
 }

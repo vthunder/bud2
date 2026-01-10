@@ -132,7 +132,9 @@ func (e *Executive) ProcessThread(ctx context.Context, thread *types.Thread) err
 
 	// Skip if prompt is empty (e.g., only filtered percepts)
 	if strings.TrimSpace(prompt) == "" {
-		log.Printf("[executive] Thread %s has no new content, skipping", thread.ID)
+		// Update ProcessedAt to prevent attention loop from re-notifying
+		now := time.Now()
+		thread.ProcessedAt = &now
 		return nil
 	}
 
