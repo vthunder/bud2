@@ -208,22 +208,28 @@ func main() {
 
 	// Initialize session tracker and signal processor for thinking time budget
 	sessionTracker := budget.NewSessionTracker(statePath)
-	signalProcessor := budget.NewSignalProcessor(statePath, sessionTracker)
 	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
 	thinkingBudget.DailyMinutes = dailyBudgetMinutes
 
-	// Set up session completion callback for activity logging
-	sessionCompleteCallback := func(session *budget.Session, summary string) {
-		activityLog.LogExecDone(summary, session.ThreadID, session.DurationSec, "signal_done")
-	}
-
-	// Start signal processor (polls signals.jsonl for session completions)
-	signalProcessor.SetOnComplete(sessionCompleteCallback)
-	signalProcessor.Start(500 * time.Millisecond)
-
-	// Start CPU watcher as fallback for signal_done
+	// CPU watcher writes signals to inbox when it detects idle sessions
+	// The unified inbox loop will complete the session
 	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
-	cpuWatcher.SetOnComplete(sessionCompleteCallback)
+	cpuWatcher.SetOnComplete(func(session *budget.Session, summary string) {
+		msg := &memory.InboxMessage{
+			ID:        fmt.Sprintf("signal-cpu-%d", time.Now().UnixNano()),
+			Type:      "signal",
+			Subtype:   "done",
+			Content:   summary,
+			Timestamp: time.Now(),
+			Status:    "pending",
+			Extra: map[string]any{
+				"session_id": session.ID,
+				"thread_id":  session.ThreadID,
+				"source":     "cpu_watcher",
+			},
+		}
+		inbox.Add(msg)
+	})
 	cpuWatcher.Start()
 
 	todayUsed := sessionTracker.TodayThinkingMinutes()
@@ -296,6 +302,29 @@ func main() {
 	})
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
+	}
+
+	// handleSignal processes a signal-type inbox message (budget tracking, no percept)
+	handleSignal := func(msg *memory.InboxMessage) {
+		if msg.Subtype == "done" {
+			// Session completion signal
+			sessionID := ""
+			source := "signal_done"
+			if msg.Extra != nil {
+				sessionID, _ = msg.Extra["session_id"].(string)
+				if s, ok := msg.Extra["source"].(string); ok {
+					source = s
+				}
+			}
+			if sessionID != "" {
+				session := sessionTracker.CompleteSession(sessionID)
+				if session != nil {
+					activityLog.LogExecDone(msg.Content, session.ThreadID, session.DurationSec, source)
+					log.Printf("[main] Signal: session %s completed via %s (%.1f sec)", sessionID, source, session.DurationSec)
+				}
+			}
+		}
+		// Other signal subtypes can be added here
 	}
 
 	// Process percept helper - checks reflexes first, then routes to attention
@@ -523,7 +552,7 @@ func main() {
 		log.Println("[main] Write to inbox.jsonl, read from outbox.jsonl")
 	}
 
-	// Start inbox polling (processes messages from both Discord and synthetic sources)
+	// Start inbox polling (unified queue: messages, signals, impulses)
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -533,25 +562,41 @@ func main() {
 			case <-stopChan:
 				return
 			case <-ticker.C:
-				// Poll inbox file for external writes (synthetic mode)
+				// Poll inbox file for external writes (synthetic mode, MCP tools)
 				newMsgs, err := inbox.Poll()
 				if err != nil {
 					log.Printf("[main] Inbox poll error: %v", err)
 					continue
 				}
 				if len(newMsgs) > 0 {
-					log.Printf("[main] Found %d new messages in inbox", len(newMsgs))
+					log.Printf("[main] Found %d new items in inbox", len(newMsgs))
 				}
 
-				// Process all pending messages
-				// Get pending and mark them immediately to prevent duplicate processing
+				// Process all pending items
 				pending := inbox.GetPending()
 				for _, msg := range pending {
 					inbox.MarkProcessed(msg.ID) // Mark BEFORE processing to prevent race
 				}
 				for _, msg := range pending {
-					percept := msg.ToPercept()
-					processPercept(percept)
+					switch msg.Type {
+					case "signal":
+						// Signals don't become percepts - handle directly
+						handleSignal(msg)
+
+					case "impulse":
+						// Impulses may become percepts
+						percept := msg.ToPercept()
+						if percept != nil {
+							processPercept(percept)
+						}
+
+					default: // "message" or empty (backward compat)
+						// Messages become percepts
+						percept := msg.ToPercept()
+						if percept != nil {
+							processPercept(percept)
+						}
+					}
 				}
 			}
 		}
@@ -606,21 +651,17 @@ func main() {
 					return
 				}
 
-				// Process the highest priority impulse
-				// Budget is checked in processPercept() after reflexes run
+				// Write the highest priority impulse to inbox
+				// Budget is checked when processing from inbox
 				impulse := impulses[0]
-				log.Printf("[autonomous] Processing task impulse: %s", impulse.Description)
+				log.Printf("[autonomous] Queueing task impulse: %s", impulse.Description)
 
-				// Convert to percept - include type and priority for budget bypass logic
-				percept := impulse.ToPercept()
-				percept.Data["type"] = impulse.Type
-				if priority, ok := impulse.Data["priority"].(int); ok {
-					percept.Data["priority"] = priority
-				}
-				processPercept(percept)
+				// Convert to inbox message and add to queue
+				inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
+				inbox.Add(inboxMsg)
 
-				// Auto-complete recurring tasks after processing
-				// The task's job is to remind on a schedule - once the executive wakes, it's done for this interval
+				// Auto-complete recurring tasks after queueing
+				// The task's job is to remind on a schedule - once queued, it's done for this interval
 				if impulse.Type == "recurring" {
 					if taskID, ok := impulse.Data["task_id"].(string); ok && taskID != "" {
 						taskStore.Complete(taskID)
@@ -646,13 +687,6 @@ func main() {
 
 				case <-periodicTicker.C:
 					// Periodic wake-up (even without specific tasks)
-					if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
-						log.Printf("[autonomous] Skipping periodic wake-up: %s", reason)
-						continue
-					}
-
-					thinkingBudget.LogStatus()
-
 					impulse := &types.Impulse{
 						ID:          fmt.Sprintf("impulse-wake-%d", time.Now().UnixNano()),
 						Source:      types.ImpulseSystem,
@@ -665,8 +699,9 @@ func main() {
 						},
 					}
 
-					log.Printf("[autonomous] Triggering periodic wake-up")
-					processPercept(impulse.ToPercept())
+					log.Printf("[autonomous] Queueing periodic wake-up impulse")
+					inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
+					inbox.Add(inboxMsg)
 				}
 			}
 		}()

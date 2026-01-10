@@ -69,7 +69,9 @@ func (w *CPUWatcher) SetThresholds(idle, active float64, idleDur time.Duration) 
 	w.idleDuration = idleDur
 }
 
-// SetOnComplete sets the callback for session completion
+// SetOnComplete sets the callback for session completion.
+// The callback receives the session info and should write a signal to inbox.
+// The callback is responsible for completing the session via the unified inbox processing.
 func (w *CPUWatcher) SetOnComplete(cb func(session *Session, summary string)) {
 	w.onComplete = cb
 }
@@ -296,7 +298,7 @@ func (w *CPUWatcher) onSessionCompleted(state *claudeProcessState, now time.Time
 		return
 	}
 
-	// Complete the oldest active session (simple heuristic)
+	// Find the oldest active session (simple heuristic)
 	// In practice, if there's only one session, this works fine
 	oldestSession := activeSessions[0]
 	for _, s := range activeSessions[1:] {
@@ -305,15 +307,12 @@ func (w *CPUWatcher) onSessionCompleted(state *claudeProcessState, now time.Time
 		}
 	}
 
-	// Mark complete via tracker
-	completed := w.tracker.CompleteSession(oldestSession.ID)
-	if completed != nil {
-		log.Printf("[cpuwatcher] Completed session %s via CPU detection (%.1f sec, fallback for signal_done)",
-			oldestSession.ID, completed.DurationSec)
-		// Call completion callback
-		if w.onComplete != nil {
-			w.onComplete(completed, "Completed via CPU idle detection")
-		}
+	log.Printf("[cpuwatcher] Session %s went idle via CPU detection (fallback for signal_done)",
+		oldestSession.ID)
+
+	// Call callback to write signal to inbox - let unified inbox processing complete the session
+	if w.onComplete != nil {
+		w.onComplete(oldestSession, "Completed via CPU idle detection")
 	}
 }
 

@@ -207,26 +207,33 @@ func main() {
 	})
 
 	// Register signal_done tool (signal that Claude is done thinking)
+	// Writes to inbox.jsonl as a signal-type message (unified inbox)
 	server.RegisterTool("signal_done", func(ctx any, args map[string]any) (string, error) {
 		sessionID, _ := args["session_id"].(string)
 		summary, _ := args["summary"].(string)
 
-		signal := map[string]any{
-			"type":       "session_done",
-			"session_id": sessionID,
-			"summary":    summary,
-			"timestamp":  time.Now().Format(time.RFC3339),
+		// Write as inbox message with type=signal
+		msg := map[string]any{
+			"id":        fmt.Sprintf("signal-%d", time.Now().UnixNano()),
+			"type":      "signal",
+			"subtype":   "done",
+			"content":   summary,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"status":    "pending",
+			"extra": map[string]any{
+				"session_id": sessionID,
+			},
 		}
 
-		// Write to signals file (picked up by main bud process)
-		signalsPath := filepath.Join(queuesPath, "signals.jsonl")
-		f, err := os.OpenFile(signalsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		// Write to inbox file (unified queue)
+		inboxPath := filepath.Join(queuesPath, "inbox.jsonl")
+		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return "", fmt.Errorf("failed to open signals file: %w", err)
+			return "", fmt.Errorf("failed to open inbox file: %w", err)
 		}
 		defer f.Close()
 
-		data, _ := json.Marshal(signal)
+		data, _ := json.Marshal(msg)
 		if _, err := f.WriteString(string(data) + "\n"); err != nil {
 			return "", fmt.Errorf("failed to write signal: %w", err)
 		}
