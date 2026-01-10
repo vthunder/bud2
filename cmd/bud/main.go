@@ -155,6 +155,9 @@ func main() {
 	// Ensure state directory exists
 	os.MkdirAll(statePath, 0755)
 
+	// Seed notes from defaults if missing
+	seedNotes(statePath)
+
 	// Generate .mcp.json with correct state path for MCP server
 	if err := writeMCPConfig(statePath); err != nil {
 		log.Printf("Warning: failed to write .mcp.json: %v", err)
@@ -693,6 +696,51 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// seedNotes copies seed/notes/ to state/notes/ if the directory doesn't exist
+func seedNotes(statePath string) {
+	notesDir := filepath.Join(statePath, "notes")
+
+	// Only seed if directory doesn't exist
+	if _, err := os.Stat(notesDir); !os.IsNotExist(err) {
+		return
+	}
+
+	// Create directory
+	if err := os.MkdirAll(notesDir, 0755); err != nil {
+		log.Printf("[main] Warning: failed to create notes dir: %v", err)
+		return
+	}
+
+	// Copy all files from seed/notes/
+	seedDir := "seed/notes"
+	entries, err := os.ReadDir(seedDir)
+	if err != nil {
+		log.Printf("[main] Warning: failed to read seed notes: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		src := filepath.Join(seedDir, entry.Name())
+		dst := filepath.Join(notesDir, entry.Name())
+
+		data, err := os.ReadFile(src)
+		if err != nil {
+			log.Printf("[main] Warning: failed to read %s: %v", src, err)
+			continue
+		}
+
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			log.Printf("[main] Warning: failed to write %s: %v", dst, err)
+			continue
+		}
+
+		log.Printf("[main] Seeded: %s", entry.Name())
+	}
 }
 
 // writeMCPConfig generates .mcp.json with the correct state path
