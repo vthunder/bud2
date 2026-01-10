@@ -600,6 +600,19 @@ func main() {
 
 				// Convert to percept (Bud knows owner's default channel from core memory)
 				processPercept(impulse.ToPercept())
+
+				// Auto-complete recurring tasks after processing
+				// The task's job is to remind on a schedule - once the executive wakes, it's done for this interval
+				if impulse.Type == "recurring" {
+					if taskID, ok := impulse.Data["task_id"].(string); ok && taskID != "" {
+						taskStore.Complete(taskID)
+						if err := taskStore.Save(); err != nil {
+							log.Printf("[autonomous] Failed to auto-complete recurring task %s: %v", taskID, err)
+						} else {
+							log.Printf("[autonomous] Auto-completed recurring task: %s", taskID)
+						}
+					}
+				}
 			}
 
 			// Check immediately on startup

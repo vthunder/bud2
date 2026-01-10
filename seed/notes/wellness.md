@@ -59,7 +59,16 @@ Review `list_bud_tasks` for:
 - Tasks that can be completed quickly
 - Tasks that should be deprioritized or removed
 
-### 6. Memory Consolidation
+### 6. Review for Untracked Commitments
+
+Check recent journal entries and activity logs for untracked investigative work:
+- Statements like "I should investigate", "need to look into", "should check"
+- Any work I mentioned but didn't create a task/idea/bead for
+- Promises to follow up that weren't captured
+
+If found, create proper tracking immediately. Mentioning intent is not tracking.
+
+### 7. Memory Consolidation
 
 If percepts are accumulating:
 - Use `state_percepts` with `clear` action for old percepts
