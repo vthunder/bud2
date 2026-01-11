@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/gtd"
+	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +45,9 @@ type Engine struct {
 		Complete(id string)
 		Save() error
 	}
+
+	// Calendar client for calendar_* actions
+	calendarClient *calendar.Client
 }
 
 // NewEngine creates a new reflex engine
@@ -84,6 +88,14 @@ func (e *Engine) SetBudTaskStore(store interface {
 	Save() error
 }) {
 	e.budTaskStore = store
+}
+
+// SetCalendarClient sets the calendar client for calendar_* actions
+func (e *Engine) SetCalendarClient(client *calendar.Client) {
+	e.calendarClient = client
+	if client != nil {
+		e.createCalendarActions()
+	}
 }
 
 // Load loads all reflexes from the reflexes directory
@@ -754,6 +766,167 @@ func (e *Engine) createGTDActions() {
 		}
 
 		return fmt.Sprintf("Completed bud task '%s'", taskID), nil
+	}))
+}
+
+// createCalendarActions registers calendar-related actions
+func (e *Engine) createCalendarActions() {
+	e.actions.Register("calendar_today", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.calendarClient == nil {
+			return nil, fmt.Errorf("calendar not configured")
+		}
+
+		events, err := e.calendarClient.GetTodayEvents(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get today's events: %w", err)
+		}
+
+		if len(events) == 0 {
+			return "No events scheduled for today.", nil
+		}
+
+		var lines []string
+		for _, event := range events {
+			lines = append(lines, event.FormatEventSummary())
+		}
+
+		return fmt.Sprintf("Today's schedule (%d events):\n%s", len(events), strings.Join(lines, "\n")), nil
+	}))
+
+	e.actions.Register("calendar_upcoming", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.calendarClient == nil {
+			return nil, fmt.Errorf("calendar not configured")
+		}
+
+		durationStr := resolveVar(params, vars, "duration")
+		duration := 24 * time.Hour // default
+		if durationStr != "" {
+			if d, err := time.ParseDuration(durationStr); err == nil {
+				duration = d
+			}
+		}
+
+		events, err := e.calendarClient.GetUpcomingEvents(ctx, duration, 10)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get upcoming events: %w", err)
+		}
+
+		if len(events) == 0 {
+			return fmt.Sprintf("No events in the next %s.", duration), nil
+		}
+
+		var lines []string
+		for _, event := range events {
+			lines = append(lines, event.FormatEventSummary())
+		}
+
+		return fmt.Sprintf("Upcoming events (%d):\n%s", len(events), strings.Join(lines, "\n")), nil
+	}))
+
+	e.actions.Register("calendar_dispatch", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.calendarClient == nil {
+			return nil, fmt.Errorf("calendar not configured")
+		}
+
+		intent, _ := vars["intent"].(string)
+
+		switch intent {
+		case "calendar_today":
+			events, err := e.calendarClient.GetTodayEvents(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get today's events: %w", err)
+			}
+
+			if len(events) == 0 {
+				return "No events scheduled for today.", nil
+			}
+
+			var lines []string
+			for _, event := range events {
+				lines = append(lines, event.FormatEventSummary())
+			}
+
+			return fmt.Sprintf("Today's schedule (%d events):\n%s", len(events), strings.Join(lines, "\n")), nil
+
+		case "calendar_upcoming":
+			events, err := e.calendarClient.GetUpcomingEvents(ctx, 24*time.Hour, 10)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get upcoming events: %w", err)
+			}
+
+			if len(events) == 0 {
+				return "No events in the next 24 hours.", nil
+			}
+
+			var lines []string
+			for _, event := range events {
+				lines = append(lines, event.FormatEventSummary())
+			}
+
+			return fmt.Sprintf("Upcoming events (%d):\n%s", len(events), strings.Join(lines, "\n")), nil
+
+		case "calendar_query":
+			// Query events in a date range
+			events, err := e.calendarClient.GetUpcomingEvents(ctx, 7*24*time.Hour, 20)
+			if err != nil {
+				return nil, fmt.Errorf("failed to query events: %w", err)
+			}
+
+			if len(events) == 0 {
+				return "No events found in the next week.", nil
+			}
+
+			var lines []string
+			var currentDay string
+			for _, event := range events {
+				day := event.Start.Format("Monday, Jan 2")
+				if day != currentDay {
+					if currentDay != "" {
+						lines = append(lines, "")
+					}
+					lines = append(lines, day+":")
+					currentDay = day
+				}
+				lines = append(lines, "  "+event.FormatEventSummary())
+			}
+
+			return fmt.Sprintf("Events this week (%d):\n%s", len(events), strings.Join(lines, "\n")), nil
+
+		case "calendar_free":
+			// Check availability for today
+			now := time.Now()
+			endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
+
+			busy, err := e.calendarClient.FreeBusy(ctx, calendar.FreeBusyParams{
+				TimeMin: now,
+				TimeMax: endOfDay,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to check availability: %w", err)
+			}
+
+			if len(busy) == 0 {
+				return "You're free for the rest of today!", nil
+			}
+
+			var totalBusyMins float64
+			var busyTimes []string
+			for _, b := range busy {
+				totalBusyMins += b.End.Sub(b.Start).Minutes()
+				busyTimes = append(busyTimes, fmt.Sprintf("%s - %s",
+					b.Start.Format("3:04 PM"),
+					b.End.Format("3:04 PM")))
+			}
+
+			remainingMins := endOfDay.Sub(now).Minutes()
+			freeMins := remainingMins - totalBusyMins
+
+			return fmt.Sprintf("Today's availability:\nBusy times: %s\nFree time remaining: %.0f minutes",
+				strings.Join(busyTimes, ", "), freeMins), nil
+
+		default:
+			return nil, fmt.Errorf("unknown calendar intent: %s", intent)
+		}
 	}))
 }
 

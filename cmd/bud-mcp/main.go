@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/gtd"
+	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
@@ -1333,6 +1335,292 @@ func main() {
 		}
 	} else {
 		log.Println("Notion integration disabled (NOTION_API_KEY not set)")
+	}
+
+	// Google Calendar tools (only register if credentials are configured)
+	if os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != "" && os.Getenv("GOOGLE_CALENDAR_ID") != "" {
+		calendarClient, err := calendar.NewClient()
+		if err != nil {
+			log.Printf("Warning: Failed to create Calendar client: %v", err)
+		} else {
+			log.Println("Google Calendar integration enabled")
+
+			// Register calendar_today tool - get today's events
+			server.RegisterTool("calendar_today", func(ctx any, args map[string]any) (string, error) {
+				events, err := calendarClient.GetTodayEvents(context.Background())
+				if err != nil {
+					return "", fmt.Errorf("failed to get today's events: %w", err)
+				}
+
+				if len(events) == 0 {
+					return "No events scheduled for today.", nil
+				}
+
+				data, _ := json.MarshalIndent(events, "", "  ")
+				return string(data), nil
+			})
+
+			// Register calendar_upcoming tool - get upcoming events
+			server.RegisterTool("calendar_upcoming", func(ctx any, args map[string]any) (string, error) {
+				// Default to next 24 hours
+				durationStr, _ := args["duration"].(string)
+				if durationStr == "" {
+					durationStr = "24h"
+				}
+
+				duration, err := time.ParseDuration(durationStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid duration: %w", err)
+				}
+
+				maxResults := 20
+				if n, ok := args["max_results"].(float64); ok && n > 0 {
+					maxResults = int(n)
+				}
+
+				events, err := calendarClient.GetUpcomingEvents(context.Background(), duration, maxResults)
+				if err != nil {
+					return "", fmt.Errorf("failed to get upcoming events: %w", err)
+				}
+
+				if len(events) == 0 {
+					return fmt.Sprintf("No events in the next %s.", durationStr), nil
+				}
+
+				data, _ := json.MarshalIndent(events, "", "  ")
+				return string(data), nil
+			})
+
+			// Register calendar_list_events tool - query events in a date range
+			server.RegisterTool("calendar_list_events", func(ctx any, args map[string]any) (string, error) {
+				// Parse time range
+				timeMinStr, _ := args["time_min"].(string)
+				timeMaxStr, _ := args["time_max"].(string)
+
+				var timeMin, timeMax time.Time
+				var err error
+
+				if timeMinStr == "" {
+					timeMin = time.Now()
+				} else {
+					timeMin, err = time.Parse(time.RFC3339, timeMinStr)
+					if err != nil {
+						// Try date-only format
+						timeMin, err = time.Parse("2006-01-02", timeMinStr)
+						if err != nil {
+							return "", fmt.Errorf("invalid time_min format (use RFC3339 or YYYY-MM-DD): %w", err)
+						}
+					}
+				}
+
+				if timeMaxStr == "" {
+					timeMax = timeMin.Add(7 * 24 * time.Hour) // Default to 1 week
+				} else {
+					timeMax, err = time.Parse(time.RFC3339, timeMaxStr)
+					if err != nil {
+						// Try date-only format
+						timeMax, err = time.Parse("2006-01-02", timeMaxStr)
+						if err != nil {
+							return "", fmt.Errorf("invalid time_max format (use RFC3339 or YYYY-MM-DD): %w", err)
+						}
+						// Add 24 hours to include the entire day
+						timeMax = timeMax.Add(24 * time.Hour)
+					}
+				}
+
+				params := calendar.ListEventsParams{
+					TimeMin:    timeMin,
+					TimeMax:    timeMax,
+					MaxResults: 50,
+				}
+
+				if n, ok := args["max_results"].(float64); ok && n > 0 {
+					params.MaxResults = int(n)
+				}
+				if q, ok := args["query"].(string); ok {
+					params.Query = q
+				}
+
+				events, err := calendarClient.ListEvents(context.Background(), params)
+				if err != nil {
+					return "", fmt.Errorf("failed to list events: %w", err)
+				}
+
+				if len(events) == 0 {
+					return "No events found in the specified time range.", nil
+				}
+
+				data, _ := json.MarshalIndent(map[string]any{
+					"events":   events,
+					"count":    len(events),
+					"time_min": timeMin.Format(time.RFC3339),
+					"time_max": timeMax.Format(time.RFC3339),
+				}, "", "  ")
+				return string(data), nil
+			})
+
+			// Register calendar_free_busy tool - check availability
+			server.RegisterTool("calendar_free_busy", func(ctx any, args map[string]any) (string, error) {
+				timeMinStr, _ := args["time_min"].(string)
+				timeMaxStr, _ := args["time_max"].(string)
+
+				var timeMin, timeMax time.Time
+				var err error
+
+				if timeMinStr == "" {
+					timeMin = time.Now()
+				} else {
+					timeMin, err = time.Parse(time.RFC3339, timeMinStr)
+					if err != nil {
+						timeMin, err = time.Parse("2006-01-02", timeMinStr)
+						if err != nil {
+							return "", fmt.Errorf("invalid time_min format: %w", err)
+						}
+					}
+				}
+
+				if timeMaxStr == "" {
+					timeMax = timeMin.Add(24 * time.Hour)
+				} else {
+					timeMax, err = time.Parse(time.RFC3339, timeMaxStr)
+					if err != nil {
+						timeMax, err = time.Parse("2006-01-02", timeMaxStr)
+						if err != nil {
+							return "", fmt.Errorf("invalid time_max format: %w", err)
+						}
+						timeMax = timeMax.Add(24 * time.Hour)
+					}
+				}
+
+				busy, err := calendarClient.FreeBusy(context.Background(), calendar.FreeBusyParams{
+					TimeMin: timeMin,
+					TimeMax: timeMax,
+				})
+				if err != nil {
+					return "", fmt.Errorf("failed to check availability: %w", err)
+				}
+
+				// Format response with busy periods and free time summary
+				result := map[string]any{
+					"time_min":     timeMin.Format(time.RFC3339),
+					"time_max":     timeMax.Format(time.RFC3339),
+					"busy_periods": busy,
+					"busy_count":   len(busy),
+				}
+
+				if len(busy) == 0 {
+					result["summary"] = "You are free during this entire time range."
+				} else {
+					var totalBusyMins float64
+					for _, b := range busy {
+						totalBusyMins += b.End.Sub(b.Start).Minutes()
+					}
+					totalMins := timeMax.Sub(timeMin).Minutes()
+					freeMins := totalMins - totalBusyMins
+					result["summary"] = fmt.Sprintf("%.0f minutes busy, %.0f minutes free out of %.0f total minutes.",
+						totalBusyMins, freeMins, totalMins)
+				}
+
+				data, _ := json.MarshalIndent(result, "", "  ")
+				return string(data), nil
+			})
+
+			// Register calendar_get_event tool - get a specific event by ID
+			server.RegisterTool("calendar_get_event", func(ctx any, args map[string]any) (string, error) {
+				eventID, _ := args["event_id"].(string)
+				if eventID == "" {
+					return "", fmt.Errorf("event_id is required")
+				}
+
+				event, err := calendarClient.GetEvent(context.Background(), eventID)
+				if err != nil {
+					return "", fmt.Errorf("failed to get event: %w", err)
+				}
+
+				data, _ := json.MarshalIndent(event, "", "  ")
+				return string(data), nil
+			})
+
+			// Register calendar_create_event tool - create a new event
+			server.RegisterTool("calendar_create_event", func(ctx any, args map[string]any) (string, error) {
+				summary, _ := args["summary"].(string)
+				if summary == "" {
+					return "", fmt.Errorf("summary is required")
+				}
+
+				startStr, _ := args["start"].(string)
+				endStr, _ := args["end"].(string)
+				if startStr == "" {
+					return "", fmt.Errorf("start time is required")
+				}
+
+				var start, end time.Time
+				var err error
+				var allDay bool
+
+				// Try RFC3339 first, then date-only
+				start, err = time.Parse(time.RFC3339, startStr)
+				if err != nil {
+					start, err = time.Parse("2006-01-02", startStr)
+					if err != nil {
+						return "", fmt.Errorf("invalid start format (use RFC3339 or YYYY-MM-DD): %w", err)
+					}
+					allDay = true
+				}
+
+				if endStr == "" {
+					if allDay {
+						end = start.Add(24 * time.Hour)
+					} else {
+						end = start.Add(time.Hour) // Default 1 hour
+					}
+				} else {
+					end, err = time.Parse(time.RFC3339, endStr)
+					if err != nil {
+						end, err = time.Parse("2006-01-02", endStr)
+						if err != nil {
+							return "", fmt.Errorf("invalid end format: %w", err)
+						}
+					}
+				}
+
+				params := calendar.CreateEventParams{
+					Summary: summary,
+					Start:   start,
+					End:     end,
+					AllDay:  allDay,
+				}
+
+				if desc, ok := args["description"].(string); ok {
+					params.Description = desc
+				}
+				if loc, ok := args["location"].(string); ok {
+					params.Location = loc
+				}
+				if attendeesRaw, ok := args["attendees"].([]any); ok {
+					for _, a := range attendeesRaw {
+						if email, ok := a.(string); ok {
+							params.Attendees = append(params.Attendees, email)
+						}
+					}
+				}
+
+				event, err := calendarClient.CreateEvent(context.Background(), params)
+				if err != nil {
+					return "", fmt.Errorf("failed to create event: %w", err)
+				}
+
+				log.Printf("Created calendar event: %s", event.Summary)
+
+				data, _ := json.MarshalIndent(map[string]any{
+					"message": "Event created successfully",
+					"event":   event,
+				}, "", "  ")
+				return string(data), nil
+			})
+		}
+	} else {
+		log.Println("Google Calendar integration disabled (GOOGLE_CALENDAR_CREDENTIALS_FILE or GOOGLE_CALENDAR_ID not set)")
 	}
 
 	// State introspection tools

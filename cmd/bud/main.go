@@ -22,6 +22,7 @@ import (
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/gtd"
+	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/reflex"
@@ -263,6 +264,21 @@ func main() {
 	}
 	reflexEngine.SetGTDStore(gtdStore)
 	reflexEngine.SetBudTaskStore(taskStore)
+
+	// Initialize calendar client (optional - only if credentials are configured)
+	var calendarClient *calendar.Client
+	if os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != "" && os.Getenv("GOOGLE_CALENDAR_ID") != "" {
+		var err error
+		calendarClient, err = calendar.NewClient()
+		if err != nil {
+			log.Printf("Warning: failed to create calendar client: %v", err)
+		} else {
+			log.Println("[main] Google Calendar integration enabled")
+			reflexEngine.SetCalendarClient(calendarClient)
+		}
+	} else {
+		log.Println("[main] Google Calendar integration disabled (credentials not configured)")
+	}
 
 	// Initialize reflex log for short-term context
 	reflexLog := reflex.NewLog(20) // Keep last 20 reflex interactions
@@ -552,6 +568,20 @@ func main() {
 		log.Println("[main] Write to inbox.jsonl, read from outbox.jsonl")
 	}
 
+	// Start calendar sense (optional, independent of Discord)
+	var calendarSense *senses.CalendarSense
+	if calendarClient != nil {
+		calendarSense = senses.NewCalendarSense(senses.CalendarConfig{
+			Client: calendarClient,
+		}, inbox)
+
+		if err := calendarSense.Start(); err != nil {
+			log.Printf("Warning: failed to start calendar sense: %v", err)
+		} else {
+			log.Println("[main] Calendar sense started")
+		}
+	}
+
 	// Start inbox polling (unified queue: messages, signals, impulses)
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -729,6 +759,9 @@ func main() {
 	if discordSense != nil {
 		discordSense.StopHealthMonitor()
 		discordSense.Stop()
+	}
+	if calendarSense != nil {
+		calendarSense.Stop()
 	}
 
 	// Final consolidation before shutdown (consolidate ALL percepts regardless of age)
