@@ -16,3 +16,8 @@ state/
 .vscode/
 *.swp
 /bud
+
+# Generated deploy files (created by deploy/setup.sh)
+deploy/deploy.sh
+deploy/com.bud.daemon.plist
+deploy/com.bud.watcher.plist
