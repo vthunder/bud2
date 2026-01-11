@@ -19,6 +19,8 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>@HOME@</string>
+        <key>TERM</key>
+        <string>xterm-256color</string>
     </dict>
 
     <key>RunAtLoad</key>
