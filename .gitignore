@@ -3,6 +3,7 @@ state/
 
 # Go build artifacts
 /bud2
+/bud-mcp
 /bud-state
 /bin/
 *.exe
