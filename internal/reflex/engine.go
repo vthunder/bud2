@@ -297,6 +297,8 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 			if errors.Is(err, ErrStopPipeline) {
 				reflex.LastFired = time.Now()
 				reflex.FireCount++
+				// Persist stats (unlock before save to avoid deadlock)
+				e.saveReflexStats(reflex)
 				return &ReflexResult{
 					ReflexName: reflex.Name,
 					Success:    true,
@@ -322,6 +324,8 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 	// Update stats
 	reflex.LastFired = time.Now()
 	reflex.FireCount++
+	// Persist stats
+	e.saveReflexStats(reflex)
 
 	return &ReflexResult{
 		ReflexName: reflex.Name,
@@ -329,6 +333,14 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 		Output:     vars,
 		Duration:   time.Since(start),
 	}, nil
+}
+
+// saveReflexStats persists FireCount and LastFired to the reflex YAML file
+func (e *Engine) saveReflexStats(reflex *Reflex) {
+	// Note: SaveReflex acquires the lock, so don't call from within a locked section
+	if err := e.SaveReflex(reflex); err != nil {
+		log.Printf("[reflex] Failed to persist stats for %s: %v", reflex.Name, err)
+	}
 }
 
 func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {

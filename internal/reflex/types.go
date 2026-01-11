@@ -14,10 +14,12 @@ type Reflex struct {
 	Level       int      `yaml:"level"`    // 0=pattern, 1=heuristic, 2=ollama, 3=executive
 	Priority    int      `yaml:"priority"` // higher = fires first when multiple match
 
-	// Runtime state
-	compiledPattern *regexp.Regexp
-	LastFired       time.Time
-	FireCount       int
+	// Runtime state (persisted)
+	LastFired time.Time `yaml:"last_fired,omitempty"`
+	FireCount int       `yaml:"fire_count,omitempty"`
+
+	// Runtime only (not persisted)
+	compiledPattern *regexp.Regexp `yaml:"-"`
 }
 
 // Trigger defines when a reflex fires
