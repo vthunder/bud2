@@ -8,7 +8,7 @@ set -e
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 BUD_DIR="${BUD_DIR:-@BUD_DIR@}"
-LOG_FILE="${BUD_LOG:-@HOME@/Library/Logs/bud.log}"
+LOG_FILE="${BUD_LOG:-@HOME@/Library/Logs/bud-deploy.log}"
 
 cd "$BUD_DIR"
 
