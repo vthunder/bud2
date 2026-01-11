@@ -36,7 +36,7 @@ check_prereqs() {
 # Generate deploy.sh from example
 generate_deploy() {
     echo "Generating deploy.sh..."
-    sed "s|\$HOME/src/bud2|$BUD_DIR|g; s|\$HOME|$HOME|g" \
+    sed "s|@BUD_DIR@|$BUD_DIR|g; s|@HOME@|$HOME|g" \
         "$SCRIPT_DIR/deploy.sh.example" > "$SCRIPT_DIR/deploy.sh"
     chmod +x "$SCRIPT_DIR/deploy.sh"
 }
@@ -46,7 +46,7 @@ generate_plists() {
     echo "Generating launchd plist files..."
 
     for plist in com.bud.daemon.plist com.bud.watcher.plist; do
-        sed "s|/Users/YOU|$HOME|g; s|/Users/thunder/src/bud2|$BUD_DIR|g" \
+        sed "s|@BUD_DIR@|$BUD_DIR|g; s|@HOME@|$HOME|g" \
             "$SCRIPT_DIR/${plist}.example" > "$SCRIPT_DIR/$plist"
     done
 }
