@@ -54,7 +54,7 @@ type serviceAccountCredentials struct {
 // Config holds calendar client configuration
 type Config struct {
 	CredentialsFile string   // Path to service account JSON file (optional if CredentialsJSON is set)
-	CredentialsJSON string   // Inline JSON credentials (optional if CredentialsFile is set)
+	CredentialsJSON string   // Base64-encoded service account JSON (optional if CredentialsFile is set)
 	CalendarIDs     []string // Calendar IDs to access (usually email addresses)
 }
 
@@ -98,9 +98,12 @@ func NewClientWithConfig(cfg Config) (*Client, error) {
 	var data []byte
 	var err error
 
-	// Prefer inline JSON, fall back to file
+	// Prefer inline JSON (base64 encoded), fall back to file
 	if cfg.CredentialsJSON != "" {
-		data = []byte(cfg.CredentialsJSON)
+		data, err = base64.StdEncoding.DecodeString(cfg.CredentialsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode base64 credentials: %w", err)
+		}
 	} else if cfg.CredentialsFile != "" {
 		data, err = os.ReadFile(cfg.CredentialsFile)
 		if err != nil {
