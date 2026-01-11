@@ -1338,12 +1338,14 @@ func main() {
 	}
 
 	// Google Calendar tools (only register if credentials are configured)
-	if os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != "" && os.Getenv("GOOGLE_CALENDAR_ID") != "" {
+	hasCalendarCreds := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS") != "" || os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != ""
+	hasCalendarIDs := os.Getenv("GOOGLE_CALENDAR_IDS") != "" || os.Getenv("GOOGLE_CALENDAR_ID") != ""
+	if hasCalendarCreds && hasCalendarIDs {
 		calendarClient, err := calendar.NewClient()
 		if err != nil {
 			log.Printf("Warning: Failed to create Calendar client: %v", err)
 		} else {
-			log.Println("Google Calendar integration enabled")
+			log.Printf("Google Calendar integration enabled (%d calendars)", len(calendarClient.CalendarIDs()))
 
 			// Register calendar_today tool - get today's events
 			server.RegisterTool("calendar_today", func(ctx any, args map[string]any) (string, error) {
@@ -1620,7 +1622,7 @@ func main() {
 			})
 		}
 	} else {
-		log.Println("Google Calendar integration disabled (GOOGLE_CALENDAR_CREDENTIALS_FILE or GOOGLE_CALENDAR_ID not set)")
+		log.Println("Google Calendar integration disabled (credentials not configured)")
 	}
 
 	// State introspection tools

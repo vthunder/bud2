@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ const (
 // Client is a Google Calendar API client using service account authentication
 type Client struct {
 	httpClient  *http.Client
-	calendarID  string
+	calendarIDs []string // Multiple calendar IDs supported
 	credentials *serviceAccountCredentials
 
 	// Token caching
@@ -52,34 +53,61 @@ type serviceAccountCredentials struct {
 
 // Config holds calendar client configuration
 type Config struct {
-	CredentialsFile string // Path to service account JSON file
-	CalendarID      string // Calendar ID to access (usually an email address)
+	CredentialsFile string   // Path to service account JSON file (optional if CredentialsJSON is set)
+	CredentialsJSON string   // Inline JSON credentials (optional if CredentialsFile is set)
+	CalendarIDs     []string // Calendar IDs to access (usually email addresses)
 }
 
 // NewClient creates a new Google Calendar client from environment variables
 func NewClient() (*Client, error) {
+	// Try inline JSON first, then file path
+	credsJSON := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS")
 	credsFile := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE")
-	if credsFile == "" {
-		return nil, fmt.Errorf("GOOGLE_CALENDAR_CREDENTIALS_FILE not set")
+
+	if credsJSON == "" && credsFile == "" {
+		return nil, fmt.Errorf("GOOGLE_CALENDAR_CREDENTIALS or GOOGLE_CALENDAR_CREDENTIALS_FILE must be set")
 	}
 
-	calendarID := os.Getenv("GOOGLE_CALENDAR_ID")
-	if calendarID == "" {
-		return nil, fmt.Errorf("GOOGLE_CALENDAR_ID not set")
+	calendarIDsStr := os.Getenv("GOOGLE_CALENDAR_IDS")
+	if calendarIDsStr == "" {
+		// Fall back to singular form for backwards compatibility
+		calendarIDsStr = os.Getenv("GOOGLE_CALENDAR_ID")
+	}
+	if calendarIDsStr == "" {
+		return nil, fmt.Errorf("GOOGLE_CALENDAR_IDS not set")
+	}
+
+	// Parse comma-separated calendar IDs
+	var calendarIDs []string
+	for _, id := range strings.Split(calendarIDsStr, ",") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			calendarIDs = append(calendarIDs, id)
+		}
 	}
 
 	return NewClientWithConfig(Config{
 		CredentialsFile: credsFile,
-		CalendarID:      calendarID,
+		CredentialsJSON: credsJSON,
+		CalendarIDs:     calendarIDs,
 	})
 }
 
 // NewClientWithConfig creates a new client with explicit configuration
 func NewClientWithConfig(cfg Config) (*Client, error) {
-	// Read the service account credentials
-	data, err := os.ReadFile(cfg.CredentialsFile)
-	if err != nil {
-		return nil, fmt.Errorf("read credentials file: %w", err)
+	var data []byte
+	var err error
+
+	// Prefer inline JSON, fall back to file
+	if cfg.CredentialsJSON != "" {
+		data = []byte(cfg.CredentialsJSON)
+	} else if cfg.CredentialsFile != "" {
+		data, err = os.ReadFile(cfg.CredentialsFile)
+		if err != nil {
+			return nil, fmt.Errorf("read credentials file: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("either CredentialsJSON or CredentialsFile must be provided")
 	}
 
 	var creds serviceAccountCredentials
@@ -88,14 +116,18 @@ func NewClientWithConfig(cfg Config) (*Client, error) {
 	}
 
 	if creds.Type != "service_account" {
-		return nil, fmt.Errorf("credentials file must be a service account key (got %s)", creds.Type)
+		return nil, fmt.Errorf("credentials must be a service account key (got %s)", creds.Type)
+	}
+
+	if len(cfg.CalendarIDs) == 0 {
+		return nil, fmt.Errorf("at least one calendar ID must be provided")
 	}
 
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		calendarID:  cfg.CalendarID,
+		calendarIDs: cfg.CalendarIDs,
 		credentials: &creds,
 	}, nil
 }
@@ -272,6 +304,7 @@ func (c *Client) request(ctx context.Context, method, path string, body interfac
 // Event represents a calendar event
 type Event struct {
 	ID          string            `json:"id"`
+	CalendarID  string            `json:"calendar_id,omitempty"` // Which calendar this event belongs to
 	Summary     string            `json:"summary"`
 	Description string            `json:"description,omitempty"`
 	Location    string            `json:"location,omitempty"`
@@ -359,7 +392,7 @@ type ListEventsParams struct {
 	Query        string    // Free text search
 }
 
-// ListEvents retrieves events in the specified time range
+// ListEvents retrieves events in the specified time range from all calendars
 func (c *Client) ListEvents(ctx context.Context, params ListEventsParams) ([]Event, error) {
 	if params.MaxResults == 0 {
 		params.MaxResults = 100
@@ -378,48 +411,75 @@ func (c *Client) ListEvents(ctx context.Context, params ListEventsParams) ([]Eve
 		queryParams.Set("q", params.Query)
 	}
 
-	path := fmt.Sprintf("/calendars/%s/events?%s", url.PathEscape(c.calendarID), queryParams.Encode())
-	data, err := c.request(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
+	// Query all calendars and merge results
+	var allEvents []Event
+	seenIDs := make(map[string]bool) // Dedupe events that appear in multiple calendars
 
-	var resp eventsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("parse events response: %w", err)
-	}
-
-	events := make([]Event, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		event, err := convertEvent(&item)
+	for _, calendarID := range c.calendarIDs {
+		path := fmt.Sprintf("/calendars/%s/events?%s", url.PathEscape(calendarID), queryParams.Encode())
+		data, err := c.request(ctx, "GET", path, nil)
 		if err != nil {
-			continue // Skip malformed events
+			// Log but continue with other calendars
+			continue
 		}
-		events = append(events, event)
+
+		var resp eventsResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+
+		for _, item := range resp.Items {
+			if seenIDs[item.ID] {
+				continue // Skip duplicates
+			}
+			event, err := convertEvent(&item)
+			if err != nil {
+				continue
+			}
+			event.CalendarID = calendarID
+			seenIDs[item.ID] = true
+			allEvents = append(allEvents, event)
+		}
 	}
 
-	return events, nil
+	// Sort by start time
+	sort.Slice(allEvents, func(i, j int) bool {
+		return allEvents[i].Start.Before(allEvents[j].Start)
+	})
+
+	// Apply max results limit after merging
+	if len(allEvents) > params.MaxResults {
+		allEvents = allEvents[:params.MaxResults]
+	}
+
+	return allEvents, nil
 }
 
-// GetEvent retrieves a specific event by ID
+// GetEvent retrieves a specific event by ID (searches all calendars)
 func (c *Client) GetEvent(ctx context.Context, eventID string) (*Event, error) {
-	path := fmt.Sprintf("/calendars/%s/events/%s", url.PathEscape(c.calendarID), url.PathEscape(eventID))
-	data, err := c.request(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
+	// Try each calendar until we find the event
+	for _, calendarID := range c.calendarIDs {
+		path := fmt.Sprintf("/calendars/%s/events/%s", url.PathEscape(calendarID), url.PathEscape(eventID))
+		data, err := c.request(ctx, "GET", path, nil)
+		if err != nil {
+			continue // Try next calendar
+		}
+
+		var item googleEvent
+		if err := json.Unmarshal(data, &item); err != nil {
+			continue
+		}
+
+		event, err := convertEvent(&item)
+		if err != nil {
+			continue
+		}
+
+		event.CalendarID = calendarID
+		return &event, nil
 	}
 
-	var item googleEvent
-	if err := json.Unmarshal(data, &item); err != nil {
-		return nil, fmt.Errorf("parse event: %w", err)
-	}
-
-	event, err := convertEvent(&item)
-	if err != nil {
-		return nil, err
-	}
-
-	return &event, nil
+	return nil, fmt.Errorf("event %s not found in any calendar", eventID)
 }
 
 // GetUpcomingEvents retrieves events in the next duration
@@ -456,14 +516,18 @@ type BusyPeriod struct {
 	End   time.Time `json:"end"`
 }
 
-// FreeBusy checks availability for the calendar
+// FreeBusy checks availability across all calendars
 func (c *Client) FreeBusy(ctx context.Context, params FreeBusyParams) ([]BusyPeriod, error) {
+	// Build items array for all calendars
+	items := make([]map[string]string, len(c.calendarIDs))
+	for i, id := range c.calendarIDs {
+		items[i] = map[string]string{"id": id}
+	}
+
 	reqBody := map[string]interface{}{
 		"timeMin": params.TimeMin.Format(time.RFC3339),
 		"timeMax": params.TimeMax.Format(time.RFC3339),
-		"items": []map[string]string{
-			{"id": c.calendarID},
-		},
+		"items":   items,
 	}
 
 	data, err := c.request(ctx, "POST", "/freeBusy", reqBody)
@@ -483,26 +547,52 @@ func (c *Client) FreeBusy(ctx context.Context, params FreeBusyParams) ([]BusyPer
 		return nil, fmt.Errorf("parse freebusy response: %w", err)
 	}
 
-	calendar, ok := resp.Calendars[c.calendarID]
-	if !ok {
-		return nil, fmt.Errorf("calendar not found in response")
+	// Collect busy periods from all calendars
+	var allPeriods []BusyPeriod
+	for _, calendarID := range c.calendarIDs {
+		calendar, ok := resp.Calendars[calendarID]
+		if !ok {
+			continue
+		}
+
+		for _, busy := range calendar.Busy {
+			start, _ := time.Parse(time.RFC3339, busy.Start)
+			end, _ := time.Parse(time.RFC3339, busy.End)
+			allPeriods = append(allPeriods, BusyPeriod{
+				Start: start,
+				End:   end,
+			})
+		}
 	}
 
-	periods := make([]BusyPeriod, 0, len(calendar.Busy))
-	for _, busy := range calendar.Busy {
-		start, _ := time.Parse(time.RFC3339, busy.Start)
-		end, _ := time.Parse(time.RFC3339, busy.End)
-		periods = append(periods, BusyPeriod{
-			Start: start,
-			End:   end,
+	// Sort by start time and merge overlapping periods
+	if len(allPeriods) > 1 {
+		sort.Slice(allPeriods, func(i, j int) bool {
+			return allPeriods[i].Start.Before(allPeriods[j].Start)
 		})
+
+		merged := []BusyPeriod{allPeriods[0]}
+		for i := 1; i < len(allPeriods); i++ {
+			last := &merged[len(merged)-1]
+			curr := allPeriods[i]
+			if curr.Start.Before(last.End) || curr.Start.Equal(last.End) {
+				// Overlapping or adjacent, extend the end
+				if curr.End.After(last.End) {
+					last.End = curr.End
+				}
+			} else {
+				merged = append(merged, curr)
+			}
+		}
+		allPeriods = merged
 	}
 
-	return periods, nil
+	return allPeriods, nil
 }
 
 // CreateEventParams for creating a new event
 type CreateEventParams struct {
+	CalendarID  string   // Optional: which calendar to create on (defaults to first)
 	Summary     string
 	Description string
 	Location    string
@@ -512,8 +602,13 @@ type CreateEventParams struct {
 	Attendees   []string // Email addresses
 }
 
-// CreateEvent creates a new calendar event
+// CreateEvent creates a new calendar event (on first calendar by default)
 func (c *Client) CreateEvent(ctx context.Context, params CreateEventParams) (*Event, error) {
+	calendarID := params.CalendarID
+	if calendarID == "" {
+		calendarID = c.calendarIDs[0] // Default to first calendar
+	}
+
 	event := map[string]interface{}{
 		"summary":     params.Summary,
 		"description": params.Description,
@@ -546,7 +641,7 @@ func (c *Client) CreateEvent(ctx context.Context, params CreateEventParams) (*Ev
 		event["attendees"] = attendees
 	}
 
-	path := fmt.Sprintf("/calendars/%s/events", url.PathEscape(c.calendarID))
+	path := fmt.Sprintf("/calendars/%s/events", url.PathEscape(calendarID))
 	data, err := c.request(ctx, "POST", path, event)
 	if err != nil {
 		return nil, err
@@ -562,12 +657,21 @@ func (c *Client) CreateEvent(ctx context.Context, params CreateEventParams) (*Ev
 		return nil, err
 	}
 
+	result.CalendarID = calendarID
 	return &result, nil
 }
 
-// CalendarID returns the configured calendar ID
-func (c *Client) CalendarID() string {
-	return c.calendarID
+// CalendarIDs returns all configured calendar IDs
+func (c *Client) CalendarIDs() []string {
+	return c.calendarIDs
+}
+
+// PrimaryCalendarID returns the first (primary) calendar ID
+func (c *Client) PrimaryCalendarID() string {
+	if len(c.calendarIDs) > 0 {
+		return c.calendarIDs[0]
+	}
+	return ""
 }
 
 // convertEvent converts a Google Calendar event to our Event type

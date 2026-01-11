@@ -267,13 +267,15 @@ func main() {
 
 	// Initialize calendar client (optional - only if credentials are configured)
 	var calendarClient *calendar.Client
-	if os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != "" && os.Getenv("GOOGLE_CALENDAR_ID") != "" {
+	hasCalendarCreds := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS") != "" || os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != ""
+	hasCalendarIDs := os.Getenv("GOOGLE_CALENDAR_IDS") != "" || os.Getenv("GOOGLE_CALENDAR_ID") != ""
+	if hasCalendarCreds && hasCalendarIDs {
 		var err error
 		calendarClient, err = calendar.NewClient()
 		if err != nil {
 			log.Printf("Warning: failed to create calendar client: %v", err)
 		} else {
-			log.Println("[main] Google Calendar integration enabled")
+			log.Printf("[main] Google Calendar integration enabled (%d calendars)", len(calendarClient.CalendarIDs()))
 			reflexEngine.SetCalendarClient(calendarClient)
 		}
 	} else {
