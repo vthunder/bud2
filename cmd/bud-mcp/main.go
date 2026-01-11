@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -243,21 +244,32 @@ func main() {
 	})
 
 	// Register trigger_redeploy tool - allows bud to request its own redeployment
+	// Runs deploy.sh directly in background (no watcher needed)
 	server.RegisterTool("trigger_redeploy", func(ctx any, args map[string]any) (string, error) {
 		reason, _ := args["reason"].(string)
 		if reason == "" {
 			reason = "Redeploy requested"
 		}
 
-		triggerFile := "/tmp/bud-redeploy"
-		content := fmt.Sprintf("%s: %s\n", time.Now().Format(time.RFC3339), reason)
-		err := os.WriteFile(triggerFile, []byte(content), 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to trigger redeploy: %w", err)
+		// statePath is "state" relative to bud dir, so go up one level
+		budDir := filepath.Dir(statePath)
+		if budDir == "." {
+			// statePath is just "state", so we're already in bud dir
+			budDir = "."
+		}
+		deployScript := filepath.Join(budDir, "deploy", "deploy.sh")
+		if _, err := os.Stat(deployScript); os.IsNotExist(err) {
+			return "", fmt.Errorf("deploy script not found: %s", deployScript)
+		}
+
+		// Run deploy.sh in background so we can return before being killed
+		cmd := exec.Command("bash", "-c", fmt.Sprintf("nohup %s > /dev/null 2>&1 &", deployScript))
+		if err := cmd.Start(); err != nil {
+			return "", fmt.Errorf("failed to start deploy: %w", err)
 		}
 
 		log.Printf("Redeploy triggered: %s", reason)
-		return "Redeploy triggered. The watcher will pick this up and restart bud with latest code.", nil
+		return "Redeploy started. Service will restart momentarily.", nil
 	})
 
 	// Initialize activity log for observability

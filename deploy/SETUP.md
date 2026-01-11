@@ -11,9 +11,6 @@ On the Mac Mini, install:
 # Go
 brew install go
 
-# fswatch (for redeploy watcher)
-brew install fswatch
-
 # Claude CLI
 npm install -g @anthropic-ai/claude-code
 claude  # Run once to authenticate
@@ -51,11 +48,9 @@ If you prefer to set things up manually:
    sed "s|\$HOME/src/bud2|$HOME/bud2|g" deploy.sh.example > deploy.sh
    chmod +x deploy.sh
 
-   # Generate plists
+   # Generate daemon plist
    sed "s|/Users/YOU|$HOME|g; s|/Users/thunder/src/bud2|$HOME/bud2|g" \
        com.bud.daemon.plist.example > com.bud.daemon.plist
-   sed "s|/Users/YOU|$HOME|g; s|/Users/thunder/src/bud2|$HOME/bud2|g" \
-       com.bud.watcher.plist.example > com.bud.watcher.plist
    ```
 
 2. **Build:**
@@ -66,11 +61,10 @@ If you prefer to set things up manually:
    go build -o bin/bud-mcp ./cmd/bud-mcp
    ```
 
-3. **Install services:**
+3. **Install service:**
    ```bash
-   cp ~/bud2/deploy/com.bud.*.plist ~/Library/LaunchAgents/
+   cp ~/bud2/deploy/com.bud.daemon.plist ~/Library/LaunchAgents/
    launchctl load ~/Library/LaunchAgents/com.bud.daemon.plist
-   launchctl load ~/Library/LaunchAgents/com.bud.watcher.plist
    ```
 
 ## Deploying from Laptop
@@ -94,19 +88,17 @@ alias deploy-bud='ssh mini "~/bud2/deploy/deploy.sh"'
 
 ## Self-Redeploy (Bud triggers its own redeploy)
 
-Bud can request a redeploy by touching the trigger file:
-
-```go
-// In bud code or via MCP tool
-os.WriteFile("/tmp/bud-redeploy", []byte(time.Now().String()), 0644)
-```
-
-Or use the MCP tool:
+Bud can request a redeploy using the MCP tool:
 ```
 trigger_redeploy(reason="Updated code ready")
 ```
 
-The watcher will detect this and run deploy.sh automatically.
+This runs `deploy.sh` in the background, which pulls latest code, rebuilds, and restarts the service.
+
+Alternatively, from a bash session:
+```bash
+~/bud2/deploy/deploy.sh
+```
 
 ## Useful Commands
 
@@ -126,9 +118,8 @@ launchctl stop com.bud.daemon
 # Start bud
 launchctl start com.bud.daemon
 
-# Unload services (disable)
+# Unload service (disable)
 launchctl unload ~/Library/LaunchAgents/com.bud.daemon.plist
-launchctl unload ~/Library/LaunchAgents/com.bud.watcher.plist
 ```
 
 ## Troubleshooting
@@ -141,8 +132,3 @@ launchctl unload ~/Library/LaunchAgents/com.bud.watcher.plist
 **Claude CLI not found:**
 - Ensure PATH includes npm global bin: `npm bin -g`
 - May need to add to plist EnvironmentVariables
-
-**fswatch not triggering:**
-- Check watcher logs: `tail ~/Library/Logs/bud-watcher.log`
-- Verify trigger file exists: `ls -la /tmp/bud-redeploy`
-- Test manually: `touch /tmp/bud-redeploy`
