@@ -19,10 +19,11 @@ const DefaultMeetingReminderBefore = 15 * time.Minute
 
 // CalendarSense monitors Google Calendar and produces percepts for events
 type CalendarSense struct {
-	client       *calendar.Client
-	inbox        *memory.Inbox
-	pollInterval time.Duration
+	client         *calendar.Client
+	inbox          *memory.Inbox
+	pollInterval   time.Duration
 	reminderBefore time.Duration
+	timezone       *time.Location // User's timezone for daily agenda timing
 
 	// State tracking
 	mu              sync.RWMutex
@@ -43,6 +44,7 @@ type CalendarConfig struct {
 	Client         *calendar.Client
 	PollInterval   time.Duration
 	ReminderBefore time.Duration
+	Timezone       *time.Location // User's timezone for daily agenda timing
 }
 
 // NewCalendarSense creates a new calendar sense
@@ -53,12 +55,16 @@ func NewCalendarSense(cfg CalendarConfig, inbox *memory.Inbox) *CalendarSense {
 	if cfg.ReminderBefore == 0 {
 		cfg.ReminderBefore = DefaultMeetingReminderBefore
 	}
+	if cfg.Timezone == nil {
+		cfg.Timezone = time.UTC // Default to UTC if not specified
+	}
 
 	return &CalendarSense{
 		client:         cfg.Client,
 		inbox:          inbox,
 		pollInterval:   cfg.PollInterval,
 		reminderBefore: cfg.ReminderBefore,
+		timezone:       cfg.Timezone,
 		notifiedEvents: make(map[string]time.Time),
 		stopChan:       make(chan struct{}),
 	}
@@ -131,15 +137,17 @@ func (c *CalendarSense) poll() {
 }
 
 func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Use user's timezone for daily agenda timing
+	nowUTC := time.Now()
+	nowLocal := nowUTC.In(c.timezone)
+	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, c.timezone)
 
 	c.mu.RLock()
 	lastAgenda := c.lastDailyAgenda
 	c.mu.RUnlock()
 
-	// Send daily agenda between 7 AM and 9 AM, once per day
-	hour := now.Hour()
+	// Send daily agenda between 7 AM and 9 AM in user's timezone, once per day
+	hour := nowLocal.Hour()
 	if hour < 7 || hour >= 9 {
 		return
 	}
@@ -168,7 +176,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 	if len(relevantEvents) == 0 {
 		log.Printf("[calendar-sense] No events today, skipping daily agenda")
 		c.mu.Lock()
-		c.lastDailyAgenda = now
+		c.lastDailyAgenda = nowUTC
 		c.mu.Unlock()
 		return
 	}
@@ -181,7 +189,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 		Type:      "impulse",
 		Subtype:   "daily_agenda",
 		Content:   agenda,
-		Timestamp: now,
+		Timestamp: nowUTC,
 		Status:    "pending",
 		Extra: map[string]any{
 			"source":      "calendar",
@@ -193,7 +201,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 	c.inbox.Add(msg)
 
 	c.mu.Lock()
-	c.lastDailyAgenda = now
+	c.lastDailyAgenda = nowUTC
 	c.mu.Unlock()
 
 	log.Printf("[calendar-sense] Sent daily agenda with %d events", len(relevantEvents))

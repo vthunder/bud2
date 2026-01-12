@@ -131,6 +131,7 @@ func main() {
 	autonomousEnabled := os.Getenv("AUTONOMOUS_ENABLED") == "true"
 	autonomousIntervalStr := os.Getenv("AUTONOMOUS_INTERVAL")
 	dailyBudgetStr := os.Getenv("DAILY_THINKING_BUDGET")
+	userTimezoneStr := os.Getenv("USER_TIMEZONE") // e.g., "Europe/Berlin"
 
 	// Parse autonomous interval (default 2 hours)
 	autonomousInterval := 2 * time.Hour
@@ -145,6 +146,19 @@ func main() {
 	if dailyBudgetStr != "" {
 		if v, err := strconv.ParseFloat(dailyBudgetStr, 64); err == nil {
 			dailyBudgetMinutes = v
+		}
+	}
+
+	// Parse user timezone (default UTC)
+	var userTimezone *time.Location
+	if userTimezoneStr != "" {
+		var err error
+		userTimezone, err = time.LoadLocation(userTimezoneStr)
+		if err != nil {
+			log.Printf("Warning: invalid USER_TIMEZONE %q, using UTC: %v", userTimezoneStr, err)
+			userTimezone = time.UTC
+		} else {
+			log.Printf("[config] User timezone: %s", userTimezone)
 		}
 	}
 
@@ -575,7 +589,8 @@ func main() {
 	var calendarSense *senses.CalendarSense
 	if calendarClient != nil {
 		calendarSense = senses.NewCalendarSense(senses.CalendarConfig{
-			Client: calendarClient,
+			Client:   calendarClient,
+			Timezone: userTimezone,
 		}, inbox)
 
 		if err := calendarSense.Start(); err != nil {
