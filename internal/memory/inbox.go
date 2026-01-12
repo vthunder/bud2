@@ -188,6 +188,26 @@ func (msg *InboxMessage) impulseToPercept() *types.Percept {
 		impulseType = t
 	}
 
+	// Build percept data with content and priority
+	data := map[string]any{
+		"content":     msg.Content,
+		"description": msg.Content,
+		"priority":    msg.Priority,
+	}
+
+	// Pass through all Extra fields for reflex access
+	// (e.g., calendar reminders have event_title, event_start, meet_link, etc.)
+	for k, v := range msg.Extra {
+		if k != "intensity" && k != "impulse_type" { // Already handled above
+			data[k] = v
+		}
+	}
+
+	// Also preserve original impulse data if present
+	if impulseData, ok := msg.Extra["data"]; ok {
+		data["impulse"] = impulseData
+	}
+
 	return &types.Percept{
 		ID:        msg.ID,
 		Source:    "impulse:" + msg.Subtype, // impulse:task, impulse:idea, impulse:system
@@ -195,12 +215,7 @@ func (msg *InboxMessage) impulseToPercept() *types.Percept {
 		Intensity: intensity,
 		Timestamp: msg.Timestamp,
 		Tags:      []string{"internal", msg.Subtype},
-		Data: map[string]any{
-			"content":     msg.Content,
-			"description": msg.Content,
-			"priority":    msg.Priority,
-			"impulse":     msg.Extra["data"], // original impulse data
-		},
+		Data:      data,
 	}
 }
 

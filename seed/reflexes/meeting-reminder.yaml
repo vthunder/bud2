@@ -1,0 +1,11 @@
+name: meeting-reminder
+description: Handle meeting reminders reflexively without Executive wake-up
+priority: 30
+trigger:
+  source: impulse:meeting_reminder
+  classifier: none
+pipeline:
+  - action: reply
+    message: "Heads up - {{.event_title}} starts in {{.time_until}}.{{if .meet_link}}\n\n{{.meet_link}}{{end}}{{if .location}}\nLocation: {{.location}}{{end}}"
+  - action: log
+    message: "Meeting reminder sent reflexively: {{.event_title}}"
