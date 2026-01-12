@@ -27,6 +27,9 @@ type Engine struct {
 	reflexDir string
 	mu        sync.RWMutex
 
+	// Default channel for notifications (used when no channel_id in context)
+	defaultChannel string
+
 	// Callbacks for integration
 	onReply func(channelID, message string) error
 	onReact func(channelID, messageID, emoji string) error
@@ -69,6 +72,11 @@ func (e *Engine) SetReplyCallback(cb func(channelID, message string) error) {
 // SetReactCallback sets the callback for react actions
 func (e *Engine) SetReactCallback(cb func(channelID, messageID, emoji string) error) {
 	e.onReact = cb
+}
+
+// SetDefaultChannel sets the default channel for notifications when no channel_id in context
+func (e *Engine) SetDefaultChannel(channelID string) {
+	e.defaultChannel = channelID
 }
 
 // SetGTDStore sets the GTD store for reflex actions
@@ -369,13 +377,22 @@ func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
 		message = rendered
 	}
 
+	// Try to get channel_id from vars (e.g., Discord message context)
 	channelID := ""
 	if ch, ok := vars["channel_id"].(string); ok {
 		channelID = ch
 	}
 
-	if channelID == "" || message == "" {
-		return fmt.Errorf("channel_id and message required for reply")
+	// Fall back to default channel for notifications (e.g., calendar reminders)
+	if channelID == "" {
+		channelID = e.defaultChannel
+	}
+
+	if channelID == "" {
+		return fmt.Errorf("channel_id required (none in context and no default configured)")
+	}
+	if message == "" {
+		return fmt.Errorf("message required for reply")
 	}
 
 	return e.onReply(channelID, message)

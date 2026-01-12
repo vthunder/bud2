@@ -264,6 +264,7 @@ func main() {
 	}
 	reflexEngine.SetGTDStore(gtdStore)
 	reflexEngine.SetBudTaskStore(taskStore)
+	reflexEngine.SetDefaultChannel(discordChannel) // For notifications without channel context (e.g., calendar reminders)
 
 	// Initialize calendar client (optional - only if credentials are configured)
 	var calendarClient *calendar.Client
