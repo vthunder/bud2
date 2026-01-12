@@ -886,6 +886,135 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Properties: map[string]property{},
 			},
 		},
+		// Google Calendar tools
+		{
+			Name:        "calendar_today",
+			Description: "Get today's calendar events. Returns compact format by default (one line per event).",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"verbose": {
+						Type:        "boolean",
+						Description: "If true, return full JSON with all event details. Default: false (compact format)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "calendar_upcoming",
+			Description: "Get upcoming calendar events within a time window. Returns compact format by default.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"duration": {
+						Type:        "string",
+						Description: "Time window to look ahead (e.g., '24h', '7d'). Default: 24h",
+					},
+					"max_results": {
+						Type:        "number",
+						Description: "Maximum number of events to return. Default: 20",
+					},
+					"verbose": {
+						Type:        "boolean",
+						Description: "If true, return full JSON with all event details. Default: false (compact format)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "calendar_list_events",
+			Description: "Query calendar events in a specific date range. Returns compact format by default.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"time_min": {
+						Type:        "string",
+						Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now",
+					},
+					"time_max": {
+						Type:        "string",
+						Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 1 week from time_min",
+					},
+					"max_results": {
+						Type:        "number",
+						Description: "Maximum number of events to return. Default: 50",
+					},
+					"query": {
+						Type:        "string",
+						Description: "Text to search for in event titles/descriptions (optional)",
+					},
+					"verbose": {
+						Type:        "boolean",
+						Description: "If true, return full JSON with all event details. Default: false (compact format)",
+					},
+				},
+			},
+		},
+		{
+			Name:        "calendar_free_busy",
+			Description: "Check calendar availability/free-busy status for a time range.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"time_min": {
+						Type:        "string",
+						Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now",
+					},
+					"time_max": {
+						Type:        "string",
+						Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 24h from time_min",
+					},
+				},
+			},
+		},
+		{
+			Name:        "calendar_get_event",
+			Description: "Get details of a specific calendar event by ID.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"event_id": {
+						Type:        "string",
+						Description: "The event ID to retrieve",
+					},
+				},
+				Required: []string{"event_id"},
+			},
+		},
+		{
+			Name:        "calendar_create_event",
+			Description: "Create a new calendar event.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"summary": {
+						Type:        "string",
+						Description: "Event title/summary",
+					},
+					"start": {
+						Type:        "string",
+						Description: "Start time (RFC3339 or YYYY-MM-DD for all-day events)",
+					},
+					"end": {
+						Type:        "string",
+						Description: "End time (RFC3339 or YYYY-MM-DD). Default: 1 hour after start",
+					},
+					"description": {
+						Type:        "string",
+						Description: "Event description (optional)",
+					},
+					"location": {
+						Type:        "string",
+						Description: "Event location (optional)",
+					},
+					"attendees": {
+						Type:        "array",
+						Description: "List of attendee email addresses (optional)",
+					},
+				},
+				Required: []string{"summary", "start"},
+			},
+		},
 	}
 
 	return &jsonRPCResponse{

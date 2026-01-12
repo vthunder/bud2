@@ -30,8 +30,18 @@ func main() {
 	log.SetPrefix("[bud-mcp] ")
 
 	// Load .env file if present (don't error if missing)
+	// Try multiple locations: cwd, then relative to executable
 	if err := godotenv.Load(); err == nil {
-		log.Println("Loaded .env file")
+		log.Println("Loaded .env file from cwd")
+	} else {
+		// Try to find .env relative to the executable (bin/bud-mcp -> .env)
+		if exe, err := os.Executable(); err == nil {
+			projectRoot := filepath.Dir(filepath.Dir(exe)) // bin/bud-mcp -> bin -> project
+			envPath := filepath.Join(projectRoot, ".env")
+			if err := godotenv.Load(envPath); err == nil {
+				log.Printf("Loaded .env file from %s", envPath)
+			}
+		}
 	}
 
 	log.Println("Starting bud2 MCP server...")
@@ -1358,8 +1368,13 @@ func main() {
 					return "No events scheduled for today.", nil
 				}
 
-				data, _ := json.MarshalIndent(events, "", "  ")
-				return string(data), nil
+				// Use verbose JSON only if explicitly requested
+				if verbose, _ := args["verbose"].(bool); verbose {
+					data, _ := json.MarshalIndent(events, "", "  ")
+					return string(data), nil
+				}
+
+				return formatEventsCompact(events), nil
 			})
 
 			// Register calendar_upcoming tool - get upcoming events
@@ -1389,8 +1404,13 @@ func main() {
 					return fmt.Sprintf("No events in the next %s.", durationStr), nil
 				}
 
-				data, _ := json.MarshalIndent(events, "", "  ")
-				return string(data), nil
+				// Use verbose JSON only if explicitly requested
+				if verbose, _ := args["verbose"].(bool); verbose {
+					data, _ := json.MarshalIndent(events, "", "  ")
+					return string(data), nil
+				}
+
+				return formatEventsCompact(events), nil
 			})
 
 			// Register calendar_list_events tool - query events in a date range
@@ -1452,13 +1472,23 @@ func main() {
 					return "No events found in the specified time range.", nil
 				}
 
-				data, _ := json.MarshalIndent(map[string]any{
-					"events":   events,
-					"count":    len(events),
-					"time_min": timeMin.Format(time.RFC3339),
-					"time_max": timeMax.Format(time.RFC3339),
-				}, "", "  ")
-				return string(data), nil
+				// Use verbose JSON only if explicitly requested
+				if verbose, _ := args["verbose"].(bool); verbose {
+					data, _ := json.MarshalIndent(map[string]any{
+						"events":   events,
+						"count":    len(events),
+						"time_min": timeMin.Format(time.RFC3339),
+						"time_max": timeMax.Format(time.RFC3339),
+					}, "", "  ")
+					return string(data), nil
+				}
+
+				// Compact format: header + one line per event
+				header := fmt.Sprintf("%d events (%s to %s):\n",
+					len(events),
+					timeMin.Format("2006-01-02"),
+					timeMax.Format("2006-01-02"))
+				return header + formatEventsCompact(events), nil
 			})
 
 			// Register calendar_free_busy tool - check availability
@@ -2022,4 +2052,47 @@ func parseDueTime(s string) *time.Time {
 	}
 
 	return nil
+}
+
+// formatEventsCompact formats a slice of calendar events in a compact, token-efficient format
+// Format: "2026-01-16 14:30-14:45 | Event Title" or "2026-01-10 (all day) | Event Title"
+// Optionally includes meet link if present
+func formatEventsCompact(events []calendar.Event) string {
+	if len(events) == 0 {
+		return "No events."
+	}
+
+	var lines []string
+	for _, e := range events {
+		line := formatEventCompact(e)
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// formatEventCompact formats a single calendar event compactly
+func formatEventCompact(e calendar.Event) string {
+	var timeStr string
+	if e.AllDay {
+		timeStr = e.Start.Format("2006-01-02") + " (all day)"
+	} else {
+		// Format: "2026-01-16 14:30-14:45"
+		timeStr = e.Start.Format("2006-01-02 15:04") + "-" + e.End.Format("15:04")
+	}
+
+	line := timeStr + " | " + e.Summary
+
+	// Add shortened meet link if present
+	if e.MeetLink != "" {
+		// Extract just the path from meet.google.com/xxx-xxx-xxx
+		meetLink := e.MeetLink
+		if idx := strings.Index(meetLink, "meet.google.com/"); idx != -1 {
+			meetLink = meetLink[idx:] // "meet.google.com/xxx-xxx-xxx"
+		}
+		line += " | " + meetLink
+	} else if e.Location != "" {
+		line += " | " + e.Location
+	}
+
+	return line
 }
