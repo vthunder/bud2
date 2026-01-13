@@ -16,6 +16,7 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
+	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/integrations/notion"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
@@ -282,6 +283,97 @@ func main() {
 
 		log.Printf("Redeploy triggered: %s", reason)
 		return "Redeploy started. Service will restart momentarily.", nil
+	})
+
+	// Register close_claude_sessions tool - closes all Claude Code sessions in tmux
+	// This allows Bud to restart Claude itself
+	server.RegisterTool("close_claude_sessions", func(ctx any, args map[string]any) (string, error) {
+		// List all tmux windows with their current command
+		cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}")
+		output, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("failed to list tmux windows: %w", err)
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		var closedWindows []string
+		var errors []string
+
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) < 4 {
+				continue
+			}
+			sessionName := parts[0]
+			windowIndex := parts[1]
+			windowName := parts[2]
+			currentCommand := parts[3]
+
+			// Identify Claude sessions by:
+			// 1. Command looks like a version number (e.g., "2.1.5") - typical of claude CLI
+			// 2. Command is "claude" or contains "claude"
+			// 3. Window name matches Claude session pattern (word-number like "owl-31")
+			isVersion := len(currentCommand) > 0 && strings.Count(currentCommand, ".") >= 1 &&
+				currentCommand[0] >= '0' && currentCommand[0] <= '9'
+			isClaudeCmd := strings.Contains(strings.ToLower(currentCommand), "claude")
+
+			// Check window name pattern: lowercase letters followed by dash and numbers
+			hasClaudeWindowName := false
+			if len(windowName) > 0 {
+				dashIdx := strings.LastIndex(windowName, "-")
+				if dashIdx > 0 && dashIdx < len(windowName)-1 {
+					prefix := windowName[:dashIdx]
+					suffix := windowName[dashIdx+1:]
+					// Check if prefix is all lowercase letters and suffix is all digits
+					allLetters := true
+					for _, c := range prefix {
+						if c < 'a' || c > 'z' {
+							allLetters = false
+							break
+						}
+					}
+					allDigits := true
+					for _, c := range suffix {
+						if c < '0' || c > '9' {
+							allDigits = false
+							break
+						}
+					}
+					hasClaudeWindowName = allLetters && allDigits && len(prefix) > 0 && len(suffix) > 0
+				}
+			}
+
+			if isVersion || isClaudeCmd || hasClaudeWindowName {
+				// Skip windows that are clearly not Claude (monitor, zsh, etc.)
+				if windowName == "monitor" || currentCommand == "zsh" || currentCommand == "bash" {
+					continue
+				}
+
+				// Kill the window
+				target := fmt.Sprintf("%s:%s", sessionName, windowIndex)
+				killCmd := exec.Command("tmux", "kill-window", "-t", target)
+				if err := killCmd.Run(); err != nil {
+					errors = append(errors, fmt.Sprintf("failed to kill %s: %v", windowName, err))
+				} else {
+					closedWindows = append(closedWindows, windowName)
+					log.Printf("Closed Claude session: %s", windowName)
+				}
+			}
+		}
+
+		result := map[string]any{
+			"closed": closedWindows,
+			"count":  len(closedWindows),
+		}
+		if len(errors) > 0 {
+			result["errors"] = errors
+		}
+
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return string(data), nil
 	})
 
 	// Initialize activity log for observability
@@ -1653,6 +1745,130 @@ func main() {
 		}
 	} else {
 		log.Println("Google Calendar integration disabled (credentials not configured)")
+	}
+
+	// GitHub Projects tools (only register if GITHUB_TOKEN and GITHUB_ORG are set)
+	if os.Getenv("GITHUB_TOKEN") != "" && os.Getenv("GITHUB_ORG") != "" {
+		githubClient, err := github.NewClient()
+		if err != nil {
+			log.Printf("Warning: Failed to create GitHub client: %v", err)
+		} else {
+			log.Printf("GitHub Projects integration enabled (org: %s)", githubClient.Org())
+
+			// Register github_list_projects tool
+			server.RegisterTool("github_list_projects", func(ctx any, args map[string]any) (string, error) {
+				projects, err := githubClient.ListProjects()
+				if err != nil {
+					return "", fmt.Errorf("failed to list projects: %w", err)
+				}
+
+				if len(projects) == 0 {
+					return "No projects found.", nil
+				}
+
+				// Compact format: one line per project
+				var lines []string
+				for _, p := range projects {
+					status := ""
+					if p.Closed {
+						status = " (closed)"
+					}
+					lines = append(lines, fmt.Sprintf("#%d %s%s", p.Number, p.Title, status))
+				}
+				return strings.Join(lines, "\n"), nil
+			})
+
+			// Register github_get_project tool
+			server.RegisterTool("github_get_project", func(ctx any, args map[string]any) (string, error) {
+				number, ok := args["number"].(float64)
+				if !ok || number == 0 {
+					return "", fmt.Errorf("number is required")
+				}
+
+				project, err := githubClient.GetProject(int(number))
+				if err != nil {
+					return "", fmt.Errorf("failed to get project: %w", err)
+				}
+
+				// Get fields schema
+				fields, err := githubClient.GetProjectFields(int(number))
+				if err != nil {
+					return "", fmt.Errorf("failed to get project fields: %w", err)
+				}
+
+				// Compact format with field schema
+				result := map[string]any{
+					"number": project.Number,
+					"title":  project.Title,
+					"url":    project.URL,
+					"closed": project.Closed,
+					"fields": fields,
+				}
+
+				data, _ := json.MarshalIndent(result, "", "  ")
+				return string(data), nil
+			})
+
+			// Register github_project_items tool
+			server.RegisterTool("github_project_items", func(ctx any, args map[string]any) (string, error) {
+				projectNum, ok := args["project"].(float64)
+				if !ok || projectNum == 0 {
+					return "", fmt.Errorf("project number is required")
+				}
+
+				params := github.QueryItemsParams{
+					ProjectNumber: int(projectNum),
+					MaxItems:      100,
+				}
+
+				if status, ok := args["status"].(string); ok {
+					params.Status = status
+				}
+				if sprint, ok := args["sprint"].(string); ok {
+					params.Sprint = sprint
+				}
+				if maxItems, ok := args["max_items"].(float64); ok && maxItems > 0 {
+					params.MaxItems = int(maxItems)
+				}
+
+				items, err := githubClient.QueryItems(params)
+				if err != nil {
+					return "", fmt.Errorf("failed to query items: %w", err)
+				}
+
+				if len(items) == 0 {
+					filterDesc := ""
+					if params.Status != "" {
+						filterDesc = fmt.Sprintf(" with status '%s'", params.Status)
+					}
+					if params.Sprint != "" {
+						if filterDesc != "" {
+							filterDesc += " and"
+						}
+						if params.Sprint == "backlog" {
+							filterDesc += " in backlog (no sprint)"
+						} else {
+							filterDesc += fmt.Sprintf(" in '%s'", params.Sprint)
+						}
+					}
+					if filterDesc != "" {
+						return fmt.Sprintf("No items%s.", filterDesc), nil
+					}
+					return "No items in project.", nil
+				}
+
+				// Use verbose JSON only if explicitly requested
+				if verbose, _ := args["verbose"].(bool); verbose {
+					data, _ := json.MarshalIndent(items, "", "  ")
+					return string(data), nil
+				}
+
+				// Compact format
+				return github.FormatItemsCompact(items), nil
+			})
+		}
+	} else {
+		log.Println("GitHub Projects integration disabled (GITHUB_TOKEN or GITHUB_ORG not set)")
 	}
 
 	// State introspection tools

@@ -886,6 +886,15 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 				Properties: map[string]property{},
 			},
 		},
+		// System control tools
+		{
+			Name:        "close_claude_sessions",
+			Description: "Close all Claude Code sessions running in tmux. Use this before trigger_redeploy to cleanly restart Claude. Returns list of closed session names.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
 		// Google Calendar tools
 		{
 			Name:        "calendar_today",
@@ -1013,6 +1022,59 @@ func (s *Server) handleToolsList(req jsonRPCRequest) *jsonRPCResponse {
 					},
 				},
 				Required: []string{"summary", "start"},
+			},
+		},
+		// GitHub Projects tools
+		{
+			Name:        "github_list_projects",
+			Description: "List all GitHub Projects v2 in the configured organization. Returns project number, title, and URL.",
+			InputSchema: inputSchema{
+				Type:       "object",
+				Properties: map[string]property{},
+			},
+		},
+		{
+			Name:        "github_get_project",
+			Description: "Get a GitHub Project by number. Returns project details and field schema.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"number": {
+						Type:        "number",
+						Description: "The project number (visible in project URL)",
+					},
+				},
+				Required: []string{"number"},
+			},
+		},
+		{
+			Name:        "github_project_items",
+			Description: "Query items from a GitHub Project. Returns compact list format by default. Use status filter for views like backlog/sprint.",
+			InputSchema: inputSchema{
+				Type: "object",
+				Properties: map[string]property{
+					"project": {
+						Type:        "number",
+						Description: "The project number",
+					},
+					"status": {
+						Type:        "string",
+						Description: "Filter by Status field (e.g., 'Backlog', 'In Progress', 'Done')",
+					},
+					"sprint": {
+						Type:        "string",
+						Description: "Filter by Sprint (e.g., 'Sprint 65'). Use 'backlog' for items with no sprint assigned.",
+					},
+					"max_items": {
+						Type:        "number",
+						Description: "Maximum items to return (default 100)",
+					},
+					"verbose": {
+						Type:        "boolean",
+						Description: "If true, return full JSON with all fields. Default: false (compact format)",
+					},
+				},
+				Required: []string{"project"},
 			},
 		},
 	}
