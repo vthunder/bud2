@@ -55,6 +55,44 @@ func (g *DB) AddEpisode(ep *Episode) error {
 	return nil
 }
 
+// GetAllEpisodes retrieves episodes with optional limit, ordered by timestamp desc
+func (g *DB) GetAllEpisodes(limit int) ([]*Episode, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := g.db.Query(`
+		SELECT id, content, source, author, author_id, channel,
+			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
+			embedding, reply_to, created_at
+		FROM episodes
+		ORDER BY timestamp_event DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query episodes: %w", err)
+	}
+	defer rows.Close()
+
+	var episodes []*Episode
+	for rows.Next() {
+		ep, err := scanEpisodeRow(rows)
+		if err != nil {
+			continue
+		}
+		episodes = append(episodes, ep)
+	}
+
+	return episodes, nil
+}
+
+// CountEpisodes returns the total number of episodes
+func (g *DB) CountEpisodes() (int, error) {
+	var count int
+	err := g.db.QueryRow(`SELECT COUNT(*) FROM episodes`).Scan(&count)
+	return count, err
+}
+
 // GetEpisode retrieves an episode by ID
 func (g *DB) GetEpisode(id string) (*Episode, error) {
 	row := g.db.QueryRow(`

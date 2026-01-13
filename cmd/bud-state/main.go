@@ -44,6 +44,12 @@ func main() {
 		handleHealth(inspector)
 	case "traces":
 		handleTraces(inspector, statePath, os.Args[2:])
+	case "episodes":
+		handleEpisodes(inspector, os.Args[2:])
+	case "entities":
+		handleEntities(inspector, os.Args[2:])
+	case "graph":
+		handleGraph(inspector, os.Args[2:])
 	case "percepts":
 		handlePercepts(inspector, os.Args[2:])
 	case "threads":
@@ -72,12 +78,25 @@ Commands:
   summary              Overview of all state components (default)
   health               Run health checks with recommendations
 
-  traces               List all traces
+  traces               List all traces (Tier 3: consolidated memories)
   traces <id>          Show full trace
   traces -d <id>       Delete specific trace
   traces --clear       Clear all non-core traces
   traces --clear-core  Clear core traces (will need regeneration)
   traces --regen-core  Regenerate core traces from core_seed.md
+
+  episodes             List recent episodes (Tier 1: raw messages)
+  episodes <id>        Show full episode
+  episodes -n 50       Limit to N episodes (default 100)
+  episodes --count     Just show count
+
+  entities             List entities (Tier 2: extracted names)
+  entities <id>        Show full entity with aliases
+  entities -n 50       Limit to N entities (default 100)
+  entities --count     Just show count
+
+  graph <id>           Show node and its relationships
+                       Works for traces, episodes, or entities
 
   percepts             List all percepts
   percepts --count     Just show count
@@ -109,15 +128,26 @@ func handleSummary(inspector *state.Inspector) {
 		os.Exit(1)
 	}
 
+	// Get episode and entity counts
+	episodeCount, _ := inspector.CountEpisodes()
+	entityCount, _ := inspector.CountEntities()
+
 	fmt.Println("State Summary")
 	fmt.Println("=============")
-	fmt.Printf("Traces:    %d total, %d core\n", summary.Traces.Total, summary.Traces.Core)
-	fmt.Printf("Percepts:  %d\n", summary.Percepts.Total)
-	fmt.Printf("Threads:   %d\n", summary.Threads.Total)
-	fmt.Printf("Activity:  %d entries\n", summary.Activity)
-	fmt.Printf("Inbox:     %d\n", summary.Inbox)
-	fmt.Printf("Outbox:    %d\n", summary.Outbox)
-	fmt.Printf("Signals:   %d\n", summary.Signals)
+	fmt.Println("Memory Graph:")
+	fmt.Printf("  Episodes:  %d (Tier 1: raw messages)\n", episodeCount)
+	fmt.Printf("  Entities:  %d (Tier 2: extracted names)\n", entityCount)
+	fmt.Printf("  Traces:    %d total, %d core (Tier 3: memories)\n", summary.Traces.Total, summary.Traces.Core)
+	fmt.Println()
+	fmt.Println("Working Memory:")
+	fmt.Printf("  Percepts:  %d\n", summary.Percepts.Total)
+	fmt.Printf("  Threads:   %d\n", summary.Threads.Total)
+	fmt.Println()
+	fmt.Println("Queues:")
+	fmt.Printf("  Inbox:     %d\n", summary.Inbox)
+	fmt.Printf("  Outbox:    %d\n", summary.Outbox)
+	fmt.Printf("  Signals:   %d\n", summary.Signals)
+	fmt.Printf("  Activity:  %d entries\n", summary.Activity)
 }
 
 func handleHealth(inspector *state.Inspector) {
@@ -217,6 +247,193 @@ func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 			coreMarker = " [CORE]"
 		}
 		fmt.Printf("%s%s (strength=%d)\n  %s\n\n", t.ID, coreMarker, t.Strength, t.Content)
+	}
+}
+
+func handleEpisodes(inspector *state.Inspector, args []string) {
+	fs := flag.NewFlagSet("episodes", flag.ExitOnError)
+	limit := fs.Int("n", 100, "Number of episodes to show")
+	countOnly := fs.Bool("count", false, "Just show count")
+	fs.Parse(args)
+
+	if *countOnly {
+		count, err := inspector.CountEpisodes()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%d\n", count)
+		return
+	}
+
+	// Show single episode
+	if fs.NArg() > 0 {
+		ep, err := inspector.GetEpisode(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if ep == nil {
+			fmt.Fprintf(os.Stderr, "Episode not found: %s\n", fs.Arg(0))
+			os.Exit(1)
+		}
+		data, _ := json.MarshalIndent(ep, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	// List all
+	episodes, err := inspector.ListEpisodes(*limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	total, _ := inspector.CountEpisodes()
+	fmt.Printf("Episodes (%d shown, %d total)\n", len(episodes), total)
+	fmt.Println("============================")
+	for _, ep := range episodes {
+		age := time.Since(ep.Timestamp).Round(time.Second)
+		author := ep.Author
+		if author == "" {
+			author = "unknown"
+		}
+		fmt.Printf("[%s] %s (%s, %s ago)\n  %s\n\n",
+			ep.Source, ep.ID, author, age, ep.Content)
+	}
+}
+
+func handleEntities(inspector *state.Inspector, args []string) {
+	fs := flag.NewFlagSet("entities", flag.ExitOnError)
+	limit := fs.Int("n", 100, "Number of entities to show")
+	countOnly := fs.Bool("count", false, "Just show count")
+	fs.Parse(args)
+
+	if *countOnly {
+		count, err := inspector.CountEntities()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%d\n", count)
+		return
+	}
+
+	// Show single entity
+	if fs.NArg() > 0 {
+		e, err := inspector.GetEntity(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if e == nil {
+			fmt.Fprintf(os.Stderr, "Entity not found: %s\n", fs.Arg(0))
+			os.Exit(1)
+		}
+		data, _ := json.MarshalIndent(e, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	// List all
+	entities, err := inspector.ListEntities(*limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	total, _ := inspector.CountEntities()
+	fmt.Printf("Entities (%d shown, %d total)\n", len(entities), total)
+	fmt.Println("============================")
+	for _, e := range entities {
+		aliases := ""
+		if len(e.Aliases) > 0 {
+			aliases = fmt.Sprintf(" (aliases: %v)", e.Aliases)
+		}
+		fmt.Printf("%s: %s [%s] salience=%.2f%s\n",
+			e.ID, e.Name, e.Type, e.Salience, aliases)
+	}
+}
+
+func handleGraph(inspector *state.Inspector, args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "Output as JSON")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: bud-state graph <id>")
+		fmt.Fprintln(os.Stderr, "  Shows a node and its relationships")
+		os.Exit(1)
+	}
+
+	id := fs.Arg(0)
+	info, err := inspector.GetNodeInfo(id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *asJSON {
+		data, _ := json.MarshalIndent(info, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+
+	// Pretty print
+	fmt.Printf("Node: %s\n", info.ID)
+	fmt.Printf("Type: %s\n", info.Type)
+	fmt.Println()
+
+	// Print node data summary
+	switch info.Type {
+	case "trace":
+		if trace, ok := info.Data.(*graph.Trace); ok {
+			fmt.Printf("Summary: %s\n", trace.Summary)
+			fmt.Printf("Core: %v, Strength: %d, Activation: %.2f\n",
+				trace.IsCore, trace.Strength, trace.Activation)
+		}
+	case "episode":
+		if ep, ok := info.Data.(*graph.Episode); ok {
+			fmt.Printf("Content: %s\n", ep.Content)
+			fmt.Printf("Source: %s, Author: %s, Channel: %s\n",
+				ep.Source, ep.Author, ep.Channel)
+			fmt.Printf("Timestamp: %s\n", ep.TimestampEvent.Format(time.RFC3339))
+		}
+	case "entity":
+		if ent, ok := info.Data.(*graph.Entity); ok {
+			fmt.Printf("Name: %s\n", ent.Name)
+			fmt.Printf("Type: %s, Salience: %.2f\n", ent.Type, ent.Salience)
+			if len(ent.Aliases) > 0 {
+				fmt.Printf("Aliases: %v\n", ent.Aliases)
+			}
+		}
+	}
+
+	// Print relationships
+	if len(info.Links) > 0 {
+		fmt.Println()
+		fmt.Println("Relationships:")
+		fmt.Println("--------------")
+		for linkType, links := range info.Links {
+			fmt.Printf("\n%s (%d):\n", linkType, len(links))
+			for _, link := range links {
+				typeStr := ""
+				if link.Type != "" {
+					typeStr = fmt.Sprintf(" [%s]", link.Type)
+				}
+				weightStr := ""
+				if link.Weight > 0 {
+					weightStr = fmt.Sprintf(" (w=%.2f)", link.Weight)
+				}
+				previewStr := ""
+				if link.Preview != "" {
+					previewStr = fmt.Sprintf(": %s", link.Preview)
+				}
+				fmt.Printf("  %s%s%s%s\n", link.ID, typeStr, weightStr, previewStr)
+			}
+		}
+	} else {
+		fmt.Println("\nNo relationships found.")
 	}
 }
 

@@ -198,6 +198,27 @@ func (g *DB) GetTraceNeighbors(id string) ([]Neighbor, error) {
 	return neighbors, nil
 }
 
+// GetTraceEntities returns the entity IDs linked to a trace
+func (g *DB) GetTraceEntities(traceID string) ([]string, error) {
+	rows, err := g.db.Query(`
+		SELECT entity_id FROM trace_entities WHERE trace_id = ?
+	`, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // GetTraceSources returns the source episode IDs for a trace
 func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 	rows, err := g.db.Query(`

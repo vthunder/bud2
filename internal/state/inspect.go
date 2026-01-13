@@ -196,6 +196,297 @@ func (i *Inspector) ClearTraces(clearCore bool) (int, error) {
 	return i.graphDB.ClearTraces(clearCore)
 }
 
+// EpisodeSummary is a condensed view of an episode
+type EpisodeSummary struct {
+	ID        string    `json:"id"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source"`
+	Author    string    `json:"author,omitempty"`
+	Channel   string    `json:"channel,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// ListEpisodes returns summaries of recent episodes
+func (i *Inspector) ListEpisodes(limit int) ([]EpisodeSummary, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	episodes, err := i.graphDB.GetAllEpisodes(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]EpisodeSummary, 0, len(episodes))
+	for _, ep := range episodes {
+		content := ep.Content
+		if len(content) > 100 {
+			content = content[:100] + "..."
+		}
+		result = append(result, EpisodeSummary{
+			ID:        ep.ID,
+			Content:   content,
+			Source:    ep.Source,
+			Author:    ep.Author,
+			Channel:   ep.Channel,
+			Timestamp: ep.TimestampEvent,
+		})
+	}
+	return result, nil
+}
+
+// GetEpisode returns full episode by ID
+func (i *Inspector) GetEpisode(id string) (*graph.Episode, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+	return i.graphDB.GetEpisode(id)
+}
+
+// CountEpisodes returns the total number of episodes
+func (i *Inspector) CountEpisodes() (int, error) {
+	if i.graphDB == nil {
+		return 0, fmt.Errorf("graph database not initialized")
+	}
+	return i.graphDB.CountEpisodes()
+}
+
+// EntitySummary is a condensed view of an entity
+type EntitySummary struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Type     string   `json:"type"`
+	Salience float64  `json:"salience"`
+	Aliases  []string `json:"aliases,omitempty"`
+}
+
+// ListEntities returns summaries of entities ordered by salience
+func (i *Inspector) ListEntities(limit int) ([]EntitySummary, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	entities, err := i.graphDB.GetAllEntities(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]EntitySummary, 0, len(entities))
+	for _, e := range entities {
+		result = append(result, EntitySummary{
+			ID:       e.ID,
+			Name:     e.Name,
+			Type:     string(e.Type),
+			Salience: e.Salience,
+			Aliases:  e.Aliases,
+		})
+	}
+	return result, nil
+}
+
+// GetEntity returns full entity by ID
+func (i *Inspector) GetEntity(id string) (*graph.Entity, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+	return i.graphDB.GetEntity(id)
+}
+
+// CountEntities returns the total number of entities
+func (i *Inspector) CountEntities() (int, error) {
+	if i.graphDB == nil {
+		return 0, fmt.Errorf("graph database not initialized")
+	}
+	return i.graphDB.CountEntities()
+}
+
+// NodeInfo holds information about a node and its relationships
+type NodeInfo struct {
+	ID       string            `json:"id"`
+	Type     string            `json:"type"` // "trace", "episode", "entity"
+	Data     any               `json:"data"` // The actual node data
+	Links    map[string][]Link `json:"links,omitempty"`
+}
+
+// Link represents a relationship to another node
+type Link struct {
+	ID       string  `json:"id"`
+	Type     string  `json:"type,omitempty"`
+	Weight   float64 `json:"weight,omitempty"`
+	Preview  string  `json:"preview,omitempty"`
+}
+
+// GetNodeInfo returns information about a node and its relationships
+func (i *Inspector) GetNodeInfo(id string) (*NodeInfo, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	// Try to find the node in each table
+	// Check traces first
+	if trace, _ := i.graphDB.GetTrace(id); trace != nil {
+		info := &NodeInfo{
+			ID:   id,
+			Type: "trace",
+			Data: trace,
+			Links: make(map[string][]Link),
+		}
+
+		// Get source episodes
+		if sources, _ := i.graphDB.GetTraceSources(id); len(sources) > 0 {
+			var links []Link
+			for _, srcID := range sources {
+				link := Link{ID: srcID}
+				if ep, _ := i.graphDB.GetEpisode(srcID); ep != nil {
+					preview := ep.Content
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					link.Preview = preview
+				}
+				links = append(links, link)
+			}
+			info.Links["source_episodes"] = links
+		}
+
+		// Get linked entities
+		if entityIDs, _ := i.graphDB.GetTraceEntities(id); len(entityIDs) > 0 {
+			var links []Link
+			for _, entID := range entityIDs {
+				link := Link{ID: entID}
+				if ent, _ := i.graphDB.GetEntity(entID); ent != nil {
+					link.Preview = ent.Name
+					link.Type = string(ent.Type)
+				}
+				links = append(links, link)
+			}
+			info.Links["entities"] = links
+		}
+
+		// Get related traces
+		if neighbors, _ := i.graphDB.GetTraceNeighbors(id); len(neighbors) > 0 {
+			var links []Link
+			for _, n := range neighbors {
+				link := Link{ID: n.ID, Type: string(n.Type), Weight: n.Weight}
+				if t, _ := i.graphDB.GetTrace(n.ID); t != nil {
+					preview := t.Summary
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					link.Preview = preview
+				}
+				links = append(links, link)
+			}
+			info.Links["related_traces"] = links
+		}
+
+		return info, nil
+	}
+
+	// Check episodes
+	if episode, _ := i.graphDB.GetEpisode(id); episode != nil {
+		info := &NodeInfo{
+			ID:   id,
+			Type: "episode",
+			Data: episode,
+			Links: make(map[string][]Link),
+		}
+
+		// Get mentioned entities
+		if entities, _ := i.graphDB.GetEntitiesForEpisode(id); len(entities) > 0 {
+			var links []Link
+			for _, e := range entities {
+				links = append(links, Link{
+					ID:      e.ID,
+					Preview: e.Name,
+					Type:    string(e.Type),
+				})
+			}
+			info.Links["mentions"] = links
+		}
+
+		// Get episode neighbors (replies)
+		if neighbors, _ := i.graphDB.GetEpisodeNeighbors(id); len(neighbors) > 0 {
+			var links []Link
+			for _, n := range neighbors {
+				link := Link{ID: n.ID, Type: string(n.Type), Weight: n.Weight}
+				if ep, _ := i.graphDB.GetEpisode(n.ID); ep != nil {
+					preview := ep.Content
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					link.Preview = preview
+				}
+				links = append(links, link)
+			}
+			info.Links["replies"] = links
+		}
+
+		return info, nil
+	}
+
+	// Check entities
+	if entity, _ := i.graphDB.GetEntity(id); entity != nil {
+		info := &NodeInfo{
+			ID:   id,
+			Type: "entity",
+			Data: entity,
+			Links: make(map[string][]Link),
+		}
+
+		// Get episodes mentioning this entity
+		if episodeIDs, _ := i.graphDB.GetEpisodesForEntity(id); len(episodeIDs) > 0 {
+			var links []Link
+			for _, epID := range episodeIDs {
+				link := Link{ID: epID}
+				if ep, _ := i.graphDB.GetEpisode(epID); ep != nil {
+					preview := ep.Content
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					link.Preview = preview
+				}
+				links = append(links, link)
+			}
+			info.Links["mentioned_in"] = links
+		}
+
+		// Get traces involving this entity
+		if traceIDs, _ := i.graphDB.GetTracesForEntity(id); len(traceIDs) > 0 {
+			var links []Link
+			for _, tID := range traceIDs {
+				link := Link{ID: tID}
+				if t, _ := i.graphDB.GetTrace(tID); t != nil {
+					preview := t.Summary
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					link.Preview = preview
+				}
+				links = append(links, link)
+			}
+			info.Links["in_traces"] = links
+		}
+
+		// Get related entities
+		if neighbors, _ := i.graphDB.GetEntityRelations(id); len(neighbors) > 0 {
+			var links []Link
+			for _, n := range neighbors {
+				link := Link{ID: n.ID, Type: string(n.Type), Weight: n.Weight}
+				if e, _ := i.graphDB.GetEntity(n.ID); e != nil {
+					link.Preview = e.Name
+				}
+				links = append(links, link)
+			}
+			info.Links["related_entities"] = links
+		}
+
+		return info, nil
+	}
+
+	return nil, fmt.Errorf("node not found: %s", id)
+}
+
 // PerceptSummary is a condensed view of a percept
 type PerceptSummary struct {
 	ID        string    `json:"id"`

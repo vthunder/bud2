@@ -50,6 +50,43 @@ func (g *DB) AddEntity(e *Entity) error {
 	return nil
 }
 
+// GetAllEntities retrieves all entities ordered by salience desc
+func (g *DB) GetAllEntities(limit int) ([]*Entity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := g.db.Query(`
+		SELECT id, name, type, salience, embedding, created_at, updated_at
+		FROM entities
+		ORDER BY salience DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entities: %w", err)
+	}
+	defer rows.Close()
+
+	entities, err := scanEntityRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load aliases for each
+	for _, e := range entities {
+		e.Aliases, _ = g.GetEntityAliases(e.ID)
+	}
+
+	return entities, nil
+}
+
+// CountEntities returns the total number of entities
+func (g *DB) CountEntities() (int, error) {
+	var count int
+	err := g.db.QueryRow(`SELECT COUNT(*) FROM entities`).Scan(&count)
+	return count, err
+}
+
 // GetEntity retrieves an entity by ID
 func (g *DB) GetEntity(id string) (*Entity, error) {
 	row := g.db.QueryRow(`
@@ -186,6 +223,75 @@ func (g *DB) GetEntitiesForEpisode(episodeID string) ([]*Entity, error) {
 	defer rows.Close()
 
 	return scanEntityRows(rows)
+}
+
+// GetEpisodesForEntity returns all episodes that mention an entity
+func (g *DB) GetEpisodesForEntity(entityID string) ([]string, error) {
+	rows, err := g.db.Query(`
+		SELECT episode_id FROM episode_mentions WHERE entity_id = ?
+	`, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// GetTracesForEntity returns all traces that involve an entity
+func (g *DB) GetTracesForEntity(entityID string) ([]string, error) {
+	rows, err := g.db.Query(`
+		SELECT trace_id FROM trace_entities WHERE entity_id = ?
+	`, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// GetEntityRelations returns relations to/from an entity
+func (g *DB) GetEntityRelations(entityID string) ([]Neighbor, error) {
+	rows, err := g.db.Query(`
+		SELECT to_id, weight, relation_type FROM entity_relations WHERE from_id = ?
+		UNION ALL
+		SELECT from_id, weight, relation_type FROM entity_relations WHERE to_id = ?
+	`, entityID, entityID)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var neighbors []Neighbor
+	for rows.Next() {
+		var n Neighbor
+		var relType string
+		if err := rows.Scan(&n.ID, &n.Weight, &relType); err != nil {
+			continue
+		}
+		n.Type = EdgeType(relType)
+		neighbors = append(neighbors, n)
+	}
+
+	return neighbors, nil
 }
 
 // IncrementEntitySalience increases the salience of an entity
