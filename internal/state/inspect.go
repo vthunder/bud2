@@ -9,17 +9,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/types"
 )
 
 // Inspector provides state introspection capabilities
 type Inspector struct {
 	statePath string
+	graphDB   *graph.DB
 }
 
 // NewInspector creates a new state inspector
-func NewInspector(statePath string) *Inspector {
-	return &Inspector{statePath: statePath}
+func NewInspector(statePath string, graphDB *graph.DB) *Inspector {
+	return &Inspector{statePath: statePath, graphDB: graphDB}
 }
 
 // ComponentSummary holds summary for one state component
@@ -50,14 +52,12 @@ type HealthReport struct {
 func (i *Inspector) Summary() (*StateSummary, error) {
 	summary := &StateSummary{}
 
-	// Count traces
-	traces, err := i.loadTraces()
-	if err == nil {
-		summary.Traces.Total = len(traces)
-		for _, t := range traces {
-			if t.IsCore {
-				summary.Traces.Core++
-			}
+	// Count traces from graph DB
+	if i.graphDB != nil {
+		total, core, err := i.graphDB.CountTraces()
+		if err == nil {
+			summary.Traces.Total = total
+			summary.Traces.Core = core
 		}
 	}
 
@@ -127,14 +127,18 @@ type TraceSummary struct {
 
 // ListTraces returns summaries of all traces
 func (i *Inspector) ListTraces() ([]TraceSummary, error) {
-	traces, err := i.loadTraces()
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	traces, err := i.graphDB.GetAllTraces()
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]TraceSummary, 0, len(traces))
 	for _, t := range traces {
-		content := t.Content
+		content := t.Summary
 		if len(content) > 100 {
 			content = content[:100] + "..."
 		}
@@ -151,74 +155,45 @@ func (i *Inspector) ListTraces() ([]TraceSummary, error) {
 
 // GetTrace returns full trace by ID
 func (i *Inspector) GetTrace(id string) (*types.Trace, error) {
-	traces, err := i.loadTraces()
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	gt, err := i.graphDB.GetTrace(id)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, t := range traces {
-		if t.ID == id {
-			return t, nil
-		}
+	if gt == nil {
+		return nil, fmt.Errorf("trace not found: %s", id)
 	}
-	return nil, fmt.Errorf("trace not found: %s", id)
+
+	// Convert graph.Trace to types.Trace
+	return &types.Trace{
+		ID:         gt.ID,
+		Content:    gt.Summary,
+		Embedding:  gt.Embedding,
+		Activation: gt.Activation,
+		Strength:   gt.Strength,
+		IsCore:     gt.IsCore,
+		CreatedAt:  gt.CreatedAt,
+		LastAccess: gt.LastAccessed,
+	}, nil
 }
 
 // DeleteTrace removes a trace by ID
 func (i *Inspector) DeleteTrace(id string) error {
-	traces, err := i.loadTraces()
-	if err != nil {
-		return err
+	if i.graphDB == nil {
+		return fmt.Errorf("graph database not initialized")
 	}
-
-	found := false
-	result := make([]*types.Trace, 0, len(traces))
-	for _, t := range traces {
-		if t.ID == id {
-			found = true
-		} else {
-			result = append(result, t)
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("trace not found: %s", id)
-	}
-
-	return i.saveTraces(result)
+	return i.graphDB.DeleteTrace(id)
 }
 
 // ClearTraces clears traces based on filter
 func (i *Inspector) ClearTraces(clearCore bool) (int, error) {
-	traces, err := i.loadTraces()
-	if err != nil {
-		return 0, err
+	if i.graphDB == nil {
+		return 0, fmt.Errorf("graph database not initialized")
 	}
-
-	var keep []*types.Trace
-	cleared := 0
-	for _, t := range traces {
-		if clearCore {
-			// Clear core, keep non-core
-			if t.IsCore {
-				cleared++
-			} else {
-				keep = append(keep, t)
-			}
-		} else {
-			// Clear non-core, keep core
-			if t.IsCore {
-				keep = append(keep, t)
-			} else {
-				cleared++
-			}
-		}
-	}
-
-	if err := i.saveTraces(keep); err != nil {
-		return 0, err
-	}
-	return cleared, nil
+	return i.graphDB.ClearTraces(clearCore)
 }
 
 // PerceptSummary is a condensed view of a percept
@@ -448,6 +423,10 @@ func (i *Inspector) ClearSessions() error {
 
 // RegenCore regenerates core traces from seed file
 func (i *Inspector) RegenCore(seedPath string) (int, error) {
+	if i.graphDB == nil {
+		return 0, fmt.Errorf("graph database not initialized")
+	}
+
 	// First clear existing core traces
 	cleared, err := i.ClearTraces(true) // clearCore=true
 	if err != nil {
@@ -495,68 +474,31 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 		return 0, err
 	}
 
-	// Load existing traces (non-core)
-	traces, _ := i.loadTraces()
-
 	// Create new core traces
+	count := 0
 	for idx, content := range entries {
 		if content == "" {
 			continue
 		}
-		trace := &types.Trace{
-			ID:         fmt.Sprintf("core-%d-%d", time.Now().UnixNano(), idx),
-			Content:    content,
-			Activation: 1.0,
-			Strength:   100,
-			IsCore:     true,
-			CreatedAt:  time.Now(),
-			LastAccess: time.Now(),
+		trace := &graph.Trace{
+			ID:           fmt.Sprintf("core-%d-%d", time.Now().UnixNano(), idx),
+			Summary:      content,
+			Activation:   1.0,
+			Strength:     100,
+			IsCore:       true,
+			CreatedAt:    time.Now(),
+			LastAccessed: time.Now(),
 		}
-		traces = append(traces, trace)
+		if err := i.graphDB.AddTrace(trace); err != nil {
+			return count, fmt.Errorf("failed to add trace: %w", err)
+		}
+		count++
 	}
 
-	if err := i.saveTraces(traces); err != nil {
-		return 0, err
-	}
-
-	return len(entries), nil
+	return count, nil
 }
 
 // Helper methods
-
-func (i *Inspector) loadTraces() ([]*types.Trace, error) {
-	path := filepath.Join(i.statePath, "system", "traces.json")
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	var file struct {
-		Traces []*types.Trace `json:"traces"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, err
-	}
-	return file.Traces, nil
-}
-
-func (i *Inspector) saveTraces(traces []*types.Trace) error {
-	path := filepath.Join(i.statePath, "system", "traces.json")
-	file := struct {
-		Traces []*types.Trace `json:"traces"`
-	}{Traces: traces}
-	if file.Traces == nil {
-		file.Traces = []*types.Trace{}
-	}
-	data, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
-}
 
 func (i *Inspector) loadPercepts() ([]*types.Percept, error) {
 	path := filepath.Join(i.statePath, "system", "queues", "percepts.json")

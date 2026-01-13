@@ -219,6 +219,100 @@ func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 	return ids, nil
 }
 
+// GetAllTraces retrieves all traces
+func (g *DB) GetAllTraces() ([]*Trace, error) {
+	rows, err := g.db.Query(`
+		SELECT id, summary, topic, activation, strength, is_core,
+			embedding, created_at, last_accessed, labile_until
+		FROM traces
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query traces: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTraceRows(rows)
+}
+
+// SetTraceCore updates the is_core flag of a trace
+func (g *DB) SetTraceCore(id string, isCore bool) error {
+	result, err := g.db.Exec(`
+		UPDATE traces SET is_core = ? WHERE id = ?
+	`, isCore, id)
+	if err != nil {
+		return fmt.Errorf("failed to update trace: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("trace not found: %s", id)
+	}
+	return nil
+}
+
+// DeleteTrace deletes a trace by ID
+func (g *DB) DeleteTrace(id string) error {
+	// Delete related data first
+	g.db.Exec(`DELETE FROM trace_relations WHERE from_id = ? OR to_id = ?`, id, id)
+	g.db.Exec(`DELETE FROM trace_entities WHERE trace_id = ?`, id)
+	g.db.Exec(`DELETE FROM trace_sources WHERE trace_id = ?`, id)
+
+	result, err := g.db.Exec(`DELETE FROM traces WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete trace: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("trace not found: %s", id)
+	}
+	return nil
+}
+
+// ClearTraces deletes traces. If coreOnly is true, only clears core traces.
+// If coreOnly is false, clears non-core traces.
+func (g *DB) ClearTraces(coreOnly bool) (int, error) {
+	// Get IDs to delete
+	var rows *sql.Rows
+	var err error
+	if coreOnly {
+		rows, err = g.db.Query(`SELECT id FROM traces WHERE is_core = TRUE`)
+	} else {
+		rows, err = g.db.Query(`SELECT id FROM traces WHERE is_core = FALSE`)
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+
+	// Delete each trace (handles related data)
+	for _, id := range ids {
+		g.DeleteTrace(id)
+	}
+
+	return len(ids), nil
+}
+
+// CountTraces returns the count of traces (total and core)
+func (g *DB) CountTraces() (total int, core int, err error) {
+	err = g.db.QueryRow(`SELECT COUNT(*) FROM traces`).Scan(&total)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = g.db.QueryRow(`SELECT COUNT(*) FROM traces WHERE is_core = TRUE`).Scan(&core)
+	if err != nil {
+		return total, 0, err
+	}
+	return total, core, nil
+}
+
 // scanTrace scans a single row into a Trace
 func scanTrace(row *sql.Row) (*Trace, error) {
 	var tr Trace

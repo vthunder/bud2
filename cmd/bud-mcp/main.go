@@ -14,6 +14,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/vthunder/bud2/internal/activity"
+	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -58,6 +59,14 @@ func main() {
 	os.MkdirAll(queuesPath, 0755)
 	outboxPath := filepath.Join(queuesPath, "outbox.jsonl")
 	log.Printf("Outbox path: %s", outboxPath)
+
+	// Open graph database for memory
+	graphDB, err := graph.Open(systemPath)
+	if err != nil {
+		log.Fatalf("Failed to open graph database: %v", err)
+	}
+	defer graphDB.Close()
+	log.Printf("Graph database opened at %s/memory.db", systemPath)
 
 	// Create MCP server
 	server := mcp.NewServer()
@@ -116,11 +125,9 @@ func main() {
 		return "Message queued for sending to Discord", nil
 	})
 
-	tracesPath := filepath.Join(systemPath, "traces.json")
-
 	// Register list_traces tool (for discovering trace IDs)
 	server.RegisterTool("list_traces", func(ctx any, args map[string]any) (string, error) {
-		traces, err := loadTraces(tracesPath)
+		traces, err := graphDB.GetAllTraces()
 		if err != nil {
 			return "", fmt.Errorf("failed to load traces: %w", err)
 		}
@@ -130,7 +137,7 @@ func main() {
 		for _, t := range traces {
 			result = append(result, map[string]any{
 				"id":       t.ID,
-				"content":  truncate(t.Content, 100),
+				"content":  truncate(t.Summary, 100),
 				"is_core":  t.IsCore,
 				"strength": t.Strength,
 			})
@@ -152,28 +159,8 @@ func main() {
 			isCore = val
 		}
 
-		traces, err := loadTraces(tracesPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to load traces: %w", err)
-		}
-
-		// Find and update the trace
-		found := false
-		for _, t := range traces {
-			if t.ID == traceID {
-				t.IsCore = isCore
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			return "", fmt.Errorf("trace %s not found", traceID)
-		}
-
-		// Save back
-		if err := saveTraces(tracesPath, traces); err != nil {
-			return "", fmt.Errorf("failed to save traces: %w", err)
+		if err := graphDB.SetTraceCore(traceID, isCore); err != nil {
+			return "", err
 		}
 
 		action := "marked as core"
@@ -181,7 +168,7 @@ func main() {
 			action = "unmarked as core"
 		}
 		log.Printf("Trace %s %s", traceID, action)
-		return fmt.Sprintf("Trace %s %s. Changes will take effect on next bud restart.", traceID, action), nil
+		return fmt.Sprintf("Trace %s %s.", traceID, action), nil
 	})
 
 	// Register save_thought tool (save a thought to memory via inbox)
@@ -1212,31 +1199,23 @@ func main() {
 			return "", fmt.Errorf("content is required")
 		}
 
-		traces, err := loadTraces(tracesPath)
-		if err != nil {
-			// If file doesn't exist, start with empty list
-			traces = []*types.Trace{}
-		}
-
 		// Create new core trace
-		trace := &types.Trace{
-			ID:         fmt.Sprintf("core-%d", time.Now().UnixNano()),
-			Content:    content,
-			Activation: 1.0,
-			Strength:   100,
-			IsCore:     true,
-			CreatedAt:  time.Now(),
-			LastAccess: time.Now(),
+		trace := &graph.Trace{
+			ID:           fmt.Sprintf("core-%d", time.Now().UnixNano()),
+			Summary:      content,
+			Activation:   1.0,
+			Strength:     100,
+			IsCore:       true,
+			CreatedAt:    time.Now(),
+			LastAccessed: time.Now(),
 		}
-		traces = append(traces, trace)
 
-		// Save
-		if err := saveTraces(tracesPath, traces); err != nil {
-			return "", fmt.Errorf("failed to save traces: %w", err)
+		if err := graphDB.AddTrace(trace); err != nil {
+			return "", fmt.Errorf("failed to create trace: %w", err)
 		}
 
 		log.Printf("Created core trace: %s", truncate(content, 50))
-		return fmt.Sprintf("Created core trace %s. Changes will take effect on next bud restart.", trace.ID), nil
+		return fmt.Sprintf("Created core trace %s.", trace.ID), nil
 	})
 
 	// Notion tools (only register if NOTION_API_KEY is set)
@@ -1872,7 +1851,7 @@ func main() {
 	}
 
 	// State introspection tools
-	stateInspector := state.NewInspector(statePath)
+	stateInspector := state.NewInspector(statePath, graphDB)
 
 	server.RegisterTool("state_summary", func(ctx any, args map[string]any) (string, error) {
 		summary, err := stateInspector.Summary()
@@ -2147,39 +2126,6 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// loadTraces reads traces from the JSON file
-func loadTraces(path string) ([]*types.Trace, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var file struct {
-		Traces []*types.Trace `json:"traces"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, err
-	}
-
-	return file.Traces, nil
-}
-
-// saveTraces writes traces to the JSON file
-func saveTraces(path string, traces []*types.Trace) error {
-	file := struct {
-		Traces []*types.Trace `json:"traces"`
-	}{
-		Traces: traces,
-	}
-
-	data, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0644)
 }
 
 // parseDueTime parses various due time formats

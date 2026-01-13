@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/state"
 	"github.com/vthunder/bud2/internal/types"
 )
@@ -23,7 +26,15 @@ func main() {
 		os.Exit(0)
 	}
 
-	inspector := state.NewInspector(statePath)
+	// Open graph database (in system subdirectory, matching bud daemon)
+	systemPath := filepath.Join(statePath, "system")
+	graphDB, err := graph.Open(systemPath)
+	if err != nil {
+		log.Fatalf("Failed to open graph database: %v", err)
+	}
+	defer graphDB.Close()
+
+	inspector := state.NewInspector(statePath, graphDB)
 	cmd := os.Args[1]
 
 	switch cmd {
