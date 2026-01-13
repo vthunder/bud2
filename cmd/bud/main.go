@@ -17,10 +17,12 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/attention"
 	"github.com/vthunder/bud2/internal/budget"
+	"github.com/vthunder/bud2/internal/buffer"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/executive"
+	"github.com/vthunder/bud2/internal/focus"
+	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/memory"
@@ -30,7 +32,7 @@ import (
 	"github.com/vthunder/bud2/internal/types"
 )
 
-const Version = "2026-01-09-v2-session-fix"
+const Version = "2026-01-13-v2-focus-cutover"
 
 // checkPidFile checks for an existing bud process and handles it
 // Returns a cleanup function to remove the pid file on exit
@@ -102,7 +104,7 @@ func getProcessStartTime(proc *process.Process) string {
 }
 
 func main() {
-	log.Printf("bud2 - subsumption-inspired agent [%s]", Version)
+	log.Printf("bud2 - focus-based agent v2 [%s]", Version)
 	log.Println("==================================")
 
 	// Load .env file (optional - won't error if missing)
@@ -170,41 +172,52 @@ func main() {
 	// Ensure state directory exists
 	os.MkdirAll(statePath, 0755)
 
-	// Seed notes from defaults if missing
-	seedNotes(statePath)
+	// Seed guides (how-to docs) from defaults if missing
+	seedGuides(statePath)
 
 	// Generate .mcp.json with correct state path for MCP server
 	if err := writeMCPConfig(statePath); err != nil {
 		log.Printf("Warning: failed to write .mcp.json: %v", err)
 	}
 
-	// Initialize memory pools
+	// Initialize paths
 	systemPath := filepath.Join(statePath, "system")
 	queuesPath := filepath.Join(systemPath, "queues")
 	os.MkdirAll(queuesPath, 0755)
+
+	// Initialize v2 memory systems
+	// Graph DB (SQLite) - replaces tracePool
+	graphDB, err := graph.Open(systemPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize graph database: %v", err)
+	}
+	defer graphDB.Close()
+	log.Println("[main] Graph database initialized")
+
+	// Conversation buffer - new in v2
+	conversationBuffer := buffer.New(systemPath, nil) // No summarizer for now
+	if err := conversationBuffer.Load(); err != nil {
+		log.Printf("Warning: failed to load conversation buffer: %v", err)
+	}
+	log.Println("[main] Conversation buffer initialized")
+
+	// Keep inbox/outbox for message queue (still useful)
 	inbox := memory.NewInbox(filepath.Join(queuesPath, "inbox.jsonl"))
-	perceptPool := memory.NewPerceptPool(filepath.Join(queuesPath, "percepts.json"))
-	threadPool := memory.NewThreadPool(filepath.Join(systemPath, "threads.json"))
-	tracePool := memory.NewTracePool(filepath.Join(systemPath, "traces.json"))
 	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
 
 	// Load persisted state
 	if err := inbox.Load(); err != nil {
 		log.Printf("Warning: failed to load inbox: %v", err)
 	}
-	if err := perceptPool.Load(); err != nil {
-		log.Printf("Warning: failed to load percepts: %v", err)
-	}
-	if err := threadPool.Load(); err != nil {
-		log.Printf("Warning: failed to load threads: %v", err)
-	}
-	if err := tracePool.Load(); err != nil {
-		log.Printf("Warning: failed to load traces: %v", err)
-	}
 	if err := outbox.Load(); err != nil {
 		log.Printf("Warning: failed to load outbox: %v", err)
 	}
-	log.Printf("[main] Loaded %d traces from memory", tracePool.Count())
+
+	// Bootstrap core identity traces from seed file
+	seedPath := "seed/core_seed.md"
+	if err := bootstrapCoreTraces(graphDB, seedPath); err != nil {
+		log.Printf("Warning: failed to bootstrap core traces: %v", err)
+	}
 
 	// Initialize motivation stores (for autonomous impulses)
 	taskStore := motivation.NewTaskStore(statePath)
@@ -227,7 +240,6 @@ func main() {
 	thinkingBudget.DailyMinutes = dailyBudgetMinutes
 
 	// CPU watcher writes signals to inbox when it detects idle sessions
-	// The unified inbox loop will complete the session
 	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
 	cpuWatcher.SetOnComplete(func(session *budget.Session, summary string) {
 		msg := &memory.InboxMessage{
@@ -239,7 +251,6 @@ func main() {
 			Status:    "pending",
 			Extra: map[string]any{
 				"session_id": session.ID,
-				"thread_id":  session.ThreadID,
 				"source":     "cpu_watcher",
 			},
 		}
@@ -251,26 +262,6 @@ func main() {
 	log.Printf("[main] Session tracker initialized (used today: %.1f min, budget: %.0f min, remaining: %.1f min)",
 		todayUsed, dailyBudgetMinutes, dailyBudgetMinutes-todayUsed)
 
-	// Initialize attention first (executive needs it for trace retrieval)
-	var attn *attention.Attention
-	var exec *executive.Executive
-
-	// Create attention with callback that will use exec (set below)
-	attn = attention.New(perceptPool, threadPool, tracePool, func(thread *types.Thread) {
-		log.Printf("[main] Active thread changed: %s - %s", thread.ID, thread.Goal)
-		// Invoke executive to process the thread
-		ctx := context.Background()
-		if err := exec.ProcessThread(ctx, thread); err != nil {
-			log.Printf("[main] Executive error: %v", err)
-		}
-	})
-
-	// Bootstrap core identity traces from seed file (if no core traces exist)
-	seedPath := filepath.Join(statePath, "core_seed.md")
-	if err := attn.BootstrapCore(seedPath); err != nil {
-		log.Printf("Warning: failed to bootstrap core traces: %v", err)
-	}
-
 	// Initialize reflex engine
 	reflexEngine := reflex.NewEngine(statePath)
 	if err := reflexEngine.Load(); err != nil {
@@ -278,9 +269,9 @@ func main() {
 	}
 	reflexEngine.SetGTDStore(gtdStore)
 	reflexEngine.SetBudTaskStore(taskStore)
-	reflexEngine.SetDefaultChannel(discordChannel) // For notifications without channel context (e.g., calendar reminders)
+	reflexEngine.SetDefaultChannel(discordChannel)
 
-	// Initialize calendar client (optional - only if credentials are configured)
+	// Initialize calendar client (optional)
 	var calendarClient *calendar.Client
 	hasCalendarCreds := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS") != "" || os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != ""
 	hasCalendarIDs := os.Getenv("GOOGLE_CALENDAR_IDS") != "" || os.Getenv("GOOGLE_CALENDAR_ID") != ""
@@ -298,7 +289,7 @@ func main() {
 	}
 
 	// Initialize reflex log for short-term context
-	reflexLog := reflex.NewLog(20) // Keep last 20 reflex interactions
+	reflexLog := reflex.NewLog(20)
 
 	// Set up reflex reply callback (will wire to outbox after effector is created)
 	var reflexReplyCallback func(channelID, message string) error
@@ -309,33 +300,32 @@ func main() {
 		return nil
 	})
 
-	// Initialize executive with trace retrieval functions
-	exec = executive.New(perceptPool, threadPool, outbox, executive.ExecutiveConfig{
-		Model:           claudeModel,
-		WorkDir:         ".",
-		UseInteractive:  useInteractive,
-		GetActiveTraces: attn.GetActivatedTraces,
-		GetCoreTraces:   attn.GetCoreTraces,
-		GetUnsentReflex: func() []executive.ReflexLogEntry {
-			entries := reflexLog.GetUnsent()
-			result := make([]executive.ReflexLogEntry, len(entries))
-			for i, e := range entries {
-				result[i] = executive.ReflexLogEntry{
-					Query:    e.Query,
-					Response: e.Response,
-					Intent:   e.Intent,
-				}
-			}
-			return result
+	// Initialize v2 executive with focus-based attention
+	exec := executive.NewExecutiveV2(
+		graphDB,
+		conversationBuffer,
+		reflexLog,
+		systemPath,
+		executive.ExecutiveV2Config{
+			Model:          claudeModel,
+			WorkDir:        ".",
+			UseInteractive: useInteractive,
+			BotAuthor:      "Bud", // Filter out bot's own responses on incremental buffer sync
+			SessionTracker: sessionTracker,
+			OnExecWake: func(focusID, context string) {
+				activityLog.LogExecWake("Executive processing", focusID, context)
+			},
+			OnExecDone: func(focusID, summary string, durationSec float64) {
+				activityLog.LogExecDone(summary, focusID, durationSec, "executive")
+			},
 		},
-		SessionTracker: sessionTracker,
-		OnExecWake: func(threadID, context string) {
-			activityLog.LogExecWake("Executive processing", threadID, context)
-		},
-	})
+	)
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
 	}
+
+	// Wire reflex engine to attention system for proactive mode
+	reflexEngine.SetAttention(exec.GetAttention())
 
 	// handleSignal processes a signal-type inbox message (budget tracking, no percept)
 	handleSignal := func(msg *memory.InboxMessage) {
@@ -352,15 +342,14 @@ func main() {
 			if sessionID != "" {
 				session := sessionTracker.CompleteSession(sessionID)
 				if session != nil {
-					activityLog.LogExecDone(msg.Content, session.ThreadID, session.DurationSec, source)
+					activityLog.LogExecDone(msg.Content, "", session.DurationSec, source)
 					log.Printf("[main] Signal: session %s completed via %s (%.1f sec)", sessionID, source, session.DurationSec)
 				}
 			}
 		}
-		// Other signal subtypes can be added here
 	}
 
-	// Process percept helper - checks reflexes first, then routes to attention
+	// Process percept helper - checks reflexes first, then routes to focus queue
 	processPercept := func(percept *types.Percept) {
 		// Extract content for reflex matching
 		content := ""
@@ -378,6 +367,21 @@ func main() {
 			channelID = ch
 		}
 
+		// Add to conversation buffer
+		if channelID != "" && content != "" {
+			bufferEntry := buffer.Entry{
+				ID:        percept.ID,
+				Author:    author,
+				Content:   content,
+				Timestamp: percept.Timestamp,
+				ChannelID: channelID,
+				ReplyTo:   percept.ReplyTo,
+			}
+			if err := conversationBuffer.Add(bufferEntry); err != nil {
+				log.Printf("Warning: failed to add to buffer: %v", err)
+			}
+		}
+
 		// Log input event
 		inputSummary := content
 		if author != "" {
@@ -392,8 +396,6 @@ func main() {
 
 		if handled && len(results) > 0 {
 			result := results[0]
-			// Success && !Stopped means reflex actually handled it
-			// Stopped means gate fired (e.g., not_gtd) - let executive handle
 			if result.Stopped {
 				intent, _ := result.Output["intent"].(string)
 				log.Printf("[main] Reflex %s passed (gate stopped) - routing to executive", result.ReflexName)
@@ -414,42 +416,17 @@ func main() {
 					response,
 				)
 
-				// Add to reflex log for short-term context (always)
+				// Add to reflex log for short-term context
 				reflexLog.Add(content, response, intent, result.ReflexName)
 
-				// Only create traces for mutations (state changes worth remembering)
-				if reflex.IsMutation(intent) {
-					attn.CreateImmediateTrace(
-						fmt.Sprintf("User added via reflex: %s", content),
-						"reflex-mutation",
-					)
-					if response != "" {
-						attn.CreateImmediateTrace(
-							fmt.Sprintf("Bud: %s", response),
-							"reflex-mutation-response",
-						)
-					}
-				}
-
-				// Mark percept as processed by reflex
-				percept.RawInput = content
-				percept.ProcessedBy = []string{result.ReflexName}
-				percept.Tags = append(percept.Tags, "reflex-handled")
-				percept.Intensity *= 0.3 // Lower intensity since reflex handled it
-
 				log.Printf("[main] Percept %s handled by reflex %s (intent: %s)", percept.ID, result.ReflexName, intent)
-
-				// Reflex handled it - add to pool for memory but skip executive
-				perceptPool.Add(percept)
-				return
+				return // Reflex handled it
 			}
 		}
 
 		// No reflex handled it - check budget before routing to executive
-		// (Reflexes already ran above - they're cheap. Executive is expensive.)
 		isAutonomous := percept.Source == "impulse" || percept.Source == "system"
 		if isAutonomous {
-			// Check if this is a high-priority urgent task that bypasses budget
 			priority, _ := percept.Data["priority"].(int)
 			impulseType, _ := percept.Data["type"].(string)
 			isUrgent := priority == 1 && (impulseType == "due" || impulseType == "upcoming")
@@ -464,32 +441,56 @@ func main() {
 			}
 		}
 
-		// Route to attention/executive
-		perceptPool.Add(percept)
-		threads := attn.RoutePercept(percept, func(content string) string {
-			return "respond to: " + truncate(content, 50)
-		})
-		log.Printf("[main] Percept %s routed to %d thread(s)", percept.ID, len(threads))
+		// Route to focus queue for executive processing
+		item := &focus.PendingItem{
+			ID:        percept.ID,
+			Type:      percept.Type,
+			Priority:  focus.P1UserInput, // User messages are high priority
+			Source:    percept.Source,
+			Content:   content,
+			ChannelID: channelID,
+			AuthorID:  author,
+			Timestamp: percept.Timestamp,
+			Data:      percept.Data,
+		}
+
+		// Adjust priority based on source
+		if percept.Source == "impulse" || percept.Source == "system" {
+			item.Priority = focus.P3ActiveWork
+		}
+
+		if err := exec.AddPending(item); err != nil {
+			log.Printf("[main] Failed to add to focus queue: %v", err)
+			return
+		}
+
+		log.Printf("[main] Percept %s added to focus queue (priority: %s)", percept.ID, item.Priority)
+
+		// Process immediately if interactive mode
+		if useInteractive {
+			go func() {
+				ctx := context.Background()
+				if _, err := exec.ProcessNext(ctx); err != nil {
+					log.Printf("[main] Executive error: %v", err)
+				}
+			}()
+		}
 	}
 
 	// Capture outgoing response helper
 	captureResponse := func(channelID, content string) {
-		percept := &types.Percept{
+		// Add Bud's response to conversation buffer
+		bufferEntry := buffer.Entry{
 			ID:        fmt.Sprintf("bud-response-%d", time.Now().UnixNano()),
-			Source:    "bud",
-			Type:      "response",
-			Intensity: 0.3, // lower intensity for own responses
+			Author:    "Bud",
+			Content:   content,
 			Timestamp: time.Now(),
-			Tags:      []string{"outgoing"},
-			Data: map[string]any{
-				"channel_id": channelID,
-				"content":    content,
-			},
+			ChannelID: channelID,
 		}
-		// Compute embedding for consolidation (but don't route - would cause feedback loop)
-		attn.EmbedPercept(percept)
-		perceptPool.Add(percept)
-		log.Printf("[main] Captured Bud response as percept (for consolidation)")
+		if err := conversationBuffer.Add(bufferEntry); err != nil {
+			log.Printf("Warning: failed to add response to buffer: %v", err)
+		}
+		log.Printf("[main] Captured Bud response to conversation buffer")
 	}
 
 	// Stop channel for all polling goroutines
@@ -515,7 +516,7 @@ func main() {
 		}
 
 		discordEffector = effectors.NewDiscordEffector(
-			discordSense.Session, // getter function, not called value
+			discordSense.Session,
 			func() (int, error) { return outbox.Poll() },
 			func() []*types.Action { return outbox.GetPending() },
 			func(id string) { outbox.MarkComplete(id) },
@@ -628,18 +629,15 @@ func main() {
 				for _, msg := range pending {
 					switch msg.Type {
 					case "signal":
-						// Signals don't become percepts - handle directly
 						handleSignal(msg)
 
 					case "impulse":
-						// Impulses may become percepts
 						percept := msg.ToPercept()
 						if percept != nil {
 							processPercept(percept)
 						}
 
 					default: // "message" or empty (backward compat)
-						// Messages become percepts
 						percept := msg.ToPercept()
 						if percept != nil {
 							processPercept(percept)
@@ -650,66 +648,56 @@ func main() {
 		}
 	}()
 
-	// Start attention
-	attn.Start()
+	// Start focus queue processing (if not in interactive mode)
+	if !useInteractive {
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
 
-	// Start consolidation goroutine (memory consolidation during idle)
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-ticker.C:
-				n := attn.Consolidate()
-				if n > 0 {
-					log.Printf("[main] Consolidated %d percepts into traces (total: %d)", n, attn.TraceCount())
-				}
-				// Periodic save of traces (prevents loss on crash)
-				if err := tracePool.Save(); err != nil {
-					log.Printf("[main] Warning: failed to save traces: %v", err)
+			for {
+				select {
+				case <-stopChan:
+					return
+				case <-ticker.C:
+					ctx := context.Background()
+					processed, err := exec.ProcessNext(ctx)
+					if err != nil {
+						log.Printf("[main] Executive error: %v", err)
+					}
+					if processed {
+						log.Printf("[main] Processed item from focus queue")
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Start autonomous wake-up goroutine (periodic self-initiated work)
 	if autonomousEnabled {
 		log.Printf("[main] Autonomous mode enabled (interval: %v)", autonomousInterval)
 		go func() {
-			// Check for task impulses more frequently (every minute)
 			taskCheckInterval := 1 * time.Minute
 			taskTicker := time.NewTicker(taskCheckInterval)
 			defer taskTicker.Stop()
 
-			// Periodic wake-up on longer interval
 			periodicTicker := time.NewTicker(autonomousInterval)
 			defer periodicTicker.Stop()
 
-			// Wait a bit before first check
 			time.Sleep(10 * time.Second)
 
-			// Do initial task check
 			checkTaskImpulses := func() {
-				// Reload tasks in case they changed
 				taskStore.Load()
 				impulses := taskStore.GenerateImpulses()
 				if len(impulses) == 0 {
 					return
 				}
 
-				// Write the highest priority impulse to inbox
-				// Budget is checked when processing from inbox
 				impulse := impulses[0]
 				log.Printf("[autonomous] Queueing task impulse: %s", impulse.Description)
 
-				// Convert to inbox message and add to queue
 				inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
 				inbox.Add(inboxMsg)
 
-				// Auto-complete recurring tasks after queueing
-				// The task's job is to remind on a schedule - once queued, it's done for this interval
 				if impulse.Type == "recurring" {
 					if taskID, ok := impulse.Data["task_id"].(string); ok && taskID != "" {
 						taskStore.Complete(taskID)
@@ -722,7 +710,6 @@ func main() {
 				}
 			}
 
-			// Check immediately on startup
 			checkTaskImpulses()
 
 			for {
@@ -730,11 +717,9 @@ func main() {
 				case <-stopChan:
 					return
 				case <-taskTicker.C:
-					// Check for due/upcoming tasks
 					checkTaskImpulses()
 
 				case <-periodicTicker.C:
-					// Periodic wake-up (even without specific tasks)
 					impulse := &types.Impulse{
 						ID:          fmt.Sprintf("impulse-wake-%d", time.Now().UnixNano()),
 						Source:      types.ImpulseSystem,
@@ -769,7 +754,7 @@ func main() {
 	// Stop subsystems
 	close(stopChan)
 	cpuWatcher.Stop()
-	attn.Stop()
+	exec.Stop()
 	if discordEffector != nil {
 		discordEffector.StopAllTyping()
 		discordEffector.Stop()
@@ -782,31 +767,90 @@ func main() {
 		calendarSense.Stop()
 	}
 
-	// Final consolidation before shutdown (consolidate ALL percepts regardless of age)
-	n := attn.ConsolidateAll()
-	if n > 0 {
-		log.Printf("[main] Final consolidation: %d percepts", n)
-	}
-
 	// Persist state
 	if err := inbox.Save(); err != nil {
 		log.Printf("Warning: failed to save inbox: %v", err)
 	}
-	if err := perceptPool.Save(); err != nil {
-		log.Printf("Warning: failed to save percepts: %v", err)
-	}
-	if err := threadPool.Save(); err != nil {
-		log.Printf("Warning: failed to save threads: %v", err)
-	}
-	if err := tracePool.Save(); err != nil {
-		log.Printf("Warning: failed to save traces: %v", err)
+	if err := conversationBuffer.Save(); err != nil {
+		log.Printf("Warning: failed to save conversation buffer: %v", err)
 	}
 	if err := outbox.Save(); err != nil {
 		log.Printf("Warning: failed to save outbox: %v", err)
 	}
-	log.Printf("[main] Saved %d traces to memory", tracePool.Count())
+	if err := exec.GetQueue().Save(); err != nil {
+		log.Printf("Warning: failed to save focus queue: %v", err)
+	}
 
 	log.Println("[main] Goodbye!")
+}
+
+// bootstrapCoreTraces loads core identity traces from seed file if not already present
+func bootstrapCoreTraces(db *graph.DB, seedPath string) error {
+	// Check if core traces already exist
+	existing, err := db.GetCoreTraces()
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		log.Printf("[main] Found %d existing core traces", len(existing))
+		return nil
+	}
+
+	// Read seed file
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("[main] No core seed file found at %s", seedPath)
+			return nil
+		}
+		return err
+	}
+
+	// Parse seed file - sections separated by "---"
+	// Each section has a "# Header" followed by content
+	sections := strings.Split(string(data), "\n---\n")
+	count := 0
+	for _, section := range sections {
+		section = strings.TrimSpace(section)
+		if section == "" {
+			continue
+		}
+
+		// Extract topic from header line (# Topic Name)
+		lines := strings.SplitN(section, "\n", 2)
+		topic := "identity"
+		content := section
+
+		if len(lines) >= 1 && strings.HasPrefix(lines[0], "# ") {
+			topic = strings.TrimPrefix(lines[0], "# ")
+			if len(lines) >= 2 {
+				content = strings.TrimSpace(lines[1])
+			}
+		}
+
+		if content == "" {
+			continue
+		}
+
+		trace := &graph.Trace{
+			ID:        fmt.Sprintf("core-%d", time.Now().UnixNano()+int64(count)),
+			Summary:   content,
+			Topic:     topic,
+			IsCore:    true,
+			Strength:  100,
+			CreatedAt: time.Now(),
+		}
+		if err := db.AddTrace(trace); err != nil {
+			log.Printf("Warning: failed to add core trace: %v", err)
+			continue
+		}
+		count++
+	}
+
+	if count > 0 {
+		log.Printf("[main] Bootstrapped %d core identity traces from %s", count, seedPath)
+	}
+	return nil
 }
 
 func truncate(s string, maxLen int) string {
@@ -816,26 +860,24 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// seedNotes copies seed/notes/ to state/notes/ if the directory doesn't exist
-func seedNotes(statePath string) {
-	notesDir := filepath.Join(statePath, "notes")
+// seedGuides copies seed/guides/ to state/system/guides/ if the directory doesn't exist
+// These are "how to" docs that teach Bud how to use various capabilities
+func seedGuides(statePath string) {
+	guidesDir := filepath.Join(statePath, "system", "guides")
 
-	// Only seed if directory doesn't exist
-	if _, err := os.Stat(notesDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(guidesDir); !os.IsNotExist(err) {
 		return
 	}
 
-	// Create directory
-	if err := os.MkdirAll(notesDir, 0755); err != nil {
-		log.Printf("[main] Warning: failed to create notes dir: %v", err)
+	if err := os.MkdirAll(guidesDir, 0755); err != nil {
+		log.Printf("[main] Warning: failed to create guides dir: %v", err)
 		return
 	}
 
-	// Copy all files from seed/notes/
-	seedDir := "seed/notes"
+	seedDir := "seed/guides"
 	entries, err := os.ReadDir(seedDir)
 	if err != nil {
-		log.Printf("[main] Warning: failed to read seed notes: %v", err)
+		log.Printf("[main] Warning: failed to read seed guides: %v", err)
 		return
 	}
 
@@ -844,7 +886,7 @@ func seedNotes(statePath string) {
 			continue
 		}
 		src := filepath.Join(seedDir, entry.Name())
-		dst := filepath.Join(notesDir, entry.Name())
+		dst := filepath.Join(guidesDir, entry.Name())
 
 		data, err := os.ReadFile(src)
 		if err != nil {
@@ -857,26 +899,23 @@ func seedNotes(statePath string) {
 			continue
 		}
 
-		log.Printf("[main] Seeded: %s", entry.Name())
+		log.Printf("[main] Seeded guide: %s", entry.Name())
 	}
 }
 
 // writeMCPConfig generates .mcp.json with the correct state path
 func writeMCPConfig(statePath string) error {
-	// Get absolute path for state
 	absStatePath, err := filepath.Abs(statePath)
 	if err != nil {
 		return err
 	}
 
-	// Get the path to bud-mcp binary (same directory as bud)
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	budMCPPath := filepath.Join(filepath.Dir(exe), "bud-mcp")
 
-	// Build config
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			"bud2": map[string]any{
@@ -890,7 +929,6 @@ func writeMCPConfig(statePath string) error {
 		},
 	}
 
-	// Write to .mcp.json in current working directory
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err

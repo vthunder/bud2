@@ -1,4 +1,21 @@
-# Implementation Status (2026-01-06)
+# Implementation Status (V1 - SUPERSEDED)
+
+> **⚠️ DEPRECATED**: This document tracks v1 implementation status (2026-01-06).
+> As of 2026-01-13, v2 is fully implemented:
+> - `docs/architecture/v2-memory-architecture.md` - V2 design and implementation notes
+> - `docs/architecture/test-plan.md` - V2 test scenarios
+>
+> V2 components implemented:
+> - `internal/buffer/` - Conversation buffer with incremental sync
+> - `internal/filter/` - Entropy scoring + dialogue act classification
+> - `internal/graph/` - Three-tier SQLite memory graph
+> - `internal/focus/` - Priority-based attention (replaces threads)
+> - `internal/extract/` - Entity extraction
+> - `internal/metacog/` - Pattern detection for knowledge compilation
+> - `internal/executive/executive_v2.go` - Focus-based executive
+> - `internal/executive/simple_session.go` - Single Claude session
+
+---
 
 ## Implemented vs Design Gap
 

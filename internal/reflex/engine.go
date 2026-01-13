@@ -20,6 +20,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AttentionChecker is the interface for checking attention state
+type AttentionChecker interface {
+	IsAttending(domain string) bool
+}
+
 // Engine manages and executes reflexes
 type Engine struct {
 	reflexes  map[string]*Reflex
@@ -29,6 +34,9 @@ type Engine struct {
 
 	// Default channel for notifications (used when no channel_id in context)
 	defaultChannel string
+
+	// Attention system for proactive mode
+	attention AttentionChecker
 
 	// Callbacks for integration
 	onReply func(channelID, message string) error
@@ -104,6 +112,12 @@ func (e *Engine) SetCalendarClient(client *calendar.Client) {
 	if client != nil {
 		e.createCalendarActions()
 	}
+}
+
+// SetAttention sets the attention checker for proactive mode
+// When attention is actively focusing on a domain, reflexes for that domain are bypassed
+func (e *Engine) SetAttention(attention AttentionChecker) {
+	e.attention = attention
 }
 
 // Load loads all reflexes from the reflexes directory
@@ -497,6 +511,26 @@ Message: %s`, intentList, content)
 // Process attempts to match and execute reflexes for a percept
 // Returns true if any reflex fired (and executive should be skipped)
 func (e *Engine) Process(ctx context.Context, source, typ, content string, data map[string]any) (bool, []*ReflexResult) {
+	// Proactive mode check: if attention is actively focusing on this source/domain,
+	// bypass reflexes and route directly to executive
+	if e.attention != nil {
+		// Check by source (e.g., "discord", "calendar")
+		if e.attention.IsAttending(source) {
+			log.Printf("[reflex] Bypassing reflexes: attention is attending to %q", source)
+			return false, nil
+		}
+		// Check by type (e.g., "gtd", "message")
+		if e.attention.IsAttending(typ) {
+			log.Printf("[reflex] Bypassing reflexes: attention is attending to %q", typ)
+			return false, nil
+		}
+		// Check for "all" domain (executive wants everything)
+		if e.attention.IsAttending("all") {
+			log.Printf("[reflex] Bypassing reflexes: attention is attending to all")
+			return false, nil
+		}
+	}
+
 	matches := e.Match(source, typ, content)
 	if len(matches) == 0 {
 		return false, nil

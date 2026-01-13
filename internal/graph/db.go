@@ -1,0 +1,249 @@
+package graph
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// DB wraps the SQLite database connection for the memory graph
+type DB struct {
+	db   *sql.DB
+	path string
+}
+
+// Open opens or creates the memory graph database
+func Open(statePath string) (*DB, error) {
+	dbPath := filepath.Join(statePath, "memory.db")
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Test connection
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Enable foreign keys
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
+	}
+
+	g := &DB{db: db, path: dbPath}
+
+	// Run migrations
+	if err := g.migrate(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate: %w", err)
+	}
+
+	return g, nil
+}
+
+// Close closes the database connection
+func (g *DB) Close() error {
+	return g.db.Close()
+}
+
+// migrate runs database migrations
+func (g *DB) migrate() error {
+	schema := `
+	-- Schema version tracking
+	CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER PRIMARY KEY,
+		applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- TIER 1: EPISODES (Non-lossy raw messages)
+	CREATE TABLE IF NOT EXISTS episodes (
+		id TEXT PRIMARY KEY,
+		content TEXT NOT NULL,
+		source TEXT NOT NULL,
+		author TEXT,
+		author_id TEXT,
+		channel TEXT,
+		timestamp_event DATETIME NOT NULL,
+		timestamp_ingested DATETIME NOT NULL,
+		dialogue_act TEXT,
+		entropy_score REAL,
+		embedding BLOB,
+		reply_to TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp_event);
+	CREATE INDEX IF NOT EXISTS idx_episodes_channel ON episodes(channel);
+	CREATE INDEX IF NOT EXISTS idx_episodes_author ON episodes(author_id);
+	CREATE INDEX IF NOT EXISTS idx_episodes_reply_to ON episodes(reply_to);
+
+	-- Episode edges (REPLIES_TO, FOLLOWS)
+	CREATE TABLE IF NOT EXISTS episode_edges (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_id TEXT NOT NULL,
+		to_id TEXT NOT NULL,
+		edge_type TEXT NOT NULL,
+		weight REAL DEFAULT 1.0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (from_id) REFERENCES episodes(id) ON DELETE CASCADE,
+		FOREIGN KEY (to_id) REFERENCES episodes(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_episode_edges_from ON episode_edges(from_id);
+	CREATE INDEX IF NOT EXISTS idx_episode_edges_to ON episode_edges(to_id);
+	CREATE INDEX IF NOT EXISTS idx_episode_edges_type ON episode_edges(edge_type);
+
+	-- TIER 2: ENTITIES (Extracted named entities)
+	CREATE TABLE IF NOT EXISTS entities (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		type TEXT NOT NULL,
+		salience REAL DEFAULT 0.0,
+		embedding BLOB,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+	CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
+	CREATE INDEX IF NOT EXISTS idx_entities_salience ON entities(salience);
+
+	-- Entity aliases (multiple names for same entity)
+	CREATE TABLE IF NOT EXISTS entity_aliases (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		entity_id TEXT NOT NULL,
+		alias TEXT NOT NULL,
+		FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+		UNIQUE(entity_id, alias)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_entity_aliases_alias ON entity_aliases(alias);
+
+	-- Episode mentions (episode -> entity)
+	CREATE TABLE IF NOT EXISTS episode_mentions (
+		episode_id TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		PRIMARY KEY (episode_id, entity_id),
+		FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+		FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+	);
+
+	-- Entity relations (entity <-> entity)
+	CREATE TABLE IF NOT EXISTS entity_relations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_id TEXT NOT NULL,
+		to_id TEXT NOT NULL,
+		relation_type TEXT NOT NULL,
+		weight REAL DEFAULT 1.0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (from_id) REFERENCES entities(id) ON DELETE CASCADE,
+		FOREIGN KEY (to_id) REFERENCES entities(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_entity_relations_from ON entity_relations(from_id);
+	CREATE INDEX IF NOT EXISTS idx_entity_relations_to ON entity_relations(to_id);
+
+	-- TIER 3: TRACES (Consolidated memories)
+	CREATE TABLE IF NOT EXISTS traces (
+		id TEXT PRIMARY KEY,
+		summary TEXT NOT NULL,
+		topic TEXT,
+		activation REAL DEFAULT 0.5,
+		strength INTEGER DEFAULT 1,
+		is_core BOOLEAN DEFAULT FALSE,
+		embedding BLOB,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+		labile_until DATETIME
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_traces_activation ON traces(activation);
+	CREATE INDEX IF NOT EXISTS idx_traces_is_core ON traces(is_core);
+	CREATE INDEX IF NOT EXISTS idx_traces_last_accessed ON traces(last_accessed);
+
+	-- Trace sources (trace -> episode)
+	CREATE TABLE IF NOT EXISTS trace_sources (
+		trace_id TEXT NOT NULL,
+		episode_id TEXT NOT NULL,
+		PRIMARY KEY (trace_id, episode_id),
+		FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE,
+		FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+	);
+
+	-- Trace entities (trace -> entity)
+	CREATE TABLE IF NOT EXISTS trace_entities (
+		trace_id TEXT NOT NULL,
+		entity_id TEXT NOT NULL,
+		PRIMARY KEY (trace_id, entity_id),
+		FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE,
+		FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+	);
+
+	-- Trace relations (trace <-> trace)
+	CREATE TABLE IF NOT EXISTS trace_relations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_id TEXT NOT NULL,
+		to_id TEXT NOT NULL,
+		relation_type TEXT NOT NULL,
+		weight REAL DEFAULT 1.0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (from_id) REFERENCES traces(id) ON DELETE CASCADE,
+		FOREIGN KEY (to_id) REFERENCES traces(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_trace_relations_from ON trace_relations(from_id);
+	CREATE INDEX IF NOT EXISTS idx_trace_relations_to ON trace_relations(to_id);
+	CREATE INDEX IF NOT EXISTS idx_trace_relations_type ON trace_relations(relation_type);
+
+	-- Record schema version
+	INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+	`
+
+	_, err := g.db.Exec(schema)
+	return err
+}
+
+// Stats returns database statistics
+func (g *DB) Stats() (map[string]int, error) {
+	stats := make(map[string]int)
+
+	tables := []string{"episodes", "entities", "traces", "episode_edges", "entity_relations", "trace_relations"}
+	for _, table := range tables {
+		var count int
+		err := g.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
+		if err != nil {
+			return nil, err
+		}
+		stats[table] = count
+	}
+
+	return stats, nil
+}
+
+// Clear removes all data (for testing/reset)
+func (g *DB) Clear() error {
+	tables := []string{
+		"trace_relations", "trace_entities", "trace_sources", "traces",
+		"entity_relations", "episode_mentions", "entity_aliases", "entities",
+		"episode_edges", "episodes",
+	}
+
+	for _, table := range tables {
+		if _, err := g.db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
+			return fmt.Errorf("failed to clear %s: %w", table, err)
+		}
+	}
+
+	return nil
+}

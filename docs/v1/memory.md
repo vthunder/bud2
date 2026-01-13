@@ -1,4 +1,17 @@
-# Memory Architecture
+# Memory Architecture (V1 - SUPERSEDED)
+
+> **⚠️ DEPRECATED**: This document describes the v1 memory architecture.
+> The v2 architecture is implemented and documented in:
+> - `docs/architecture/v2-memory-architecture.md` - Full v2 design
+> - `docs/architecture/memory-research.md` - Research that informed v2
+>
+> Key v2 changes:
+> - Three-tier memory graph (episodes → entities → traces) in SQLite
+> - Conversation buffer with incremental sync to avoid token waste
+> - Synapse-style spreading activation for retrieval
+> - Entropy filtering to prevent low-info pollution
+
+---
 
 ## Core Insight: Activation Rules Everything
 

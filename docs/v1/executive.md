@@ -1,4 +1,18 @@
-# Executive Architecture
+# Executive Architecture (V1 - SUPERSEDED)
+
+> **⚠️ DEPRECATED**: This document describes the v1 executive with multi-session threading.
+> The v2 architecture uses a simplified single-session model:
+> - `docs/architecture/v2-memory-architecture.md` - Full v2 design
+> - `internal/executive/executive_v2.go` - Implementation
+> - `internal/executive/simple_session.go` - Single session manager
+>
+> Key v2 changes:
+> - Single persistent Claude session in tmux (not per-thread)
+> - Focus-based context assembly with conversation buffer
+> - Incremental buffer sync to avoid re-sending context
+> - Graph-based memory retrieval with spreading activation
+
+---
 
 ## Overview
 

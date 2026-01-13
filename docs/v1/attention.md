@@ -1,4 +1,18 @@
-# Attention Mechanism
+# Attention Mechanism (V1 - SUPERSEDED)
+
+> **⚠️ DEPRECATED**: This document describes the v1 thread-based attention model.
+> The v2 architecture uses focus-based single-stream attention:
+> - `docs/architecture/v2-memory-architecture.md` - Full v2 design
+> - `internal/focus/` - Implementation
+>
+> Key v2 changes:
+> - Thread model → Focus-based single-stream attention
+> - Priority levels P0-P4 with preemption
+> - Proactive mode (bypass reflexes when attending)
+> - Single Claude session (not per-thread sessions)
+> - Arousal modulation for responsiveness
+
+---
 
 ## Core Model: Attention Operates on Threads
 

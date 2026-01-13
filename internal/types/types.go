@@ -17,6 +17,11 @@ type Percept struct {
 	// Reflex processing metadata
 	RawInput    string   `json:"raw_input,omitempty"`    // original input before reflex processing
 	ProcessedBy []string `json:"processed_by,omitempty"` // reflex names that processed this
+
+	// Reply chain and quality metadata (v2)
+	ReplyTo      string  `json:"reply_to,omitempty"`       // ID of parent message being replied to
+	DialogueAct  string  `json:"dialogue_act,omitempty"`   // backchannel, question, statement, etc.
+	EntropyScore float64 `json:"entropy_score,omitempty"`  // quality score (0-1, higher = more novel)
 }
 
 // Recency returns seconds since percept was created
