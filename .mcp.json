@@ -7,6 +7,11 @@
         "BUD_STATE_PATH": "/Users/thunder/src/bud2/state"
       },
       "type": "stdio"
+    },
+    "notion": {
+      "args": [],
+      "command": "/Users/thunder/src/bud2/bin/notion-mcp",
+      "type": "stdio"
     }
   }
 }
