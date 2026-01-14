@@ -75,7 +75,14 @@ func main() {
 	defaultChannel := os.Getenv("DISCORD_CHANNEL_ID")
 
 	// Register talk_to_user tool
-	server.RegisterTool("talk_to_user", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("talk_to_user", mcp.ToolDef{
+		Description: "Send a message to the user via Discord. Use this to respond to questions, share observations, ask clarifying questions, or give status updates.",
+		Properties: map[string]mcp.PropDef{
+			"message":    {Type: "string", Description: "The message to send to the user"},
+			"channel_id": {Type: "string", Description: "The Discord channel ID to send to. Optional - if not provided, uses the default channel from DISCORD_CHANNEL_ID."},
+		},
+		Required: []string{"message"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		message, ok := args["message"].(string)
 		if !ok {
 			return "", fmt.Errorf("message is required")
@@ -126,7 +133,10 @@ func main() {
 	})
 
 	// Register list_traces tool (for discovering trace IDs)
-	server.RegisterTool("list_traces", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("list_traces", mcp.ToolDef{
+		Description: "List all memory traces with their IDs, content preview, and core status. Use this to discover trace IDs before marking them as core.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		traces, err := graphDB.GetAllTraces()
 		if err != nil {
 			return "", fmt.Errorf("failed to load traces: %w", err)
@@ -148,7 +158,14 @@ func main() {
 	})
 
 	// Register mark_core tool
-	server.RegisterTool("mark_core", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("mark_core", mcp.ToolDef{
+		Description: "Mark a memory trace as core (part of identity) or remove core status. Core traces are always included in prompts and define Bud's identity.",
+		Properties: map[string]mcp.PropDef{
+			"trace_id": {Type: "string", Description: "The ID of the trace to mark as core"},
+			"is_core":  {Type: "boolean", Description: "Whether to mark as core (true) or remove core status (false). Defaults to true."},
+		},
+		Required: []string{"trace_id"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		traceID, ok := args["trace_id"].(string)
 		if !ok {
 			return "", fmt.Errorf("trace_id is required")
@@ -172,7 +189,13 @@ func main() {
 	})
 
 	// Register save_thought tool (save a thought to memory via inbox)
-	server.RegisterTool("save_thought", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("save_thought", mcp.ToolDef{
+		Description: "Save a thought or observation to memory. Use this to remember decisions, observations, or anything worth recalling later. These get consolidated with other memories over time.",
+		Properties: map[string]mcp.PropDef{
+			"content": {Type: "string", Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')"},
+		},
+		Required: []string{"content"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
 			return "", fmt.Errorf("content is required")
@@ -181,7 +204,7 @@ func main() {
 		// Write thought to inbox as a special message type
 		thought := map[string]any{
 			"id":        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
-			"type":      "thought",
+			"subtype":   "thought",
 			"content":   content,
 			"timestamp": time.Now().Format(time.RFC3339),
 			"status":    "pending",
@@ -209,7 +232,13 @@ func main() {
 
 	// Register signal_done tool (signal that Claude is done thinking)
 	// Writes to inbox.jsonl as a signal-type message (unified inbox)
-	server.RegisterTool("signal_done", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("signal_done", mcp.ToolDef{
+		Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",
+		Properties: map[string]mcp.PropDef{
+			"session_id": {Type: "string", Description: "The current session ID (if known)"},
+			"summary":    {Type: "string", Description: "Brief summary of what was accomplished (optional)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		sessionID, _ := args["session_id"].(string)
 		summary, _ := args["summary"].(string)
 
@@ -245,7 +274,12 @@ func main() {
 
 	// Register trigger_redeploy tool - allows bud to request its own redeployment
 	// Runs deploy.sh directly in background (no watcher needed)
-	server.RegisterTool("trigger_redeploy", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("trigger_redeploy", mcp.ToolDef{
+		Description: "Trigger a redeployment of the bud service. Use this after code changes have been pushed.",
+		Properties: map[string]mcp.PropDef{
+			"reason": {Type: "string", Description: "Reason for redeployment (optional)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		reason, _ := args["reason"].(string)
 		if reason == "" {
 			reason = "Redeploy requested"
@@ -274,7 +308,10 @@ func main() {
 
 	// Register close_claude_sessions tool - closes all Claude Code sessions in tmux
 	// This allows Bud to restart Claude itself
-	server.RegisterTool("close_claude_sessions", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("close_claude_sessions", mcp.ToolDef{
+		Description: "Close all Claude Code sessions running in tmux. Use this before trigger_redeploy to cleanly restart Claude. Returns list of closed session names.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		// List all tmux windows with their current command
 		cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}")
 		output, err := cmd.Output()
@@ -368,7 +405,17 @@ func main() {
 
 	// Register journal_log tool (writes to activity.jsonl for unified logging)
 	// Kept for backwards compatibility - all logging now goes to activity.jsonl
-	server.RegisterTool("journal_log", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("journal_log", mcp.ToolDef{
+		Description: "Log a decision, action, or observation to the journal for observability. Use this to record your reasoning, decisions made, and actions taken. Helps answer 'what did you do today?' and 'why did you do that?'",
+		Properties: map[string]mcp.PropDef{
+			"type":      {Type: "string", Description: "Entry type: 'decision', 'impulse', 'reflex', 'exploration', 'action', or 'observation'"},
+			"summary":   {Type: "string", Description: "Brief description of what happened"},
+			"context":   {Type: "string", Description: "What prompted this (optional)"},
+			"reasoning": {Type: "string", Description: "Why this decision was made (optional)"},
+			"outcome":   {Type: "string", Description: "What resulted from this (optional)"},
+		},
+		Required: []string{"summary"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		summary, _ := args["summary"].(string)
 		context, _ := args["context"].(string)
 		reasoning, _ := args["reasoning"].(string)
@@ -389,7 +436,12 @@ func main() {
 	})
 
 	// Register journal_recent tool (reads from activity.jsonl)
-	server.RegisterTool("journal_recent", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("journal_recent", mcp.ToolDef{
+		Description: "Get recent journal entries. Use this to review what you've been doing and why.",
+		Properties: map[string]mcp.PropDef{
+			"count": {Type: "number", Description: "Number of entries to return (default 20)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		count := 20 // default
 		if n, ok := args["count"].(float64); ok && n > 0 {
 			count = int(n)
@@ -409,7 +461,10 @@ func main() {
 	})
 
 	// Register journal_today tool (reads from activity.jsonl)
-	server.RegisterTool("journal_today", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("journal_today", mcp.ToolDef{
+		Description: "Get today's journal entries. Use this to answer 'what did you do today?'",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		entries, err := activityLog.Today()
 		if err != nil {
 			return "", fmt.Errorf("failed to get today's entries: %w", err)
@@ -424,7 +479,12 @@ func main() {
 	})
 
 	// Register activity_recent tool (get recent activity entries)
-	server.RegisterTool("activity_recent", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("activity_recent", mcp.ToolDef{
+		Description: "Get recent activity entries from the log.",
+		Properties: map[string]mcp.PropDef{
+			"count": {Type: "number", Description: "Number of entries to return (default 50)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		count := 50 // default
 		if n, ok := args["count"].(float64); ok && n > 0 {
 			count = int(n)
@@ -444,7 +504,10 @@ func main() {
 	})
 
 	// Register activity_today tool (get today's activity entries)
-	server.RegisterTool("activity_today", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("activity_today", mcp.ToolDef{
+		Description: "Get today's activity entries.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		entries, err := activityLog.Today()
 		if err != nil {
 			return "", fmt.Errorf("failed to get today's activity: %w", err)
@@ -459,7 +522,14 @@ func main() {
 	})
 
 	// Register activity_search tool (search activity by text)
-	server.RegisterTool("activity_search", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("activity_search", mcp.ToolDef{
+		Description: "Search activity entries by text.",
+		Properties: map[string]mcp.PropDef{
+			"query": {Type: "string", Description: "Text to search for"},
+			"limit": {Type: "number", Description: "Maximum entries to return (default 100)"},
+		},
+		Required: []string{"query"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		query, _ := args["query"].(string)
 		if query == "" {
 			return "", fmt.Errorf("query is required")
@@ -484,7 +554,13 @@ func main() {
 	})
 
 	// Register activity_by_type tool (filter activity by event type)
-	server.RegisterTool("activity_by_type", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("activity_by_type", mcp.ToolDef{
+		Description: "Filter activity entries by event type.",
+		Properties: map[string]mcp.PropDef{
+			"type":  {Type: "string", Description: "Event type: input, reflex, reflex_pass, executive_wake, executive_done, action, decision, error"},
+			"limit": {Type: "number", Description: "Maximum entries to return (default 50)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		typeStr, _ := args["type"].(string)
 		if typeStr == "" {
 			// Return list of valid types
@@ -516,7 +592,16 @@ func main() {
 	ideaStore.Load()
 
 	// Register add_bud_task tool
-	server.RegisterTool("add_bud_task", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("add_bud_task", mcp.ToolDef{
+		Description: "Add a task (Bud's commitment) to your task queue. Use this to track things you've committed to do.",
+		Properties: map[string]mcp.PropDef{
+			"task":     {Type: "string", Description: "What you need to do"},
+			"context":  {Type: "string", Description: "Why this task exists (optional)"},
+			"priority": {Type: "number", Description: "Priority level: 1=highest, 2=medium, 3=low (default 2)"},
+			"due":      {Type: "string", Description: "Due date/time in RFC3339 format (optional)"},
+		},
+		Required: []string{"task"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		task, ok := args["task"].(string)
 		if !ok || task == "" {
 			return "", fmt.Errorf("task description is required")
@@ -558,7 +643,10 @@ func main() {
 	})
 
 	// Register list_bud_tasks tool
-	server.RegisterTool("list_bud_tasks", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("list_bud_tasks", mcp.ToolDef{
+		Description: "List pending Bud tasks. Use this to see what you've committed to do.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		tasks := taskStore.GetPending()
 		if len(tasks) == 0 {
 			return "No pending tasks.", nil
@@ -569,7 +657,13 @@ func main() {
 	})
 
 	// Register complete_bud_task tool
-	server.RegisterTool("complete_bud_task", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("complete_bud_task", mcp.ToolDef{
+		Description: "Mark a Bud task as complete.",
+		Properties: map[string]mcp.PropDef{
+			"task_id": {Type: "string", Description: "ID of the task to complete"},
+		},
+		Required: []string{"task_id"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		taskID, ok := args["task_id"].(string)
 		if !ok || taskID == "" {
 			return "", fmt.Errorf("task_id is required")
@@ -590,7 +684,15 @@ func main() {
 	})
 
 	// Register add_idea tool
-	server.RegisterTool("add_idea", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("add_idea", mcp.ToolDef{
+		Description: "Save an idea for later exploration. Ideas are things you want to learn or think about when idle.",
+		Properties: map[string]mcp.PropDef{
+			"idea":       {Type: "string", Description: "The idea or topic to explore"},
+			"sparked_by": {Type: "string", Description: "What triggered this idea (optional)"},
+			"priority":   {Type: "number", Description: "Interest level: 1=highest, 2=medium, 3=low (default 2)"},
+		},
+		Required: []string{"idea"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		idea, ok := args["idea"].(string)
 		if !ok || idea == "" {
 			return "", fmt.Errorf("idea description is required")
@@ -618,7 +720,10 @@ func main() {
 	})
 
 	// Register list_ideas tool
-	server.RegisterTool("list_ideas", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("list_ideas", mcp.ToolDef{
+		Description: "List unexplored ideas. Use this to find something to think about during idle time.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		ideas := ideaStore.GetUnexplored()
 		if len(ideas) == 0 {
 			return "No unexplored ideas.", nil
@@ -629,7 +734,14 @@ func main() {
 	})
 
 	// Register explore_idea tool (mark as explored with notes)
-	server.RegisterTool("explore_idea", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("explore_idea", mcp.ToolDef{
+		Description: "Mark an idea as explored, with notes about what you learned.",
+		Properties: map[string]mcp.PropDef{
+			"idea_id": {Type: "string", Description: "ID of the idea that was explored"},
+			"notes":   {Type: "string", Description: "What you learned or discovered (optional)"},
+		},
+		Required: []string{"idea_id"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		ideaID, ok := args["idea_id"].(string)
 		if !ok || ideaID == "" {
 			return "", fmt.Errorf("idea_id is required")
@@ -659,7 +771,17 @@ func main() {
 	reflexEngine.Load()
 
 	// Register create_reflex tool
-	server.RegisterTool("create_reflex", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("create_reflex", mcp.ToolDef{
+		Description: "Create a new reflex (automated response). Reflexes run without waking the executive for pattern-matched inputs.",
+		Properties: map[string]mcp.PropDef{
+			"name":        {Type: "string", Description: "Unique name for the reflex"},
+			"description": {Type: "string", Description: "What this reflex does"},
+			"pattern":     {Type: "string", Description: "Regex pattern to match (use capture groups for extraction)"},
+			"extract":     {Type: "array", Description: "Names for captured groups (e.g., [\"url\", \"title\"])"},
+			"pipeline":    {Type: "array", Description: "Array of action steps: [{action, input, output, ...params}]"},
+		},
+		Required: []string{"name", "pipeline"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		name, ok := args["name"].(string)
 		if !ok || name == "" {
 			return "", fmt.Errorf("name is required")
@@ -729,7 +851,10 @@ func main() {
 	})
 
 	// Register list_reflexes tool
-	server.RegisterTool("list_reflexes", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("list_reflexes", mcp.ToolDef{
+		Description: "List all defined reflexes.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		reflexes := reflexEngine.List()
 		if len(reflexes) == 0 {
 			return "No reflexes defined.", nil
@@ -750,7 +875,13 @@ func main() {
 	})
 
 	// Register delete_reflex tool
-	server.RegisterTool("delete_reflex", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("delete_reflex", mcp.ToolDef{
+		Description: "Delete a reflex by name.",
+		Properties: map[string]mcp.PropDef{
+			"name": {Type: "string", Description: "Name of the reflex to delete"},
+		},
+		Required: []string{"name"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		name, ok := args["name"].(string)
 		if !ok || name == "" {
 			return "", fmt.Errorf("name is required")
@@ -770,7 +901,18 @@ func main() {
 	}
 
 	// Register gtd_add tool
-	server.RegisterTool("gtd_add", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_add", mcp.ToolDef{
+		Description: "Add a task to the user's GTD system. Quick capture to inbox by default, or specify when/project to place it directly.",
+		Properties: map[string]mcp.PropDef{
+			"title":   {Type: "string", Description: "Task title (what needs to be done)"},
+			"notes":   {Type: "string", Description: "Additional notes or context for the task (optional)"},
+			"when":    {Type: "string", Description: "When to do it: inbox (default), today, anytime, someday, or YYYY-MM-DD date"},
+			"project": {Type: "string", Description: "Project ID to add task to (optional)"},
+			"heading": {Type: "string", Description: "Heading name within the project (requires project)"},
+			"area":    {Type: "string", Description: "Area ID for the task (optional, only if not in a project)"},
+		},
+		Required: []string{"title"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		title, ok := args["title"].(string)
 		if !ok || title == "" {
 			return "", fmt.Errorf("title is required")
@@ -822,7 +964,15 @@ func main() {
 	})
 
 	// Register gtd_list tool
-	server.RegisterTool("gtd_list", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_list", mcp.ToolDef{
+		Description: "List tasks from the user's GTD system with optional filters.",
+		Properties: map[string]mcp.PropDef{
+			"when":    {Type: "string", Description: "Filter by when: inbox, today, anytime, someday, logbook (completed+canceled), or YYYY-MM-DD date"},
+			"project": {Type: "string", Description: "Filter by project ID"},
+			"area":    {Type: "string", Description: "Filter by area ID"},
+			"status":  {Type: "string", Description: "Filter by status: open (default), completed, canceled, or all"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		when, _ := args["when"].(string)
 		project, _ := args["project"].(string)
 		area, _ := args["area"].(string)
@@ -877,7 +1027,20 @@ func main() {
 	})
 
 	// Register gtd_update tool
-	server.RegisterTool("gtd_update", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_update", mcp.ToolDef{
+		Description: "Update a task in the user's GTD system. Only provided fields are updated.",
+		Properties: map[string]mcp.PropDef{
+			"id":        {Type: "string", Description: "Task ID to update (required)"},
+			"title":     {Type: "string", Description: "New title for the task"},
+			"notes":     {Type: "string", Description: "New notes for the task"},
+			"when":      {Type: "string", Description: "When to do it: inbox, today, anytime, someday, or YYYY-MM-DD date"},
+			"project":   {Type: "string", Description: "Project ID to move task to (empty string to remove from project)"},
+			"heading":   {Type: "string", Description: "Heading name within the project"},
+			"area":      {Type: "string", Description: "Area ID for the task (empty string to remove area)"},
+			"checklist": {Type: "array", Description: "Checklist items as array of {text, done} objects"},
+		},
+		Required: []string{"id"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		id, ok := args["id"].(string)
 		if !ok || id == "" {
 			return "", fmt.Errorf("id is required")
@@ -953,7 +1116,13 @@ func main() {
 	})
 
 	// Register gtd_complete tool
-	server.RegisterTool("gtd_complete", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_complete", mcp.ToolDef{
+		Description: "Mark a task as complete in the user's GTD system. Handles repeating tasks by creating the next occurrence.",
+		Properties: map[string]mcp.PropDef{
+			"id": {Type: "string", Description: "Task ID to mark as complete (required)"},
+		},
+		Required: []string{"id"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		id, ok := args["id"].(string)
 		if !ok || id == "" {
 			return "", fmt.Errorf("id is required")
@@ -984,7 +1153,15 @@ func main() {
 	})
 
 	// Register gtd_areas tool
-	server.RegisterTool("gtd_areas", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_areas", mcp.ToolDef{
+		Description: "Manage areas of responsibility in the user's GTD system. Areas are high-level categories like Work, Home, Health.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action to perform: list, add, or update"},
+			"id":     {Type: "string", Description: "Area ID (required for update)"},
+			"title":  {Type: "string", Description: "Area title (required for add, optional for update)"},
+		},
+		Required: []string{"action"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			return "", fmt.Errorf("action is required (list, add, or update)")
@@ -1048,7 +1225,20 @@ func main() {
 	})
 
 	// Register gtd_projects tool
-	server.RegisterTool("gtd_projects", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("gtd_projects", mcp.ToolDef{
+		Description: "Manage projects in the user's GTD system. Projects are multi-step outcomes with tasks.",
+		Properties: map[string]mcp.PropDef{
+			"action":   {Type: "string", Description: "Action to perform: list, add, or update"},
+			"id":       {Type: "string", Description: "Project ID (required for update)"},
+			"title":    {Type: "string", Description: "Project title (required for add, optional for update)"},
+			"notes":    {Type: "string", Description: "Project notes (optional)"},
+			"when":     {Type: "string", Description: "When: anytime, someday, or YYYY-MM-DD date (optional)"},
+			"area":     {Type: "string", Description: "Area ID for filtering (list) or assignment (add/update)"},
+			"status":   {Type: "string", Description: "Filter by status (list only): open (default), completed, canceled, or all"},
+			"headings": {Type: "array", Description: "Ordered list of heading names for organizing tasks (optional)"},
+		},
+		Required: []string{"action"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			return "", fmt.Errorf("action is required (list, add, or update)")
@@ -1193,7 +1383,13 @@ func main() {
 	})
 
 	// Register create_core tool (create a new core trace directly)
-	server.RegisterTool("create_core", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("create_core", mcp.ToolDef{
+		Description: "Create a new core identity trace directly. Use this to add new identity information that should always be present.",
+		Properties: map[string]mcp.PropDef{
+			"content": {Type: "string", Description: "The content of the core trace (e.g., 'I am Bud, a helpful assistant')"},
+		},
+		Required: []string{"content"},
+	}, func(ctx any, args map[string]any) (string, error) {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
 			return "", fmt.Errorf("content is required")
@@ -1218,204 +1414,256 @@ func main() {
 		return fmt.Sprintf("Created core trace %s.", trace.ID), nil
 	})
 
-	// Notion tools (only register if NOTION_API_KEY is set)
-	if os.Getenv("NOTION_API_KEY") != "" {
-		notionClient, err := notion.NewClient()
+	// Notion markdown conversion tools (pure conversion, no HTTP)
+	// Use official Notion MCP (API-*) tools for HTTP operations
+	server.RegisterTool("notion_get_content", mcp.ToolDef{
+		Description: "Convert Notion blocks (from API-get-block-children) to markdown. Pass the 'results' array from the API response.",
+		Properties: map[string]mcp.PropDef{
+			"blocks": {Type: "string", Description: "JSON array of Notion blocks from API-get-block-children results"},
+		},
+		Required: []string{"blocks"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		blocksJSON, _ := args["blocks"].(string)
+		if blocksJSON == "" {
+			return "", fmt.Errorf("blocks is required")
+		}
+
+		var blocks []map[string]any
+		if err := json.Unmarshal([]byte(blocksJSON), &blocks); err != nil {
+			return "", fmt.Errorf("invalid JSON: %w", err)
+		}
+
+		markdown := notion.BlocksToMarkdown(blocks)
+		if markdown == "" {
+			return "(empty)", nil
+		}
+		return markdown, nil
+	})
+
+	server.RegisterTool("notion_create_page", mcp.ToolDef{
+		Description: "Convert markdown to Notion blocks for API-patch-block-children. Returns JSON blocks array ready for the 'children' parameter.",
+		Properties: map[string]mcp.PropDef{
+			"markdown": {Type: "string", Description: "Markdown content to convert to Notion blocks"},
+		},
+		Required: []string{"markdown"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		markdown, _ := args["markdown"].(string)
+		if markdown == "" {
+			return "", fmt.Errorf("markdown is required")
+		}
+
+		blocks := notion.MarkdownToBlocks(markdown)
+		data, err := json.Marshal(blocks)
 		if err != nil {
-			log.Printf("Warning: Failed to create Notion client: %v", err)
-		} else {
-			log.Println("Notion integration enabled")
+			return "", fmt.Errorf("failed to marshal blocks: %w", err)
+		}
+		return string(data), nil
+	})
 
-			// Register notion_search tool
-			server.RegisterTool("notion_search", func(ctx any, args map[string]any) (string, error) {
-				query, _ := args["query"].(string)
-				if query == "" {
-					return "", fmt.Errorf("query is required")
-				}
+	server.RegisterTool("notion_update_content", mcp.ToolDef{
+		Description: "Alias for notion_create_page - converts markdown to Notion blocks JSON.",
+		Properties: map[string]mcp.PropDef{
+			"markdown": {Type: "string", Description: "Markdown content to convert to Notion blocks"},
+		},
+		Required: []string{"markdown"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		markdown, _ := args["markdown"].(string)
+		if markdown == "" {
+			return "", fmt.Errorf("markdown is required")
+		}
 
-				params := notion.SearchParams{
-					Query:    query,
-					PageSize: 20,
-				}
+		blocks := notion.MarkdownToBlocks(markdown)
+		data, err := json.Marshal(blocks)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal blocks: %w", err)
+		}
+		return string(data), nil
+	})
 
-				// Optional filter by type
-				if filterType, ok := args["filter"].(string); ok && filterType != "" {
-					params.Filter = &notion.SearchFilter{
-						Property: "object",
-						Value:    filterType,
-					}
-				}
+	server.RegisterTool("notion_append_content", mcp.ToolDef{
+		Description: "Alias for notion_create_page - converts markdown to Notion blocks JSON.",
+		Properties: map[string]mcp.PropDef{
+			"markdown": {Type: "string", Description: "Markdown content to convert to Notion blocks"},
+		},
+		Required: []string{"markdown"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		markdown, _ := args["markdown"].(string)
+		if markdown == "" {
+			return "", fmt.Errorf("markdown is required")
+		}
 
-				result, err := notionClient.Search(params)
-				if err != nil {
-					return "", err
-				}
+		blocks := notion.MarkdownToBlocks(markdown)
+		data, err := json.Marshal(blocks)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal blocks: %w", err)
+		}
+		return string(data), nil
+	})
 
-				// Format results
-				var output []map[string]string
-				for _, obj := range result.Results {
-					output = append(output, map[string]string{
-						"id":    obj.ID,
-						"type":  obj.Object,
-						"title": obj.GetTitle(),
-						"url":   obj.URL,
-					})
-				}
+	server.RegisterTool("notion_list_blocks", mcp.ToolDef{
+		Description: "Convert Notion blocks to a simple list with IDs and content preview. Pass blocks from API-get-block-children.",
+		Properties: map[string]mcp.PropDef{
+			"blocks": {Type: "string", Description: "JSON array of Notion blocks from API-get-block-children results"},
+		},
+		Required: []string{"blocks"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		blocksJSON, _ := args["blocks"].(string)
+		if blocksJSON == "" {
+			return "", fmt.Errorf("blocks is required")
+		}
 
-				data, _ := json.MarshalIndent(output, "", "  ")
-				return string(data), nil
-			})
+		var blocks []map[string]any
+		if err := json.Unmarshal([]byte(blocksJSON), &blocks); err != nil {
+			return "", fmt.Errorf("invalid JSON: %w", err)
+		}
 
-			// Register notion_get_page tool
-			server.RegisterTool("notion_get_page", func(ctx any, args map[string]any) (string, error) {
-				pageID, _ := args["page_id"].(string)
-				if pageID == "" {
-					return "", fmt.Errorf("page_id is required")
-				}
+		if len(blocks) == 0 {
+			return "No blocks", nil
+		}
 
-				page, err := notionClient.GetPage(pageID)
-				if err != nil {
-					return "", err
-				}
-
-				// Format page properties
-				props := make(map[string]string)
-				for name := range page.Properties {
-					props[name] = page.GetPropertyText(name)
-				}
-
-				result := map[string]any{
-					"id":         page.ID,
-					"title":      page.GetTitle(),
-					"url":        page.URL,
-					"properties": props,
-				}
-
-				data, _ := json.MarshalIndent(result, "", "  ")
-				return string(data), nil
-			})
-
-			// Register notion_get_database tool
-			server.RegisterTool("notion_get_database", func(ctx any, args map[string]any) (string, error) {
-				dbID, _ := args["database_id"].(string)
-				if dbID == "" {
-					return "", fmt.Errorf("database_id is required")
-				}
-
-				db, err := notionClient.GetDatabase(dbID)
-				if err != nil {
-					return "", err
-				}
-
-				// Format schema
-				schema := make(map[string]any)
-				for name, prop := range db.Properties {
-					propInfo := map[string]any{
-						"type": prop.Type,
-					}
-					// Include options for select/status types
-					if prop.Select != nil {
-						var options []string
-						for _, opt := range prop.Select.Options {
-							options = append(options, opt.Name)
-						}
-						propInfo["options"] = options
-					}
-					if prop.MultiSelect != nil {
-						var options []string
-						for _, opt := range prop.MultiSelect.Options {
-							options = append(options, opt.Name)
-						}
-						propInfo["options"] = options
-					}
-					if prop.Status != nil {
-						var options []string
-						for _, opt := range prop.Status.Options {
-							options = append(options, opt.Name)
-						}
-						propInfo["options"] = options
-					}
-					schema[name] = propInfo
-				}
-
-				// Get title
-				var title string
-				if len(db.Title) > 0 {
-					title = db.Title[0].PlainText
-				}
-
-				result := map[string]any{
-					"id":     db.ID,
-					"title":  title,
-					"url":    db.URL,
-					"schema": schema,
-				}
-
-				data, _ := json.MarshalIndent(result, "", "  ")
-				return string(data), nil
-			})
-
-			// Register notion_query_database tool
-			server.RegisterTool("notion_query_database", func(ctx any, args map[string]any) (string, error) {
-				dbID, _ := args["database_id"].(string)
-				if dbID == "" {
-					return "", fmt.Errorf("database_id is required")
-				}
-
-				params := notion.QueryParams{
-					PageSize: 50,
-				}
-
-				// Parse optional filter JSON
-				if filterStr, ok := args["filter"].(string); ok && filterStr != "" {
-					var filter any
-					if err := json.Unmarshal([]byte(filterStr), &filter); err != nil {
-						return "", fmt.Errorf("invalid filter JSON: %w", err)
-					}
-					params.Filter = filter
-				}
-
-				// Optional sort
-				if sortProp, ok := args["sort_property"].(string); ok && sortProp != "" {
-					direction := "descending"
-					if d, ok := args["sort_direction"].(string); ok && d != "" {
-						direction = d
-					}
-					params.Sorts = []notion.Sort{{
-						Property:  sortProp,
-						Direction: direction,
-					}}
-				}
-
-				result, err := notionClient.QueryDatabase(dbID, params)
-				if err != nil {
-					return "", err
-				}
-
-				// Format results
-				var output []map[string]any
-				for _, obj := range result.Results {
-					props := make(map[string]string)
-					for name := range obj.Properties {
-						props[name] = obj.GetPropertyText(name)
-					}
-					output = append(output, map[string]any{
-						"id":         obj.ID,
-						"title":      obj.GetTitle(),
-						"properties": props,
-					})
-				}
-
-				data, _ := json.MarshalIndent(map[string]any{
-					"results":  output,
-					"has_more": result.HasMore,
-					"count":    len(output),
-				}, "", "  ")
-				return string(data), nil
+		var result []map[string]string
+		for _, b := range blocks {
+			id, _ := b["id"].(string)
+			blockType, _ := b["type"].(string)
+			result = append(result, map[string]string{
+				"id":   id,
+				"type": blockType,
 			})
 		}
-	} else {
-		log.Println("Notion integration disabled (NOTION_API_KEY not set)")
+
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return string(data), nil
+	})
+
+	server.RegisterTool("notion_insert_block", mcp.ToolDef{
+		Description: "Create a single Notion block JSON from type and markdown content. Use with API-patch-block-children.",
+		Properties: map[string]mcp.PropDef{
+			"block_type": {Type: "string", Description: "Block type: paragraph, heading_1, heading_2, heading_3, bulleted_list_item, numbered_list_item, to_do, quote, divider"},
+			"content":    {Type: "string", Description: "Text content (supports **bold**, *italic*, `code`, [link](url))"},
+		},
+		Required: []string{"block_type"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		blockType, _ := args["block_type"].(string)
+		content, _ := args["content"].(string)
+
+		if blockType == "" {
+			return "", fmt.Errorf("block_type is required")
+		}
+
+		block := notion.CreateBlock(blockType, content)
+		if block == nil {
+			return "", fmt.Errorf("unsupported block type: %s", blockType)
+		}
+
+		data, err := json.Marshal(block)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal block: %w", err)
+		}
+		return string(data), nil
+	})
+
+	server.RegisterTool("notion_update_block", mcp.ToolDef{
+		Description: "Create rich_text JSON from markdown for API-update-a-block. Returns the rich_text array only.",
+		Properties: map[string]mcp.PropDef{
+			"content": {Type: "string", Description: "Text content (supports **bold**, *italic*, `code`, [link](url))"},
+		},
+		Required: []string{"content"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		content, _ := args["content"].(string)
+		if content == "" {
+			return "", fmt.Errorf("content is required")
+		}
+
+		// Create a paragraph block and extract just the rich_text
+		block := notion.CreateBlock("paragraph", content)
+		if para, ok := block["paragraph"].(map[string]any); ok {
+			if rt, ok := para["rich_text"]; ok {
+				data, err := json.Marshal(rt)
+				if err != nil {
+					return "", fmt.Errorf("failed to marshal rich_text: %w", err)
+				}
+				return string(data), nil
+			}
+		}
+		return "[]", nil
+	})
+
+	// Notion sync tools (pull/diff/push for efficient markdown ↔ Notion sync)
+	// Tools will load NOTION_API_KEY from env or .env file at runtime
+	{
+		server.RegisterTool("notion_pull", mcp.ToolDef{
+			Description: "Pull a Notion page to a local markdown file. Fetches all blocks and comments, converts to markdown with frontmatter. Comments are preserved as blockquotes.",
+			Properties: map[string]mcp.PropDef{
+				"page_id":    {Type: "string", Description: "Notion page ID (with or without dashes)"},
+				"output_dir": {Type: "string", Description: "Directory to save the markdown file. Default: /tmp/notion"},
+			},
+			Required: []string{"page_id"},
+		}, func(ctx any, args map[string]any) (string, error) {
+			pageID, _ := args["page_id"].(string)
+			if pageID == "" {
+				return "", fmt.Errorf("page_id is required")
+			}
+			outputDir, _ := args["output_dir"].(string)
+
+			client, err := notion.NewSyncClient()
+			if err != nil {
+				return "", err
+			}
+
+			result, err := client.PullPage(pageID, outputDir)
+			if err != nil {
+				return "", err
+			}
+
+			return fmt.Sprintf("Pulled page '%s' to %s\n\nPage ID: %s\nContent length: %d characters",
+				result.Title, result.FilePath, result.PageID, len(result.Markdown)), nil
+		})
+
+		server.RegisterTool("notion_diff", mcp.ToolDef{
+			Description: "Compare a local markdown file against its Notion page. Shows what would change if pushed.",
+			Properties: map[string]mcp.PropDef{
+				"file_path": {Type: "string", Description: "Path to the local markdown file (must have notion_id in frontmatter)"},
+			},
+			Required: []string{"file_path"},
+		}, func(ctx any, args map[string]any) (string, error) {
+			filePath, _ := args["file_path"].(string)
+			if filePath == "" {
+				return "", fmt.Errorf("file_path is required")
+			}
+
+			client, err := notion.NewSyncClient()
+			if err != nil {
+				return "", err
+			}
+
+			return client.DiffPage(filePath)
+		})
+
+		server.RegisterTool("notion_push", mcp.ToolDef{
+			Description: "Push a local markdown file to Notion. Erases existing content and replaces with markdown content. Comments in the file are preserved as blockquotes.",
+			Properties: map[string]mcp.PropDef{
+				"file_path": {Type: "string", Description: "Path to the local markdown file (must have notion_id in frontmatter)"},
+			},
+			Required: []string{"file_path"},
+		}, func(ctx any, args map[string]any) (string, error) {
+			filePath, _ := args["file_path"].(string)
+			if filePath == "" {
+				return "", fmt.Errorf("file_path is required")
+			}
+
+			client, err := notion.NewSyncClient()
+			if err != nil {
+				return "", err
+			}
+
+			if err := client.PushPage(filePath); err != nil {
+				return "", err
+			}
+
+			return fmt.Sprintf("Successfully pushed %s to Notion", filePath), nil
+		})
+
+		log.Println("Notion sync tools registered (notion_pull, notion_diff, notion_push)")
 	}
 
 	// Google Calendar tools (only register if credentials are configured)
@@ -1429,7 +1677,12 @@ func main() {
 			log.Printf("Google Calendar integration enabled (%d calendars)", len(calendarClient.CalendarIDs()))
 
 			// Register calendar_today tool - get today's events
-			server.RegisterTool("calendar_today", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_today", mcp.ToolDef{
+				Description: "Get today's calendar events. Returns compact format by default (one line per event).",
+				Properties: map[string]mcp.PropDef{
+					"verbose": {Type: "boolean", Description: "If true, return full JSON with all event details. Default: false (compact format)"},
+				},
+			}, func(ctx any, args map[string]any) (string, error) {
 				events, err := calendarClient.GetTodayEvents(context.Background())
 				if err != nil {
 					return "", fmt.Errorf("failed to get today's events: %w", err)
@@ -1449,7 +1702,14 @@ func main() {
 			})
 
 			// Register calendar_upcoming tool - get upcoming events
-			server.RegisterTool("calendar_upcoming", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_upcoming", mcp.ToolDef{
+				Description: "Get upcoming calendar events within a time window. Returns compact format by default.",
+				Properties: map[string]mcp.PropDef{
+					"duration":    {Type: "string", Description: "Time window to look ahead (e.g., '24h', '7d'). Default: 24h"},
+					"max_results": {Type: "number", Description: "Maximum number of events to return. Default: 20"},
+					"verbose":     {Type: "boolean", Description: "If true, return full JSON with all event details. Default: false (compact format)"},
+				},
+			}, func(ctx any, args map[string]any) (string, error) {
 				// Default to next 24 hours
 				durationStr, _ := args["duration"].(string)
 				if durationStr == "" {
@@ -1485,7 +1745,16 @@ func main() {
 			})
 
 			// Register calendar_list_events tool - query events in a date range
-			server.RegisterTool("calendar_list_events", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_list_events", mcp.ToolDef{
+				Description: "Query calendar events in a specific date range. Returns compact format by default.",
+				Properties: map[string]mcp.PropDef{
+					"time_min":    {Type: "string", Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now"},
+					"time_max":    {Type: "string", Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 1 week from time_min"},
+					"max_results": {Type: "number", Description: "Maximum number of events to return. Default: 50"},
+					"query":       {Type: "string", Description: "Text to search for in event titles/descriptions (optional)"},
+					"verbose":     {Type: "boolean", Description: "If true, return full JSON with all event details. Default: false (compact format)"},
+				},
+			}, func(ctx any, args map[string]any) (string, error) {
 				// Parse time range
 				timeMinStr, _ := args["time_min"].(string)
 				timeMaxStr, _ := args["time_max"].(string)
@@ -1563,7 +1832,13 @@ func main() {
 			})
 
 			// Register calendar_free_busy tool - check availability
-			server.RegisterTool("calendar_free_busy", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_free_busy", mcp.ToolDef{
+				Description: "Check calendar availability/free-busy status for a time range.",
+				Properties: map[string]mcp.PropDef{
+					"time_min": {Type: "string", Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now"},
+					"time_max": {Type: "string", Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 24h from time_min"},
+				},
+			}, func(ctx any, args map[string]any) (string, error) {
 				timeMinStr, _ := args["time_min"].(string)
 				timeMaxStr, _ := args["time_max"].(string)
 
@@ -1629,7 +1904,13 @@ func main() {
 			})
 
 			// Register calendar_get_event tool - get a specific event by ID
-			server.RegisterTool("calendar_get_event", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_get_event", mcp.ToolDef{
+				Description: "Get details of a specific calendar event by ID.",
+				Properties: map[string]mcp.PropDef{
+					"event_id": {Type: "string", Description: "The event ID to retrieve"},
+				},
+				Required: []string{"event_id"},
+			}, func(ctx any, args map[string]any) (string, error) {
 				eventID, _ := args["event_id"].(string)
 				if eventID == "" {
 					return "", fmt.Errorf("event_id is required")
@@ -1645,7 +1926,18 @@ func main() {
 			})
 
 			// Register calendar_create_event tool - create a new event
-			server.RegisterTool("calendar_create_event", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("calendar_create_event", mcp.ToolDef{
+				Description: "Create a new calendar event.",
+				Properties: map[string]mcp.PropDef{
+					"summary":     {Type: "string", Description: "Event title/summary"},
+					"start":       {Type: "string", Description: "Start time (RFC3339 or YYYY-MM-DD for all-day events)"},
+					"end":         {Type: "string", Description: "End time (RFC3339 or YYYY-MM-DD). Default: 1 hour after start"},
+					"description": {Type: "string", Description: "Event description (optional)"},
+					"location":    {Type: "string", Description: "Event location (optional)"},
+					"attendees":   {Type: "array", Description: "List of attendee email addresses (optional)"},
+				},
+				Required: []string{"summary", "start"},
+			}, func(ctx any, args map[string]any) (string, error) {
 				summary, _ := args["summary"].(string)
 				if summary == "" {
 					return "", fmt.Errorf("summary is required")
@@ -1735,7 +2027,10 @@ func main() {
 			log.Printf("GitHub Projects integration enabled (org: %s)", githubClient.Org())
 
 			// Register github_list_projects tool
-			server.RegisterTool("github_list_projects", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("github_list_projects", mcp.ToolDef{
+				Description: "List all GitHub Projects v2 in the configured organization. Returns project number, title, and URL.",
+				Properties:  map[string]mcp.PropDef{},
+			}, func(ctx any, args map[string]any) (string, error) {
 				projects, err := githubClient.ListProjects()
 				if err != nil {
 					return "", fmt.Errorf("failed to list projects: %w", err)
@@ -1758,7 +2053,13 @@ func main() {
 			})
 
 			// Register github_get_project tool
-			server.RegisterTool("github_get_project", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("github_get_project", mcp.ToolDef{
+				Description: "Get a GitHub Project by number. Returns project details and field schema.",
+				Properties: map[string]mcp.PropDef{
+					"number": {Type: "number", Description: "The project number (visible in project URL)"},
+				},
+				Required: []string{"number"},
+			}, func(ctx any, args map[string]any) (string, error) {
 				number, ok := args["number"].(float64)
 				if !ok || number == 0 {
 					return "", fmt.Errorf("number is required")
@@ -1789,7 +2090,17 @@ func main() {
 			})
 
 			// Register github_project_items tool
-			server.RegisterTool("github_project_items", func(ctx any, args map[string]any) (string, error) {
+			server.RegisterTool("github_project_items", mcp.ToolDef{
+				Description: "Query items from a GitHub Project. Returns compact list format by default. Use status filter for views like backlog/sprint.",
+				Properties: map[string]mcp.PropDef{
+					"project":   {Type: "number", Description: "The project number"},
+					"status":    {Type: "string", Description: "Filter by Status field (e.g., 'Backlog', 'In Progress', 'Done')"},
+					"sprint":    {Type: "string", Description: "Filter by Sprint (e.g., 'Sprint 65'). Use 'backlog' for items with no sprint assigned."},
+					"max_items": {Type: "number", Description: "Maximum items to return (default 100)"},
+					"verbose":   {Type: "boolean", Description: "If true, return full JSON with all fields. Default: false (compact format)"},
+				},
+				Required: []string{"project"},
+			}, func(ctx any, args map[string]any) (string, error) {
 				projectNum, ok := args["project"].(float64)
 				if !ok || projectNum == 0 {
 					return "", fmt.Errorf("project number is required")
@@ -1853,7 +2164,10 @@ func main() {
 	// State introspection tools
 	stateInspector := state.NewInspector(statePath, graphDB)
 
-	server.RegisterTool("state_summary", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_summary", mcp.ToolDef{
+		Description: "Get summary of all state components (traces, percepts, threads, logs, queues).",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		summary, err := stateInspector.Summary()
 		if err != nil {
 			return "", err
@@ -1862,7 +2176,10 @@ func main() {
 		return string(data), nil
 	})
 
-	server.RegisterTool("state_health", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_health", mcp.ToolDef{
+		Description: "Run health checks on state and get recommendations for cleanup.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		health, err := stateInspector.Health()
 		if err != nil {
 			return "", err
@@ -1871,7 +2188,14 @@ func main() {
 		return string(data), nil
 	})
 
-	server.RegisterTool("state_traces", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_traces", mcp.ToolDef{
+		Description: "Manage memory traces. Actions: list, show, delete, clear, regen_core.",
+		Properties: map[string]mcp.PropDef{
+			"action":     {Type: "string", Description: "Action: list (default), show, delete, clear, regen_core"},
+			"id":         {Type: "string", Description: "Trace ID (for show/delete)"},
+			"clear_core": {Type: "boolean", Description: "If true with clear action, clears core traces instead of non-core"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -1932,7 +2256,13 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_percepts", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_percepts", mcp.ToolDef{
+		Description: "Manage percepts (short-term memory). Actions: list, count, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action":     {Type: "string", Description: "Action: list (default), count, clear"},
+			"older_than": {Type: "string", Description: "Duration for clear (e.g., '1h', '30m'). If omitted, clears all."},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -1975,7 +2305,14 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_threads", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_threads", mcp.ToolDef{
+		Description: "Manage threads (working memory). Actions: list, show, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: list (default), show, clear"},
+			"id":     {Type: "string", Description: "Thread ID (for show)"},
+			"status": {Type: "string", Description: "Filter for clear (active, paused, frozen, complete)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -2020,7 +2357,14 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_logs", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_logs", mcp.ToolDef{
+		Description: "Manage journal and activity logs. Actions: tail, truncate.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: tail (default), truncate"},
+			"count":  {Type: "integer", Description: "Number of entries for tail (default 20)"},
+			"keep":   {Type: "integer", Description: "Entries to keep for truncate (default 100)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "tail"
@@ -2054,7 +2398,12 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_queues", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_queues", mcp.ToolDef{
+		Description: "Manage message queues (inbox, outbox, signals). Actions: list, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: list (default), clear"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -2080,7 +2429,12 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_sessions", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_sessions", mcp.ToolDef{
+		Description: "Manage session tracking. Actions: list, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: list (default), clear"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -2106,13 +2460,196 @@ func main() {
 		}
 	})
 
-	server.RegisterTool("state_regen_core", func(ctx any, args map[string]any) (string, error) {
+	server.RegisterTool("state_regen_core", mcp.ToolDef{
+		Description: "Regenerate core identity traces from core_seed.md. Clears existing core traces first.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
 		seedPath := "seed/core_seed.md"
 		count, err := stateInspector.RegenCore(seedPath)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("Regenerated %d core traces from %s", count, seedPath), nil
+	})
+
+	// Memory flush/reset tools for testing recall without conversation context
+	server.RegisterTool("memory_flush", mcp.ToolDef{
+		Description: "Flush the conversation buffer to memory. Clears conversation context but keeps session running. Pending thoughts will be extracted by main process.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
+		// Force extraction on any pending thoughts in inbox, then clear conversation buffer
+		// This simulates buffer expiration for memory testing
+
+		// Read and process any pending thoughts from inbox
+		inboxPath := filepath.Join(queuesPath, "inbox.jsonl")
+		data, err := os.ReadFile(inboxPath)
+		if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("failed to read inbox: %w", err)
+		}
+
+		// Count thoughts processed
+		thoughtCount := 0
+		if len(data) > 0 {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				var msg map[string]any
+				if err := json.Unmarshal([]byte(line), &msg); err != nil {
+					continue
+				}
+				// Count thought-type messages
+				if subtype, ok := msg["subtype"].(string); ok && subtype == "thought" {
+					thoughtCount++
+				}
+			}
+		}
+
+		// Clear conversation buffer file
+		bufferPath := filepath.Join(statePath, "buffers.json")
+		if err := os.WriteFile(bufferPath, []byte("{}"), 0644); err != nil {
+			return "", fmt.Errorf("failed to clear buffer: %w", err)
+		}
+
+		// Trigger consolidation in main process
+		triggerPath := filepath.Join(statePath, "consolidate.trigger")
+		if err := os.WriteFile(triggerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write consolidation trigger: %v", err)
+		}
+
+		log.Printf("Memory flush: cleared conversation buffer, triggered consolidation, %d thoughts pending extraction", thoughtCount)
+		return fmt.Sprintf("Memory flushed. Conversation buffer cleared, consolidation triggered. %d thoughts pending.", thoughtCount), nil
+	})
+
+	server.RegisterTool("memory_reset", mcp.ToolDef{
+		Description: "Reset memory completely. Clears conversation buffer AND kills this Claude session. Use for clean slate testing.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(_ any, _ map[string]any) (string, error) {
+		// FIRST: Write reset pending flag to prevent new sessions from starting
+		// with the old session ID. This must happen BEFORE anything else.
+		resetPendingPath := filepath.Join(statePath, "reset.pending")
+		if err := os.WriteFile(resetPendingPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write reset pending flag: %v", err)
+		}
+		log.Printf("Memory reset: set reset.pending flag to block new sessions")
+
+		// Trigger consolidation (main process will handle it)
+		triggerPath := filepath.Join(statePath, "consolidate.trigger")
+		if err := os.WriteFile(triggerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write consolidation trigger: %v", err)
+		}
+
+		// Signal main process to clear in-memory buffer
+		bufferClearPath := filepath.Join(statePath, "buffer.clear")
+		if err := os.WriteFile(bufferClearPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write buffer clear trigger: %v", err)
+		}
+
+		// Give consolidation and buffer clear a moment to process
+		time.Sleep(3 * time.Second)
+
+		// Clear conversation buffer on disk (redundant but ensures clean state)
+		// Note: buffer is stored in system/buffers.json, not statePath/buffers.json
+		bufferPath := filepath.Join(systemPath, "buffers.json")
+		if err := os.WriteFile(bufferPath, []byte("{}"), 0644); err != nil {
+			return "", fmt.Errorf("failed to clear buffer: %w", err)
+		}
+
+		// Close Claude sessions (this will end the current session)
+		cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}")
+		output, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("failed to list tmux windows: %w", err)
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		var closedWindows []string
+
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 4)
+			if len(parts) < 4 {
+				continue
+			}
+			sessionName := parts[0]
+			windowIndex := parts[1]
+			windowName := parts[2]
+			currentCommand := parts[3]
+
+			// Identify Claude sessions
+			isVersion := len(currentCommand) > 0 && strings.Count(currentCommand, ".") >= 1 &&
+				currentCommand[0] >= '0' && currentCommand[0] <= '9'
+			isClaudeCmd := strings.Contains(strings.ToLower(currentCommand), "claude")
+
+			// Check window name pattern
+			hasClaudeWindowName := false
+			if len(windowName) > 0 {
+				dashIdx := strings.LastIndex(windowName, "-")
+				if dashIdx > 0 && dashIdx < len(windowName)-1 {
+					prefix := windowName[:dashIdx]
+					suffix := windowName[dashIdx+1:]
+					allLetters := true
+					for _, c := range prefix {
+						if c < 'a' || c > 'z' {
+							allLetters = false
+							break
+						}
+					}
+					allDigits := true
+					for _, c := range suffix {
+						if c < '0' || c > '9' {
+							allDigits = false
+							break
+						}
+					}
+					hasClaudeWindowName = allLetters && allDigits && len(prefix) > 0 && len(suffix) > 0
+				}
+			}
+
+			if isVersion || isClaudeCmd || hasClaudeWindowName {
+				if windowName == "monitor" || currentCommand == "zsh" || currentCommand == "bash" {
+					continue
+				}
+
+				target := fmt.Sprintf("%s:%s", sessionName, windowIndex)
+				killCmd := exec.Command("tmux", "kill-window", "-t", target)
+				if err := killCmd.Run(); err == nil {
+					closedWindows = append(closedWindows, windowName)
+					log.Printf("Memory reset: closed Claude session %s", windowName)
+				}
+			}
+		}
+
+		// Write reset_session signal to inbox
+		// This tells the main bud process to call session.Reset() which generates a new
+		// session ID. Old session files are then orphaned and never used again.
+		// We do NOT delete session files here because doing so while a tool call is in
+		// progress causes a race condition: the tool_result gets written to a new orphaned
+		// session file without its corresponding tool_use.
+		resetSignal := map[string]any{
+			"id":        fmt.Sprintf("signal-%d", time.Now().UnixNano()),
+			"type":      "signal",
+			"subtype":   "reset_session",
+			"content":   "Memory reset requested",
+			"timestamp": time.Now().Format(time.RFC3339),
+			"status":    "pending",
+		}
+
+		inboxPath := filepath.Join(queuesPath, "inbox.jsonl")
+		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("Memory reset: warning, failed to write reset signal: %v", err)
+		} else {
+			data, _ := json.Marshal(resetSignal)
+			f.WriteString(string(data) + "\n")
+			f.Close()
+		}
+
+		log.Printf("Memory reset: buffer cleared, %d Claude sessions closed, reset signal sent", len(closedWindows))
+		return fmt.Sprintf("Memory reset complete. Buffer cleared. Closed %d Claude sessions: %v. Session will restart fresh.", len(closedWindows), closedWindows), nil
 	})
 
 	// Run server

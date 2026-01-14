@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	_ "modernc.org/sqlite"
 	"gopkg.in/yaml.v3"
 )
 
@@ -197,8 +199,13 @@ func runScenario(scenario *Scenario) bool {
 			stopBud()
 			time.Sleep(1 * time.Second)
 
-			// Clear per-session state but keep memory
-			os.Remove(filepath.Join(statePath, "system", "threads.json"))
+			// Clear per-session state but keep memory (v2 architecture)
+			// - buffers.json: conversation buffer (should be cleared for new session)
+			// - pending_queue.json: focus queue (should be cleared)
+			// - inbox.jsonl: message queue (should be cleared)
+			// - memory.db: keep! This is the long-term memory we're testing
+			os.Remove(filepath.Join(statePath, "system", "buffers.json"))
+			os.Remove(filepath.Join(statePath, "system", "pending_queue.json"))
 			os.Remove(filepath.Join(statePath, "system", "queues", "inbox.jsonl"))
 			lastOutboxOffset = 0
 
@@ -398,34 +405,63 @@ func waitForResponse(timeout time.Duration) string {
 }
 
 func showTraces() {
-	tracesPath := filepath.Join(statePath, "system", "traces.json")
+	// v2 architecture: traces are in SQLite database
+	dbPath := filepath.Join(statePath, "system", "memory.db")
 
-	data, err := os.ReadFile(tracesPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		log.Printf("No traces found: %v", err)
+		log.Printf("Failed to open memory database: %v", err)
 		return
 	}
+	defer db.Close()
 
-	var tracesFile struct {
-		Traces []struct {
-			Content  string `json:"content"`
-			Strength int    `json:"strength"`
-			IsCore   bool   `json:"is_core"`
-		} `json:"traces"`
-	}
-
-	if err := json.Unmarshal(data, &tracesFile); err != nil {
-		log.Printf("Failed to parse traces: %v", err)
+	rows, err := db.Query(`
+		SELECT summary, strength, is_core, activation
+		FROM traces
+		ORDER BY is_core DESC, strength DESC
+	`)
+	if err != nil {
+		log.Printf("Failed to query traces: %v", err)
 		return
 	}
+	defer rows.Close()
 
-	log.Printf("Found %d traces:", len(tracesFile.Traces))
-	for _, t := range tracesFile.Traces {
+	var count int
+	for rows.Next() {
+		var summary string
+		var strength int
+		var isCore bool
+		var activation float64
+
+		if err := rows.Scan(&summary, &strength, &isCore, &activation); err != nil {
+			log.Printf("Failed to scan trace: %v", err)
+			continue
+		}
+
 		coreMarker := ""
-		if t.IsCore {
+		if isCore {
 			coreMarker = " [core]"
 		}
-		log.Printf("  [strength=%d%s] %s", t.Strength, coreMarker, truncate(t.Content, 80))
+		log.Printf("  [strength=%d, activation=%.2f%s] %s", strength, activation, coreMarker, truncate(summary, 80))
+		count++
+	}
+
+	if count == 0 {
+		log.Printf("No traces found in memory database")
+	} else {
+		log.Printf("Found %d traces total", count)
+	}
+
+	// Also show episodes count for debugging
+	var episodeCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM episodes").Scan(&episodeCount); err == nil {
+		log.Printf("Episodes in memory: %d", episodeCount)
+	}
+
+	// Show entities count
+	var entityCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entityCount); err == nil {
+		log.Printf("Entities in memory: %d", entityCount)
 	}
 }
 
@@ -451,23 +487,27 @@ func waitForClaudeIdle(timeout time.Duration) {
 		return
 	}
 
-	// Find thread windows
-	var threadWindows []string
+	// Find Claude windows to monitor
+	// v2 architecture: single "bud-main" window
+	// v1 architecture: "thread-*" windows
+	var claudeWindows []string
 	for _, name := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if strings.HasPrefix(name, "thread-") {
-			threadWindows = append(threadWindows, name)
+		if name == "bud-main" || strings.HasPrefix(name, "thread-") {
+			claudeWindows = append(claudeWindows, name)
 		}
 	}
 
-	if len(threadWindows) == 0 {
+	if len(claudeWindows) == 0 {
+		// No Claude windows - probably using non-interactive mode (subprocess)
+		// Just use a small delay
 		time.Sleep(2 * time.Second)
 		return
 	}
 
-	// Wait for all thread windows to show the prompt (not busy)
+	// Wait for all Claude windows to show the prompt (not busy)
 	for time.Now().Before(deadline) {
 		allIdle := true
-		for _, window := range threadWindows {
+		for _, window := range claudeWindows {
 			target := fmt.Sprintf("bud2:%s", window)
 			cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-5")
 			output, err := cmd.Output()

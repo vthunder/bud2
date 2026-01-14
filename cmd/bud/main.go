@@ -19,8 +19,11 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/buffer"
+	"github.com/vthunder/bud2/internal/consolidate"
 	"github.com/vthunder/bud2/internal/effectors"
+	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/executive"
+	"github.com/vthunder/bud2/internal/extract"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
@@ -201,6 +204,18 @@ func main() {
 	}
 	log.Println("[main] Conversation buffer initialized")
 
+	// Entity extractor - using Ollama with qwen2.5:7b for NER
+	ollamaClient := embedding.NewClient("", "") // defaults: localhost:11434, nomic-embed-text
+	ollamaClient.SetGenerationModel("qwen2.5:7b")
+	entityExtractor := extract.NewDeepExtractor(ollamaClient)
+	invalidator := extract.NewInvalidator(ollamaClient)
+	entityResolver := extract.NewResolver(graphDB, ollamaClient)
+	log.Println("[main] Entity extractor initialized (Ollama qwen2.5:7b)")
+
+	// Memory consolidator - groups related episodes into traces
+	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient)
+	log.Println("[main] Memory consolidator initialized")
+
 	// Keep inbox/outbox for message queue (still useful)
 	inbox := memory.NewInbox(filepath.Join(queuesPath, "inbox.jsonl"))
 	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
@@ -327,9 +342,10 @@ func main() {
 	// Wire reflex engine to attention system for proactive mode
 	reflexEngine.SetAttention(exec.GetAttention())
 
-	// handleSignal processes a signal-type inbox message (budget tracking, no percept)
+	// handleSignal processes a signal-type inbox message (budget tracking, session control)
 	handleSignal := func(msg *memory.InboxMessage) {
-		if msg.Subtype == "done" {
+		switch msg.Subtype {
+		case "done":
 			// Session completion signal
 			sessionID := ""
 			source := "signal_done"
@@ -346,7 +362,170 @@ func main() {
 					log.Printf("[main] Signal: session %s completed via %s (%.1f sec)", sessionID, source, session.DurationSec)
 				}
 			}
+
+		case "reset_session":
+			// Memory reset requested - generate new session ID so old context is not loaded
+			log.Printf("[main] Signal: reset_session - generating new session ID")
+			exec.ResetSession()
 		}
+	}
+
+	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
+	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
+		if msg == nil || msg.Content == "" {
+			return
+		}
+
+		// Create episode (Tier 1)
+		episode := &graph.Episode{
+			ID:                msg.ID,
+			Content:           msg.Content,
+			Source:            "discord",
+			Author:            msg.Author,
+			AuthorID:          msg.AuthorID,
+			Channel:           msg.ChannelID,
+			TimestampEvent:    msg.Timestamp,
+			TimestampIngested: time.Now(),
+			CreatedAt:         time.Now(),
+		}
+
+		// Extract v2 metadata from Extra
+		if msg.Extra != nil {
+			if dialogueAct, ok := msg.Extra["dialogue_act"].(string); ok {
+				episode.DialogueAct = dialogueAct
+			}
+			if replyTo, ok := msg.Extra["reply_to"].(string); ok {
+				episode.ReplyTo = replyTo
+			}
+		}
+
+		if err := graphDB.AddEpisode(episode); err != nil {
+			log.Printf("[ingest] Failed to store episode: %v", err)
+			return
+		}
+
+		// Extract entities and relationships (Tier 2)
+		result, err := entityExtractor.ExtractAll(msg.Content)
+		if err != nil {
+			log.Printf("[ingest] Entity extraction failed: %v", err)
+			result = &extract.ExtractionResult{} // empty result
+		}
+
+		// Resolve and store entities using fuzzy matching
+		entityIDMap := make(map[string]string) // name -> entityID for relationship linking
+		for _, ext := range result.Entities {
+			// Use resolver for fuzzy matching and deduplication
+			resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
+			if err != nil {
+				log.Printf("[ingest] Failed to resolve entity %s: %v", ext.Name, err)
+				continue
+			}
+			if resolveResult == nil || resolveResult.Entity == nil {
+				log.Printf("[ingest] Failed to resolve entity %s: nil result", ext.Name)
+				continue
+			}
+
+			entity := resolveResult.Entity
+			entityIDMap[strings.ToLower(ext.Name)] = entity.ID
+
+			// Log resolution method for debugging
+			if resolveResult.MatchedBy == "embedding" {
+				log.Printf("[ingest] Merged '%s' with existing entity '%s' via embedding similarity",
+					ext.Name, entity.Name)
+			}
+
+			// Link episode to entity
+			if err := graphDB.LinkEpisodeToEntity(msg.ID, entity.ID); err != nil {
+				log.Printf("[ingest] Failed to link episode to entity: %v", err)
+			}
+		}
+
+		// Store relationships with temporal invalidation detection
+		for _, rel := range result.Relationships {
+			subjectID := entityIDMap[strings.ToLower(rel.Subject)]
+			objectID := entityIDMap[strings.ToLower(rel.Object)]
+
+			// Handle "speaker" reference - map to owner entity
+			speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
+			if speakerTerms[strings.ToLower(rel.Subject)] {
+				subjectID = "entity-PERSON-owner"
+				// Ensure owner entity exists
+				graphDB.AddEntity(&graph.Entity{
+					ID:   "entity-PERSON-owner",
+					Name: "Owner",
+					Type: graph.EntityPerson,
+				})
+			}
+			if speakerTerms[strings.ToLower(rel.Object)] {
+				objectID = "entity-PERSON-owner"
+				// Ensure owner entity exists
+				graphDB.AddEntity(&graph.Entity{
+					ID:   "entity-PERSON-owner",
+					Name: "Owner",
+					Type: graph.EntityPerson,
+				})
+			}
+
+			// Skip if we still don't have both entities
+			if subjectID == "" || objectID == "" {
+				continue
+			}
+
+			edgeType := extract.PredicateToEdgeType(rel.Predicate)
+
+			// Check for invalidation candidates (existing relations that might be contradicted)
+			candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
+			if err != nil {
+				log.Printf("[ingest] Failed to find invalidation candidates: %v", err)
+			}
+
+			// Add the new relationship first to get its ID
+			newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, msg.ID)
+			if err != nil {
+				log.Printf("[ingest] Failed to store relationship %s->%s: %v", rel.Subject, rel.Object, err)
+				continue
+			}
+
+			// If there are candidates and this is an exclusive relation type, check for contradictions
+			if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
+				// Build entity name map for the invalidation prompt
+				entityNames := make(map[string]string)
+				for name, id := range entityIDMap {
+					entityNames[id] = name
+				}
+
+				invResult, err := invalidator.CheckInvalidation(
+					rel.Subject, rel.Predicate, rel.Object,
+					candidates, entityNames,
+				)
+				if err != nil {
+					log.Printf("[ingest] Invalidation check failed: %v", err)
+				} else if len(invResult.InvalidatedIDs) > 0 {
+					for _, oldID := range invResult.InvalidatedIDs {
+						if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
+							log.Printf("[ingest] Failed to invalidate relation %d: %v", oldID, err)
+						} else {
+							log.Printf("[ingest] Invalidated relation %d (reason: %s)", oldID, invResult.Reason)
+						}
+					}
+				}
+			}
+		}
+
+		if len(result.Entities) > 0 || len(result.Relationships) > 0 {
+			names := make([]string, len(result.Entities))
+			for i, e := range result.Entities {
+				names[i] = e.Name
+			}
+			log.Printf("[ingest] Stored episode %s with %d entities, %d relationships: %v",
+				msg.ID, len(result.Entities), len(result.Relationships), names)
+		} else {
+			log.Printf("[ingest] Stored episode %s (no entities/relationships extracted)", msg.ID)
+		}
+
+		// Traces (Tier 3) are created by consolidation, not on ingest.
+		// Episodes stay unconsolidated until memory_flush or periodic consolidation runs.
+		// This allows grouping related messages into single meaningful traces.
 	}
 
 	// Process percept helper - checks reflexes first, then routes to focus queue
@@ -638,6 +817,9 @@ func main() {
 						}
 
 					default: // "message" or empty (backward compat)
+						// Ingest to memory graph (Tier 1: episode, Tier 2: entities)
+						ingestToMemoryGraph(msg)
+
 						percept := msg.ToPercept()
 						if percept != nil {
 							processPercept(percept)
@@ -742,6 +924,72 @@ func main() {
 		log.Println("[main] Autonomous mode disabled (set AUTONOMOUS_ENABLED=true to enable)")
 	}
 
+	// Start trigger file watcher goroutine (runs immediately, no delay)
+	// This handles buffer.clear and consolidate.trigger signals from MCP
+	consolidationTriggerFile := filepath.Join(statePath, "consolidate.trigger")
+	bufferClearTriggerFile := filepath.Join(statePath, "buffer.clear")
+	go func() {
+		triggerCheckTicker := time.NewTicker(500 * time.Millisecond)
+		defer triggerCheckTicker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-triggerCheckTicker.C:
+				// Check for buffer clear trigger (written by MCP memory_reset)
+				// This must be processed quickly for memory_reset to work correctly
+				if _, err := os.Stat(bufferClearTriggerFile); err == nil {
+					os.Remove(bufferClearTriggerFile)
+					conversationBuffer.Clear()
+					log.Println("[main] Conversation buffer cleared (memory_reset)")
+				}
+				// Check for consolidation trigger (written by MCP memory_flush)
+				if _, err := os.Stat(consolidationTriggerFile); err == nil {
+					os.Remove(consolidationTriggerFile)
+					log.Printf("[consolidate] Running memory consolidation (trigger: memory_flush)...")
+					count, err := memoryConsolidator.Run()
+					if err != nil {
+						log.Printf("[consolidate] Error: %v", err)
+					} else if count > 0 {
+						log.Printf("[consolidate] Created %d traces from unconsolidated episodes", count)
+					} else {
+						log.Println("[consolidate] No unconsolidated episodes found")
+					}
+				}
+			}
+		}
+	}()
+	log.Printf("[main] Trigger file watcher started (buffer.clear, consolidate.trigger)")
+
+	// Start periodic memory consolidation goroutine (runs every 10 minutes)
+	consolidationInterval := 10 * time.Minute
+	go func() {
+		consolidationTicker := time.NewTicker(consolidationInterval)
+		defer consolidationTicker.Stop()
+
+		// Initial delay before first periodic consolidation
+		time.Sleep(2 * time.Minute)
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-consolidationTicker.C:
+				log.Printf("[consolidate] Running memory consolidation (trigger: periodic)...")
+				count, err := memoryConsolidator.Run()
+				if err != nil {
+					log.Printf("[consolidate] Error: %v", err)
+				} else if count > 0 {
+					log.Printf("[consolidate] Created %d traces from unconsolidated episodes", count)
+				} else {
+					log.Println("[consolidate] No unconsolidated episodes found")
+				}
+			}
+		}
+	}()
+	log.Printf("[main] Memory consolidation scheduled (interval: %v)", consolidationInterval)
+
 	log.Println("[main] All subsystems started. Press Ctrl+C to stop.")
 
 	// Wait for shutdown signal
@@ -765,6 +1013,14 @@ func main() {
 	}
 	if calendarSense != nil {
 		calendarSense.Stop()
+	}
+
+	// Run final consolidation before shutdown
+	log.Println("[main] Running final memory consolidation...")
+	if count, err := memoryConsolidator.Run(); err != nil {
+		log.Printf("Warning: final consolidation failed: %v", err)
+	} else {
+		log.Printf("[main] Final consolidation created %d traces", count)
 	}
 
 	// Persist state
@@ -903,7 +1159,7 @@ func seedGuides(statePath string) {
 	}
 }
 
-// writeMCPConfig generates .mcp.json with the correct state path
+// writeMCPConfig ensures .mcp.json has the bud2 server configured, preserving other servers
 func writeMCPConfig(statePath string) error {
 	absStatePath, err := filepath.Abs(statePath)
 	if err != nil {
@@ -916,16 +1172,29 @@ func writeMCPConfig(statePath string) error {
 	}
 	budMCPPath := filepath.Join(filepath.Dir(exe), "bud-mcp")
 
-	config := map[string]any{
-		"mcpServers": map[string]any{
-			"bud2": map[string]any{
-				"type":    "stdio",
-				"command": budMCPPath,
-				"args":    []string{},
-				"env": map[string]string{
-					"BUD_STATE_PATH": absStatePath,
-				},
-			},
+	// Read existing config if present
+	config := map[string]any{}
+	if data, err := os.ReadFile(".mcp.json"); err == nil {
+		if err := json.Unmarshal(data, &config); err != nil {
+			log.Printf("[main] Warning: existing .mcp.json invalid, will overwrite: %v", err)
+			config = map[string]any{}
+		}
+	}
+
+	// Ensure mcpServers map exists
+	servers, ok := config["mcpServers"].(map[string]any)
+	if !ok {
+		servers = map[string]any{}
+		config["mcpServers"] = servers
+	}
+
+	// Add/update bud2 server
+	servers["bud2"] = map[string]any{
+		"type":    "stdio",
+		"command": budMCPPath,
+		"args":    []string{},
+		"env": map[string]string{
+			"BUD_STATE_PATH": absStatePath,
 		},
 	}
 
@@ -938,6 +1207,6 @@ func writeMCPConfig(statePath string) error {
 		return err
 	}
 
-	log.Printf("[main] Generated .mcp.json with BUD_STATE_PATH=%s", absStatePath)
+	log.Printf("[main] Updated .mcp.json with BUD_STATE_PATH=%s (preserved %d other servers)", absStatePath, len(servers)-1)
 	return nil
 }
