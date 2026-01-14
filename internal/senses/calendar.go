@@ -192,9 +192,10 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 		Timestamp: nowUTC,
 		Status:    "pending",
 		Extra: map[string]any{
-			"source":      "calendar",
-			"event_count": len(relevantEvents),
-			"date":        today.Format("2006-01-02"),
+			"source":       "calendar",
+			"impulse_type": "daily_agenda",
+			"event_count":  len(relevantEvents),
+			"date":         today.Format("2006-01-02"),
 		},
 	}
 

@@ -154,20 +154,28 @@ func (c *Client) Summarize(fragments []string) (string, error) {
 		return "", fmt.Errorf("no fragments to summarize")
 	}
 
-	// If only one fragment and it's short, just return it
-	if len(fragments) == 1 && len(fragments[0]) < 200 {
-		return fragments[0], nil
-	}
-
 	// Build prompt with Bud's perspective
-	prompt := `You are Bud, an AI assistant. Summarize this conversation as a memory from your perspective.
-- Refer to the human as "the user" or "my owner"
-- Use first person for your own statements ("I told them...", "I remembered...")
-- Focus on key facts and what's worth remembering
-- Be concise (1-2 sentences max)
-- Output only the summary, no commentary
+	// Always summarize, even for short messages, to convert raw text to memory format
+	prompt := `You are Bud, an AI assistant. Convert this into a memory from your perspective.
 
-Conversation:
+Guidelines:
+- Refer to the human as "the user" or "the owner"
+- Use first person for your own perspective ("I learned that...", "The user told me...")
+- Capture key facts worth remembering: names, preferences, relationships, dates, facts
+- Be concise (1-2 sentences max)
+- Output ONLY the memory, no commentary or explanation
+
+Examples:
+Input: "My favorite coffee shop is Blue Bottle on Market Street"
+Memory: The user's favorite coffee shop is Blue Bottle on Market Street.
+
+Input: "Sarah is my cofounder, she handles product"
+Memory: I learned that Sarah is the user's cofounder who handles product.
+
+Input: "Hey can you help me with something?"
+Memory: The user asked for help with something.
+
+Input:
 `
 	for _, f := range fragments {
 		prompt += f + "\n"

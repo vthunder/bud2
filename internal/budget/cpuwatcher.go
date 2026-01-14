@@ -209,9 +209,9 @@ func (w *CPUWatcher) findClaudeProcesses() []*process.Process {
 		}
 
 		// Track Claude CLI sessions that bud spawned
-		// These have either --session-id (new sessions) or --continue (resumed sessions)
+		// These have either --session-id (new sessions) or --resume (resumed sessions)
 		if strings.Contains(cmdline, "claude") &&
-			(strings.Contains(cmdline, "--session-id") || strings.Contains(cmdline, "--continue")) {
+			(strings.Contains(cmdline, "--session-id") || strings.Contains(cmdline, "--resume")) {
 			result = append(result, proc)
 		}
 	}

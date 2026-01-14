@@ -3,12 +3,16 @@ package effectors
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/vthunder/bud2/internal/types"
 )
+
+// MaxDiscordMessageLength is Discord's maximum message length
+const MaxDiscordMessageLength = 2000
 
 // retryState tracks retry information for an action
 type retryState struct {
@@ -265,17 +269,83 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 		return fmt.Errorf("missing content")
 	}
 
-	_, err := e.getSession().ChannelMessageSend(channelID, content)
-	if err == nil {
-		if e.onSend != nil {
-			e.onSend(channelID, content)
+	// Chunk message if too long
+	chunks := chunkMessage(content, MaxDiscordMessageLength)
+
+	for i, chunk := range chunks {
+		_, err := e.getSession().ChannelMessageSend(channelID, chunk)
+		if err != nil {
+			return fmt.Errorf("failed to send chunk %d/%d: %w", i+1, len(chunks), err)
 		}
-		if e.onAction != nil {
-			source, _ := action.Payload["source"].(string)
-			e.onAction("send_message", channelID, content, source)
+
+		// Small delay between chunks to maintain order
+		if i < len(chunks)-1 {
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	return err
+
+	// Callbacks use full content
+	if e.onSend != nil {
+		e.onSend(channelID, content)
+	}
+	if e.onAction != nil {
+		source, _ := action.Payload["source"].(string)
+		e.onAction("send_message", channelID, content, source)
+	}
+	return nil
+}
+
+// chunkMessage splits a message into chunks that fit within maxLen.
+// It tries to split on paragraph boundaries, then line boundaries, then word boundaries.
+func chunkMessage(content string, maxLen int) []string {
+	if len(content) <= maxLen {
+		return []string{content}
+	}
+
+	var chunks []string
+	remaining := content
+
+	for len(remaining) > 0 {
+		if len(remaining) <= maxLen {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		// Find a good split point
+		splitAt := findSplitPoint(remaining, maxLen)
+		chunks = append(chunks, strings.TrimRight(remaining[:splitAt], " \n"))
+		remaining = strings.TrimLeft(remaining[splitAt:], " \n")
+	}
+
+	return chunks
+}
+
+// findSplitPoint finds the best place to split content within maxLen.
+// Priority: paragraph break > line break > word break > hard cut
+func findSplitPoint(content string, maxLen int) int {
+	if len(content) <= maxLen {
+		return len(content)
+	}
+
+	searchArea := content[:maxLen]
+
+	// Try to find paragraph break (double newline)
+	if idx := strings.LastIndex(searchArea, "\n\n"); idx > maxLen/2 {
+		return idx + 2
+	}
+
+	// Try to find line break
+	if idx := strings.LastIndex(searchArea, "\n"); idx > maxLen/2 {
+		return idx + 1
+	}
+
+	// Try to find word break (space)
+	if idx := strings.LastIndex(searchArea, " "); idx > maxLen/2 {
+		return idx + 1
+	}
+
+	// Hard cut at maxLen
+	return maxLen
 }
 
 func (e *DiscordEffector) addReaction(action *types.Action) error {

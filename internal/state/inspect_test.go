@@ -10,7 +10,7 @@ func TestInspector_Summary(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupTestState(t, tmpDir)
 
-	inspector := NewInspector(tmpDir)
+	inspector := NewInspector(tmpDir, nil)
 	summary, err := inspector.Summary()
 	if err != nil {
 		t.Fatalf("Summary failed: %v", err)
@@ -25,7 +25,7 @@ func TestInspector_Health(t *testing.T) {
 	tmpDir := t.TempDir()
 	setupTestState(t, tmpDir)
 
-	inspector := NewInspector(tmpDir)
+	inspector := NewInspector(tmpDir, nil)
 	health, err := inspector.Health()
 	if err != nil {
 		t.Fatalf("Health failed: %v", err)

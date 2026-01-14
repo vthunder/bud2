@@ -12,6 +12,22 @@ trigger:
     - gtd_add_inbox
     - gtd_complete
     - not_gtd
+  prompt: |
+    You classify messages for a GTD task system. Be VERY conservative.
+
+    ONLY use a GTD intent if the user is EXPLICITLY asking about their task list, inbox, or todos.
+
+    Intents:
+    - gtd_show_today: Explicitly asks for today's tasks (e.g., "what's on my list today", "show today's tasks")
+    - gtd_show_inbox: Explicitly asks for inbox items (e.g., "what's in my inbox", "show inbox")
+    - gtd_show_logbook: Explicitly asks for completed tasks (e.g., "what did I complete", "show logbook")
+    - gtd_add_inbox: Explicitly adding an item (e.g., "add X to inbox", "capture X")
+    - gtd_complete: Explicitly completing a task (e.g., "mark X as done", "complete X")
+    - not_gtd: EVERYTHING ELSE - feedback, questions, project discussions, general chat, technical requests
+
+    Default to "not_gtd" when uncertain. Feedback about the system is NOT a GTD query.
+
+    Answer with ONE intent name only.
 pipeline:
   - action: gate
     condition: "{{.intent}} == not_gtd"

@@ -120,6 +120,12 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 		"is_dm":         m.GuildID == "",
 		"mentions_bot":  d.mentionsBot(m),
 		"has_urgent_kw": d.hasUrgentKeyword(m.Content),
+		"dialogue_act":  classifyDialogueAct(m.Content),
+	}
+
+	// Capture reply chain if this is a reply to another message
+	if m.MessageReference != nil && m.MessageReference.MessageID != "" {
+		extra["reply_to"] = fmt.Sprintf("discord-%s-%s", m.MessageReference.ChannelID, m.MessageReference.MessageID)
 	}
 
 	// Create inbox message
@@ -150,6 +156,62 @@ func (d *DiscordSense) hasUrgentKeyword(content string) bool {
 		}
 	}
 	return false
+}
+
+// classifyDialogueAct performs rule-based dialogue act classification
+// Returns: backchannel, question, command, greeting, or statement
+func classifyDialogueAct(content string) string {
+	content = strings.TrimSpace(content)
+	lc := strings.ToLower(content)
+
+	// Backchannel - short acknowledgments
+	backchannels := []string{
+		"ok", "okay", "k", "yes", "yeah", "yep", "yup", "no", "nope", "nah",
+		"thanks", "thx", "ty", "thank you", "cool", "great", "nice", "good",
+		"got it", "understood", "i see", "right", "sure", "alright", "uh-huh",
+		"mm", "mmm", "mhm", "hm", "hmm", "ah", "oh", "lol", "haha", "heh",
+		"👍", "✓", "✔", ":thumbsup:", ":+1:",
+	}
+	if len(content) < 20 {
+		for _, bc := range backchannels {
+			if lc == bc || lc == bc+"." || lc == bc+"!" {
+				return "backchannel"
+			}
+		}
+	}
+
+	// Questions - ends with ? or starts with question words
+	if strings.HasSuffix(content, "?") {
+		return "question"
+	}
+	questionStarters := []string{"what", "when", "where", "who", "why", "how", "can", "could", "would", "will", "is", "are", "do", "does", "did"}
+	words := strings.Fields(lc)
+	if len(words) > 0 {
+		for _, qs := range questionStarters {
+			if words[0] == qs {
+				return "question"
+			}
+		}
+	}
+
+	// Commands/requests - imperatives
+	commandStarters := []string{"please", "can you", "could you", "would you", "show", "tell", "find", "get", "create", "make", "add", "remove", "delete", "run", "check", "help"}
+	for _, cs := range commandStarters {
+		if strings.HasPrefix(lc, cs) {
+			return "command"
+		}
+	}
+
+	// Greetings
+	greetings := []string{"hello", "hi", "hey", "good morning", "good afternoon", "good evening", "bye", "goodbye", "see you", "later", "gn", "good night"}
+	for _, g := range greetings {
+		if strings.HasPrefix(lc, g) || lc == g {
+			return "greeting"
+		}
+	}
+
+	// Default to statement
+	return "statement"
 }
 
 // mentionsBot checks if the message mentions the bot
