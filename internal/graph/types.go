@@ -12,10 +12,30 @@ const (
 	EdgeRepliesTo EdgeType = "REPLIES_TO"
 	EdgeFollows   EdgeType = "FOLLOWS"
 
-	// Entity edges
+	// Entity edges (structural)
 	EdgeSameAs    EdgeType = "SAME_AS"
 	EdgeRelatedTo EdgeType = "RELATED_TO"
 	EdgeMentions  EdgeType = "MENTIONS"
+
+	// Entity edges (semantic relationships)
+	EdgeWorksAt    EdgeType = "WORKS_AT"    // PERSON → ORG
+	EdgeLivesIn    EdgeType = "LIVES_IN"    // PERSON → LOCATION
+	EdgeMarriedTo  EdgeType = "MARRIED_TO"  // PERSON → PERSON
+	EdgeSiblingOf  EdgeType = "SIBLING_OF"  // PERSON → PERSON
+	EdgeParentOf   EdgeType = "PARENT_OF"   // PERSON → PERSON
+	EdgeChildOf    EdgeType = "CHILD_OF"    // PERSON → PERSON
+	EdgeFriendOf   EdgeType = "FRIEND_OF"   // PERSON → PERSON
+	EdgeWorksOn    EdgeType = "WORKS_ON"    // PERSON → PROJECT/ORG
+	EdgeLocatedIn  EdgeType = "LOCATED_IN"  // ORG/FAC → LOCATION
+	EdgePartOf     EdgeType = "PART_OF"     // ORG → ORG (team → company)
+	EdgeStudiedAt  EdgeType = "STUDIED_AT"  // PERSON → ORG (school)
+	EdgeMetAt      EdgeType = "MET_AT"      // PERSON → LOCATION/ORG/EVENT
+	EdgeCofounderOf EdgeType = "COFOUNDER_OF" // PERSON → PERSON
+	EdgeOwnerOf    EdgeType = "OWNER_OF"    // PERSON → PRODUCT
+	EdgeHasEmail   EdgeType = "HAS_EMAIL"   // PERSON → EMAIL
+	EdgePrefers    EdgeType = "PREFERS"     // PERSON → PRODUCT/ORG/LOC
+	EdgeAllergicTo EdgeType = "ALLERGIC_TO" // PERSON → PRODUCT
+	EdgeHasPet     EdgeType = "HAS_PET"     // PERSON → PET
 
 	// Trace edges
 	EdgeSourcedFrom   EdgeType = "SOURCED_FROM"
@@ -23,16 +43,38 @@ const (
 	EdgeInvalidatedBy EdgeType = "INVALIDATED_BY"
 )
 
-// EntityType defines categories of entities
+// EntityType defines categories of entities (OntoNotes-compatible schema)
 type EntityType string
 
 const (
-	EntityPerson   EntityType = "person"
-	EntityProject  EntityType = "project"
-	EntityConcept  EntityType = "concept"
-	EntityLocation EntityType = "location"
-	EntityTime     EntityType = "time"
-	EntityOther    EntityType = "other"
+	// Core entity types (OntoNotes)
+	EntityPerson    EntityType = "PERSON"     // People, including fictional
+	EntityOrg       EntityType = "ORG"        // Organizations
+	EntityGPE       EntityType = "GPE"        // Geopolitical entities (countries, cities, states)
+	EntityLoc       EntityType = "LOC"        // Non-GPE locations (mountains, bodies of water)
+	EntityFac       EntityType = "FAC"        // Facilities (buildings, airports, highways)
+	EntityProduct   EntityType = "PRODUCT"    // Products (vehicles, weapons, foods)
+	EntityEvent     EntityType = "EVENT"      // Named events (hurricanes, battles, wars)
+	EntityWorkOfArt EntityType = "WORK_OF_ART" // Titles of books, songs, etc.
+	EntityLaw       EntityType = "LAW"        // Named documents made into laws
+	EntityLanguage  EntityType = "LANGUAGE"   // Named languages
+	EntityNorp      EntityType = "NORP"       // Nationalities, religious or political groups
+
+	// Numeric/temporal types (OntoNotes)
+	EntityDate     EntityType = "DATE"     // Absolute or relative dates
+	EntityTime     EntityType = "TIME"     // Times smaller than a day
+	EntityMoney    EntityType = "MONEY"    // Monetary values
+	EntityPercent  EntityType = "PERCENT"  // Percentages
+	EntityQuantity EntityType = "QUANTITY" // Measurements
+	EntityCardinal EntityType = "CARDINAL" // Numerals not covered by other types
+	EntityOrdinal  EntityType = "ORDINAL"  // "first", "second", etc.
+
+	// Custom types (extended beyond OntoNotes)
+	EntityEmail EntityType = "EMAIL" // Email addresses
+	EntityPet   EntityType = "PET"   // Pet names
+
+	// Fallback
+	EntityOther EntityType = "OTHER" // Unknown or unclassified
 )
 
 // Episode represents a raw message in the memory graph (Tier 1)

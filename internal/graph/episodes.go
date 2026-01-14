@@ -254,6 +254,61 @@ func (g *DB) GetEpisodeNeighbors(id string) ([]Neighbor, error) {
 	return neighbors, nil
 }
 
+// GetUnconsolidatedEpisodes returns episodes that haven't been linked to any trace yet.
+// These are candidates for consolidation.
+func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := g.db.Query(`
+		SELECT e.id, e.content, e.source, e.author, e.author_id, e.channel,
+			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
+			e.embedding, e.reply_to, e.created_at
+		FROM episodes e
+		LEFT JOIN trace_sources ts ON ts.episode_id = e.id
+		WHERE ts.trace_id IS NULL
+		ORDER BY e.timestamp_event ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unconsolidated episodes: %w", err)
+	}
+	defer rows.Close()
+
+	var episodes []*Episode
+	for rows.Next() {
+		ep, err := scanEpisodeRow(rows)
+		if err != nil {
+			continue
+		}
+		episodes = append(episodes, ep)
+	}
+
+	return episodes, nil
+}
+
+// GetEpisodeEntities returns the entity IDs mentioned in an episode
+func (g *DB) GetEpisodeEntities(episodeID string) ([]string, error) {
+	rows, err := g.db.Query(`
+		SELECT entity_id FROM episode_entities WHERE episode_id = ?
+	`, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // scanEpisode scans a single row into an Episode
 func scanEpisode(row *sql.Row) (*Episode, error) {
 	var ep Episode

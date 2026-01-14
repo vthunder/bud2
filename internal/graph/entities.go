@@ -87,6 +87,37 @@ func (g *DB) CountEntities() (int, error) {
 	return count, err
 }
 
+// GetEntitiesByType retrieves entities of a specific type
+func (g *DB) GetEntitiesByType(entityType EntityType, limit int) ([]*Entity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := g.db.Query(`
+		SELECT id, name, type, salience, embedding, created_at, updated_at
+		FROM entities
+		WHERE type = ?
+		ORDER BY salience DESC
+		LIMIT ?
+	`, entityType, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entities by type: %w", err)
+	}
+	defer rows.Close()
+
+	entities, err := scanEntityRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load aliases for each
+	for _, e := range entities {
+		e.Aliases, _ = g.GetEntityAliases(e.ID)
+	}
+
+	return entities, nil
+}
+
 // GetEntity retrieves an entity by ID
 func (g *DB) GetEntity(id string) (*Entity, error) {
 	row := g.db.QueryRow(`
@@ -202,10 +233,144 @@ func (g *DB) LinkEpisodeToEntity(episodeID, entityID string) error {
 
 // AddEntityRelation adds a relationship between two entities
 func (g *DB) AddEntityRelation(fromID, toID string, relType EdgeType, weight float64) error {
+	_, err := g.AddEntityRelationWithSource(fromID, toID, relType, weight, "")
+	return err
+}
+
+// AddEntityRelationWithSource adds a relationship with source episode tracking
+// Returns the relation ID for use in invalidation tracking
+func (g *DB) AddEntityRelationWithSource(fromID, toID string, relType EdgeType, weight float64, sourceEpisodeID string) (int64, error) {
+	var result sql.Result
+	var err error
+
+	if sourceEpisodeID == "" {
+		result, err = g.db.Exec(`
+			INSERT INTO entity_relations (from_id, to_id, relation_type, weight)
+			VALUES (?, ?, ?, ?)
+		`, fromID, toID, relType, weight)
+	} else {
+		result, err = g.db.Exec(`
+			INSERT INTO entity_relations (from_id, to_id, relation_type, weight, source_episode_id)
+			VALUES (?, ?, ?, ?, ?)
+		`, fromID, toID, relType, weight, sourceEpisodeID)
+	}
+
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// EntityRelation represents a relationship between entities with temporal validity
+type EntityRelation struct {
+	ID              int64
+	FromID          string
+	ToID            string
+	RelationType    EdgeType
+	Weight          float64
+	ValidAt         time.Time
+	InvalidAt       *time.Time
+	InvalidatedBy   *int64
+	SourceEpisodeID string
+	CreatedAt       time.Time
+}
+
+// GetValidRelationsFor returns active (non-invalidated) relations involving an entity
+func (g *DB) GetValidRelationsFor(entityID string) ([]EntityRelation, error) {
+	rows, err := g.db.Query(`
+		SELECT id, from_id, to_id, relation_type, weight, valid_at, invalid_at, invalidated_by, source_episode_id, created_at
+		FROM entity_relations
+		WHERE (from_id = ? OR to_id = ?) AND invalid_at IS NULL
+	`, entityID, entityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relations []EntityRelation
+	for rows.Next() {
+		var r EntityRelation
+		var relType string
+		var invalidAt, sourceEpisodeID sql.NullString
+		var invalidatedBy sql.NullInt64
+		var validAt sql.NullTime
+
+		err := rows.Scan(&r.ID, &r.FromID, &r.ToID, &relType, &r.Weight,
+			&validAt, &invalidAt, &invalidatedBy, &sourceEpisodeID, &r.CreatedAt)
+		if err != nil {
+			continue
+		}
+
+		r.RelationType = EdgeType(relType)
+		if validAt.Valid {
+			r.ValidAt = validAt.Time
+		}
+		if invalidAt.Valid {
+			t, _ := time.Parse(time.RFC3339, invalidAt.String)
+			r.InvalidAt = &t
+		}
+		if invalidatedBy.Valid {
+			r.InvalidatedBy = &invalidatedBy.Int64
+		}
+		r.SourceEpisodeID = sourceEpisodeID.String
+
+		relations = append(relations, r)
+	}
+	return relations, nil
+}
+
+// FindInvalidationCandidates finds existing relations that might be invalidated by a new relation
+// Returns relations of the same type involving the same subject entity
+func (g *DB) FindInvalidationCandidates(subjectID string, relType EdgeType) ([]EntityRelation, error) {
+	rows, err := g.db.Query(`
+		SELECT id, from_id, to_id, relation_type, weight, valid_at, invalid_at, invalidated_by, source_episode_id, created_at
+		FROM entity_relations
+		WHERE from_id = ? AND relation_type = ? AND invalid_at IS NULL
+	`, subjectID, relType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var relations []EntityRelation
+	for rows.Next() {
+		var r EntityRelation
+		var relTypeStr string
+		var invalidAt, sourceEpisodeID sql.NullString
+		var invalidatedBy sql.NullInt64
+		var validAt sql.NullTime
+
+		err := rows.Scan(&r.ID, &r.FromID, &r.ToID, &relTypeStr, &r.Weight,
+			&validAt, &invalidAt, &invalidatedBy, &sourceEpisodeID, &r.CreatedAt)
+		if err != nil {
+			continue
+		}
+
+		r.RelationType = EdgeType(relTypeStr)
+		if validAt.Valid {
+			r.ValidAt = validAt.Time
+		}
+		if invalidAt.Valid {
+			t, _ := time.Parse(time.RFC3339, invalidAt.String)
+			r.InvalidAt = &t
+		}
+		if invalidatedBy.Valid {
+			r.InvalidatedBy = &invalidatedBy.Int64
+		}
+		r.SourceEpisodeID = sourceEpisodeID.String
+
+		relations = append(relations, r)
+	}
+	return relations, nil
+}
+
+// InvalidateRelation marks a relation as invalid
+func (g *DB) InvalidateRelation(relationID int64, invalidatedByID int64) error {
 	_, err := g.db.Exec(`
-		INSERT INTO entity_relations (from_id, to_id, relation_type, weight)
-		VALUES (?, ?, ?, ?)
-	`, fromID, toID, relType, weight)
+		UPDATE entity_relations
+		SET invalid_at = CURRENT_TIMESTAMP, invalidated_by = ?
+		WHERE id = ?
+	`, invalidatedByID, relationID)
 	return err
 }
 

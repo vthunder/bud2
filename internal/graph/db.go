@@ -139,20 +139,27 @@ func (g *DB) migrate() error {
 		FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
 	);
 
-	-- Entity relations (entity <-> entity)
+	-- Entity relations (entity <-> entity) with temporal validity
 	CREATE TABLE IF NOT EXISTS entity_relations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		from_id TEXT NOT NULL,
 		to_id TEXT NOT NULL,
 		relation_type TEXT NOT NULL,
 		weight REAL DEFAULT 1.0,
+		valid_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		invalid_at DATETIME,
+		invalidated_by INTEGER,
+		source_episode_id TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (from_id) REFERENCES entities(id) ON DELETE CASCADE,
-		FOREIGN KEY (to_id) REFERENCES entities(id) ON DELETE CASCADE
+		FOREIGN KEY (to_id) REFERENCES entities(id) ON DELETE CASCADE,
+		FOREIGN KEY (invalidated_by) REFERENCES entity_relations(id),
+		FOREIGN KEY (source_episode_id) REFERENCES episodes(id)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_entity_relations_from ON entity_relations(from_id);
 	CREATE INDEX IF NOT EXISTS idx_entity_relations_to ON entity_relations(to_id);
+	CREATE INDEX IF NOT EXISTS idx_entity_relations_valid ON entity_relations(invalid_at);
 
 	-- TIER 3: TRACES (Consolidated memories)
 	CREATE TABLE IF NOT EXISTS traces (
@@ -211,7 +218,40 @@ func (g *DB) migrate() error {
 	`
 
 	_, err := g.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Run incremental migrations
+	return g.runMigrations()
+}
+
+// runMigrations applies incremental schema changes
+func (g *DB) runMigrations() error {
+	// Get current version
+	var version int
+	err := g.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version)
+	if err != nil {
+		version = 1 // Assume v1 if can't read
+	}
+
+	// Migration v2: Add temporal columns to entity_relations
+	if version < 2 {
+		migrations := []string{
+			"ALTER TABLE entity_relations ADD COLUMN valid_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+			"ALTER TABLE entity_relations ADD COLUMN invalid_at DATETIME",
+			"ALTER TABLE entity_relations ADD COLUMN invalidated_by INTEGER",
+			"ALTER TABLE entity_relations ADD COLUMN source_episode_id TEXT",
+			"CREATE INDEX IF NOT EXISTS idx_entity_relations_valid ON entity_relations(invalid_at)",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (2)")
+	}
+
+	return nil
 }
 
 // Stats returns database statistics
