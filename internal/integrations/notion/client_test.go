@@ -2,143 +2,186 @@ package notion
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-func TestObjectGetTitle(t *testing.T) {
-	// Test page with title property
-	page := &Object{
-		Object: "page",
-		Properties: map[string]Property{
-			"Name": {
-				Type: "title",
-				Title: []RichText{
-					{PlainText: "Test Page"},
+func TestMarkdownToBlocks_Headings(t *testing.T) {
+	md := "# Heading 1\n## Heading 2\n### Heading 3"
+	blocks := MarkdownToBlocks(md)
+
+	if len(blocks) != 3 {
+		t.Fatalf("Expected 3 blocks, got %d", len(blocks))
+	}
+
+	types := []string{"heading_1", "heading_2", "heading_3"}
+	for i, expected := range types {
+		if blocks[i]["type"] != expected {
+			t.Errorf("Block %d: expected type %s, got %s", i, expected, blocks[i]["type"])
+		}
+	}
+}
+
+func TestMarkdownToBlocks_Lists(t *testing.T) {
+	md := "- Bullet 1\n- Bullet 2\n1. Number 1\n2. Number 2"
+	blocks := MarkdownToBlocks(md)
+
+	if len(blocks) != 4 {
+		t.Fatalf("Expected 4 blocks, got %d", len(blocks))
+	}
+
+	if blocks[0]["type"] != "bulleted_list_item" {
+		t.Errorf("Expected bulleted_list_item, got %s", blocks[0]["type"])
+	}
+	if blocks[2]["type"] != "numbered_list_item" {
+		t.Errorf("Expected numbered_list_item, got %s", blocks[2]["type"])
+	}
+}
+
+func TestMarkdownToBlocks_Todo(t *testing.T) {
+	md := "- [ ] Unchecked\n- [x] Checked"
+	blocks := MarkdownToBlocks(md)
+
+	if len(blocks) != 2 {
+		t.Fatalf("Expected 2 blocks, got %d", len(blocks))
+	}
+
+	todo1 := blocks[0]["to_do"].(map[string]any)
+	if todo1["checked"].(bool) != false {
+		t.Error("First todo should be unchecked")
+	}
+
+	todo2 := blocks[1]["to_do"].(map[string]any)
+	if todo2["checked"].(bool) != true {
+		t.Error("Second todo should be checked")
+	}
+}
+
+func TestMarkdownToBlocks_InlineFormatting(t *testing.T) {
+	md := "This has **bold** and *italic* and `code`"
+	blocks := MarkdownToBlocks(md)
+
+	if len(blocks) != 1 {
+		t.Fatalf("Expected 1 block, got %d", len(blocks))
+	}
+
+	para := blocks[0]["paragraph"].(map[string]any)
+	richText := para["rich_text"].([]map[string]any)
+
+	// Should have multiple rich_text segments
+	if len(richText) < 4 {
+		t.Errorf("Expected at least 4 rich_text segments, got %d", len(richText))
+	}
+
+	// Check bold segment
+	var foundBold, foundItalic, foundCode bool
+	for _, rt := range richText {
+		if ann, ok := rt["annotations"].(map[string]bool); ok {
+			if ann["bold"] {
+				foundBold = true
+			}
+			if ann["italic"] {
+				foundItalic = true
+			}
+			if ann["code"] {
+				foundCode = true
+			}
+		}
+	}
+
+	if !foundBold {
+		t.Error("Expected to find bold text")
+	}
+	if !foundItalic {
+		t.Error("Expected to find italic text")
+	}
+	if !foundCode {
+		t.Error("Expected to find code text")
+	}
+}
+
+func TestBlocksToMarkdown(t *testing.T) {
+	blocks := []map[string]any{
+		{
+			"type": "heading_1",
+			"heading_1": map[string]any{
+				"rich_text": []any{
+					map[string]any{"plain_text": "Title"},
+				},
+			},
+		},
+		{
+			"type": "paragraph",
+			"paragraph": map[string]any{
+				"rich_text": []any{
+					map[string]any{"plain_text": "Some text"},
+				},
+			},
+		},
+		{
+			"type": "bulleted_list_item",
+			"bulleted_list_item": map[string]any{
+				"rich_text": []any{
+					map[string]any{"plain_text": "Item 1"},
 				},
 			},
 		},
 	}
 
-	if title := page.GetTitle(); title != "Test Page" {
-		t.Errorf("Expected 'Test Page', got '%s'", title)
-	}
+	md := BlocksToMarkdown(blocks)
 
-	// Test database with title field
-	db := &Object{
-		Object: "database",
-		Title: []RichText{
-			{PlainText: "Test Database"},
-		},
+	if !strings.Contains(md, "# Title") {
+		t.Error("Expected '# Title' in output")
 	}
-
-	if title := db.GetTitle(); title != "Test Database" {
-		t.Errorf("Expected 'Test Database', got '%s'", title)
+	if !strings.Contains(md, "Some text") {
+		t.Error("Expected 'Some text' in output")
+	}
+	if !strings.Contains(md, "- Item 1") {
+		t.Error("Expected '- Item 1' in output")
 	}
 }
 
-func TestObjectGetPropertyText(t *testing.T) {
-	page := &Object{
-		Properties: map[string]Property{
-			"Status": {
-				Type:   "status",
-				Status: &SelectOption{Name: "In Progress"},
-			},
-			"Priority": {
-				Type:   "select",
-				Select: &SelectOption{Name: "High"},
-			},
-			"URL": {
-				Type: "url",
-				URL:  "https://example.com",
-			},
-		},
+func TestCreateBlock(t *testing.T) {
+	block := CreateBlock("paragraph", "Hello **world**")
+
+	if block["type"] != "paragraph" {
+		t.Errorf("Expected type paragraph, got %s", block["type"])
 	}
 
-	tests := []struct {
-		prop     string
-		expected string
-	}{
-		{"Status", "In Progress"},
-		{"Priority", "High"},
-		{"URL", "https://example.com"},
-		{"NonExistent", ""},
-	}
+	para := block["paragraph"].(map[string]any)
+	richText := para["rich_text"].([]map[string]any)
 
-	for _, tt := range tests {
-		if got := page.GetPropertyText(tt.prop); got != tt.expected {
-			t.Errorf("GetPropertyText(%s) = '%s', want '%s'", tt.prop, got, tt.expected)
-		}
+	if len(richText) < 2 {
+		t.Errorf("Expected at least 2 rich_text segments, got %d", len(richText))
 	}
 }
 
-func TestSearchResultUnmarshal(t *testing.T) {
-	jsonData := `{
-		"object": "list",
-		"results": [
-			{
-				"object": "page",
-				"id": "abc123",
-				"properties": {
-					"Name": {
-						"type": "title",
-						"title": [{"plain_text": "Test"}]
-					}
-				}
-			}
-		],
-		"has_more": false
-	}`
-
-	var result SearchResult
-	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
-	}
-
-	if len(result.Results) != 1 {
-		t.Fatalf("Expected 1 result, got %d", len(result.Results))
-	}
-
-	if result.Results[0].GetTitle() != "Test" {
-		t.Errorf("Expected title 'Test', got '%s'", result.Results[0].GetTitle())
+func TestCreateBlock_Unsupported(t *testing.T) {
+	block := CreateBlock("unsupported_type", "content")
+	if block != nil {
+		t.Error("Expected nil for unsupported block type")
 	}
 }
 
-func TestDatabaseSchemaUnmarshal(t *testing.T) {
-	jsonData := `{
-		"object": "database",
-		"id": "db123",
-		"title": [{"plain_text": "Projects"}],
-		"properties": {
-			"Status": {
-				"id": "abc",
-				"name": "Status",
-				"type": "status",
-				"status": {
-					"options": [
-						{"name": "Not started", "color": "default"},
-						{"name": "In progress", "color": "blue"},
-						{"name": "Done", "color": "green"}
-					]
-				}
-			}
-		}
-	}`
+func TestRoundTrip(t *testing.T) {
+	original := "# Test\n\nParagraph text\n\n- Bullet 1\n- Bullet 2\n"
 
-	var db Database
-	if err := json.Unmarshal([]byte(jsonData), &db); err != nil {
-		t.Fatalf("Unmarshal failed: %v", err)
+	blocks := MarkdownToBlocks(original)
+
+	// Convert blocks to JSON then back (simulating API round-trip)
+	jsonBytes, _ := json.Marshal(blocks)
+	var parsed []map[string]any
+	json.Unmarshal(jsonBytes, &parsed)
+
+	result := BlocksToMarkdown(parsed)
+
+	if !strings.Contains(result, "# Test") {
+		t.Error("Round-trip lost heading")
 	}
-
-	if db.ID != "db123" {
-		t.Errorf("Expected ID 'db123', got '%s'", db.ID)
+	if !strings.Contains(result, "Paragraph text") {
+		t.Error("Round-trip lost paragraph")
 	}
-
-	statusProp, ok := db.Properties["Status"]
-	if !ok {
-		t.Fatal("Expected Status property")
-	}
-
-	if statusProp.Status == nil || len(statusProp.Status.Options) != 3 {
-		t.Error("Expected 3 status options")
+	if !strings.Contains(result, "- Bullet 1") {
+		t.Error("Round-trip lost bullet")
 	}
 }
