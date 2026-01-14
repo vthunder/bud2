@@ -65,7 +65,21 @@ func (r *Resolver) Resolve(extracted ExtractedEntity, config ResolveConfig) (*Re
 		return result, nil
 	}
 
-	// 2. Try fuzzy match by embedding (if embedder available)
+	// 2. Try name-based fuzzy match for PERSON entities (e.g., "Sarah" matches "Sarah Chen")
+	if extracted.Type == graph.EntityPerson {
+		entity, matchType := r.findNameMatch(extracted.Name)
+		if entity != nil {
+			r.db.AddEntityAlias(entity.ID, extracted.Name)
+			result.Entity = entity
+			result.MatchedBy = matchType
+			if config.IncrementSalience {
+				r.db.IncrementEntitySalience(entity.ID, 0.1)
+			}
+			return result, nil
+		}
+	}
+
+	// 3. Try fuzzy match by embedding (if embedder available)
 	if r.embedder != nil && config.EmbeddingThreshold > 0 {
 		embedding, err := r.embedder.Embed(extracted.Name)
 		if err == nil && len(embedding) > 0 {
@@ -112,6 +126,54 @@ func (r *Resolver) Resolve(extracted ExtractedEntity, config ResolveConfig) (*Re
 
 	// Not found and not creating
 	return nil, nil
+}
+
+// findNameMatch looks for existing person entities that might be the same person
+// Uses substring matching: "Sarah" matches "Sarah Chen", "Sarah Chen" matches "Sarah"
+func (r *Resolver) findNameMatch(name string) (*graph.Entity, string) {
+	nameLower := strings.ToLower(name)
+	nameParts := strings.Fields(nameLower)
+
+	// Get all person entities
+	entities, err := r.db.GetEntitiesByType(graph.EntityPerson, 100)
+	if err != nil {
+		return nil, ""
+	}
+
+	for _, entity := range entities {
+		entityNameLower := strings.ToLower(entity.Name)
+		entityParts := strings.Fields(entityNameLower)
+
+		// Check if the new name is a substring of existing (e.g., "Sarah" in "Sarah Chen")
+		if strings.Contains(entityNameLower, nameLower) {
+			return entity, "name_substring"
+		}
+
+		// Check if existing name is a substring of new (e.g., "Sarah Chen" contains existing "Sarah")
+		if strings.Contains(nameLower, entityNameLower) {
+			// Update the entity's canonical name to the longer version
+			entity.Name = name
+			r.db.AddEntity(entity)
+			return entity, "name_expanded"
+		}
+
+		// Check if first name matches (handles "Sarah" vs "Sarah Chen")
+		if len(nameParts) > 0 && len(entityParts) > 0 && nameParts[0] == entityParts[0] {
+			// Only match if one is clearly an expansion of the other
+			if len(nameParts) == 1 && len(entityParts) > 1 {
+				// "Sarah" matches "Sarah Chen" - use the fuller name
+				return entity, "first_name"
+			}
+			if len(nameParts) > 1 && len(entityParts) == 1 {
+				// "Sarah Chen" matches "Sarah" - update to fuller name
+				entity.Name = name
+				r.db.AddEntity(entity)
+				return entity, "first_name_expanded"
+			}
+		}
+	}
+
+	return nil, ""
 }
 
 // ResolveAll resolves a list of extracted entities

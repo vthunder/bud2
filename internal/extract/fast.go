@@ -10,32 +10,57 @@ import (
 
 // FastExtractor performs quick regex-based entity extraction
 type FastExtractor struct {
-	patterns map[graph.EntityType][]*regexp.Regexp
+	patterns    map[graph.EntityType][]*regexp.Regexp
+	personSkip  map[string]bool // Words that shouldn't be extracted as persons
 }
 
 // NewFastExtractor creates a new fast entity extractor
 func NewFastExtractor() *FastExtractor {
 	e := &FastExtractor{
 		patterns: make(map[graph.EntityType][]*regexp.Regexp),
+		personSkip: map[string]bool{
+			// Pronouns
+			"me": true, "you": true, "him": true, "her": true, "them": true, "us": true,
+			"it": true, "this": true, "that": true, "these": true, "those": true,
+			// Common verbs that get incorrectly captured
+			"call": true, "email": true, "text": true, "meet": true, "talk": true,
+			"ask": true, "tell": true, "remind": true, "say": true, "test": true,
+			"go": true, "get": true, "see": true, "do": true, "make": true, "take": true,
+			// Articles/determiners
+			"the": true, "a": true, "an": true, "some": true, "any": true,
+			// Prepositions
+			"to": true, "for": true, "about": true, "with": true, "from": true,
+			// Other common words
+			"new": true, "things": true, "something": true, "anything": true,
+			// Companies/organizations (should not be typed as person)
+			"microsoft": true, "google": true, "amazon": true, "apple": true, "meta": true,
+			"facebook": true, "twitter": true, "github": true, "slack": true, "notion": true,
+		},
 	}
 
 	// Person patterns
 	e.patterns[graph.EntityPerson] = compilePatterns([]string{
 		`@(\w+)`,                              // Discord mention
 		`(?:my |the )?(?:friend|colleague|boss|manager|wife|husband|partner) (\w+)`,
+		`(?:call|email|text|meet|talk to|ask|tell|remind) (\w+)`, // Action + person
+		`(?:with|from|to) ([A-Z][a-z]+)(?:\s|$|,|\.)`,            // Preposition + capitalized name
 	})
 
-	// Time patterns
-	e.patterns[graph.EntityTime] = compilePatterns([]string{
-		`\b(\d{1,2}:\d{2}(?:\s*[ap]m)?)\b`,                    // Time
+	// Date patterns (absolute or relative dates)
+	e.patterns[graph.EntityDate] = compilePatterns([]string{
 		`\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b`,                  // Date MM/DD
 		`\b(\d{4}-\d{2}-\d{2})\b`,                              // ISO date
 		`\b(today|tomorrow|yesterday|next week|last week)\b`,  // Relative time
 		`\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b`,
 	})
 
-	// Location patterns (basic)
-	e.patterns[graph.EntityLocation] = compilePatterns([]string{
+	// Time patterns (times smaller than a day)
+	e.patterns[graph.EntityTime] = compilePatterns([]string{
+		`\b(\d{1,2}:\d{2}(?:\s*[ap]m)?)\b`, // Time HH:MM
+	})
+
+	// GPE patterns (geopolitical entities - cities, countries, states)
+	e.patterns[graph.EntityGPE] = compilePatterns([]string{
 		`(?:at|in|to) (?:the )?(\w+ (?:office|building|room|cafe|restaurant|store))`,
 	})
 
@@ -75,6 +100,12 @@ func (e *FastExtractor) Extract(text string) []ExtractedEntity {
 					// Get the captured group (not the full match)
 					start, end := match[2], match[3]
 					name := text[start:end]
+
+					// Skip common words for person entities
+					if entityType == graph.EntityPerson && e.personSkip[strings.ToLower(name)] {
+						continue
+					}
+
 					entities = append(entities, ExtractedEntity{
 						Name:       name,
 						Type:       entityType,
@@ -144,17 +175,30 @@ func extractCapitalized(text string) []ExtractedEntity {
 	return entities
 }
 
-// deduplicateEntities removes duplicate entities
+// deduplicateEntities removes duplicate entities, preferring specific types over EntityOther
 func deduplicateEntities(entities []ExtractedEntity) []ExtractedEntity {
-	seen := make(map[string]bool)
-	var result []ExtractedEntity
+	// First pass: collect best entity for each name (prefer specific types over "other")
+	bestByName := make(map[string]ExtractedEntity)
 
 	for _, e := range entities {
-		key := strings.ToLower(e.Name) + string(e.Type)
-		if !seen[key] {
-			seen[key] = true
-			result = append(result, e)
+		key := strings.ToLower(e.Name)
+		existing, found := bestByName[key]
+		if !found {
+			bestByName[key] = e
+		} else {
+			// Prefer specific types over "other", and higher confidence
+			if e.Type != graph.EntityOther && existing.Type == graph.EntityOther {
+				bestByName[key] = e
+			} else if e.Type == existing.Type && e.Confidence > existing.Confidence {
+				bestByName[key] = e
+			}
 		}
+	}
+
+	// Convert map to slice
+	result := make([]ExtractedEntity, 0, len(bestByName))
+	for _, e := range bestByName {
+		result = append(result, e)
 	}
 
 	return result

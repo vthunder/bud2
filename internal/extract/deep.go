@@ -3,9 +3,24 @@ package extract
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/vthunder/bud2/internal/graph"
+)
+
+var (
+	// Regex patterns for post-processing
+	emailRegex = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	moneyRegex = regexp.MustCompile(`\$[\d,]+(?:\.\d{2})?[kKmMbB]?|\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:dollars?|USD|EUR|GBP)`)
+
+	// Noise entities to filter out (system artifacts, pronouns)
+	noiseEntities = map[string]bool{
+		"i": true, "me": true, "my": true, "you": true, "your": true,
+		"he": true, "she": true, "it": true, "they": true, "we": true,
+		"this": true, "that": true, "speaker": true, "user": true,
+		"memory_reset": true, "memory": true, "your memory": true,
+	}
 )
 
 // Generator is the interface for LLM text generation
@@ -23,28 +38,80 @@ func NewDeepExtractor(generator Generator) *DeepExtractor {
 	return &DeepExtractor{generator: generator}
 }
 
-const extractionPrompt = `Extract named entities from this text. Return a JSON array of objects with "name", "type", and "confidence" fields.
+const extractionPrompt = `Extract entities and relationships from this text.
 
-Types: person, project, concept, location, time, other
+ENTITY TYPES (use these exact labels):
+- PERSON: Individual people by name (not pronouns like "he", "she", "my", "I")
+- ORG: Companies, organizations, brands, coffee shops, stores (Google, Blue Bottle, Stanford, UCSF)
+- GPE: Cities, countries, states (Portland, USA, California, Seattle)
+- LOC: Streets, addresses, non-GPE locations (Market Street, Highway 101, the park)
+- FAC: Buildings, hospitals, airports (UCSF Medical Center, SFO, the office)
+- DATE: Dates, years, relative dates, deadlines (2015, next Tuesday, March 15th, Q1)
+- TIME: Times of day (2pm, 6am, noon)
+- PRODUCT: Products, vehicles, technologies (Redis, Kubernetes, iPhone, Tesla Model 3)
+- MONEY: Monetary values, budgets, prices ($50k, $1 million, 500 dollars)
+- EMAIL: Email addresses (user@example.com, sarah.chen@company.com)
+- PET: Pet names, animals (cats named Pixel, dog named Max)
 
-Text: "%s"
+RELATIONSHIP TYPES (subject → predicate → object):
+- works_at: PERSON works at ORG
+- lives_in: PERSON lives in GPE/LOC
+- married_to: PERSON married to PERSON
+- sibling_of: PERSON sibling of PERSON (sister, brother)
+- parent_of: PERSON parent of PERSON
+- child_of: PERSON child of PERSON
+- friend_of: PERSON friend of PERSON
+- works_on: PERSON works on PRODUCT/project
+- located_in: ORG/FAC located in GPE/LOC
+- part_of: ORG part of ORG (team is part of company)
+- studied_at: PERSON studied at ORG
+- met_at: PERSON met PERSON at LOC/ORG
+- cofounder_of: PERSON is cofounder with PERSON
+- owner_of: PERSON owns PRODUCT (my car, my house)
+- has_email: PERSON has email EMAIL
+- prefers: PERSON prefers PRODUCT/ORG/LOC (favorite coffee shop, preferred tool)
+- allergic_to: PERSON is allergic to PRODUCT
+- has_pet: PERSON has/owns PET
 
-Rules:
-- Only extract specific, named entities (not generic nouns)
-- Person: names of people (not pronouns like "he", "she")
-- Project: named projects, products, companies
-- Concept: specific ideas, technologies, methodologies
-- Location: specific places
-- Time: specific dates, times, events
-- Confidence: 0.0-1.0 based on how certain you are
+IMPORTANT: When "my", "I", or "me" refers to the speaker, use "speaker" as the entity name.
+For example: "My brother Marcus" → sibling_of(Marcus, speaker)
+             "My car is a Tesla" → owner_of(speaker, Tesla Model 3)
 
-Return ONLY a valid JSON array, no explanation.
-Example: [{"name": "John", "type": "person", "confidence": 0.9}]
+TEXT: "%s"
+
+Return ONLY valid JSON with this structure:
+{"entities":[{"name":"...","type":"...","confidence":0.9}],"relationships":[{"subject":"...","predicate":"...","object":"...","confidence":0.9}]}
+
+EXAMPLE for "My friend Sarah works at Google. We met at Stanford in 2015.":
+{"entities":[{"name":"Sarah","type":"PERSON","confidence":0.95},{"name":"Google","type":"ORG","confidence":0.99},{"name":"Stanford","type":"ORG","confidence":0.95},{"name":"2015","type":"DATE","confidence":0.99}],"relationships":[{"subject":"Sarah","predicate":"friend_of","object":"speaker","confidence":0.9},{"subject":"Sarah","predicate":"works_at","object":"Google","confidence":0.95},{"subject":"Sarah","predicate":"met_at","object":"Stanford","confidence":0.85},{"subject":"speaker","predicate":"studied_at","object":"Stanford","confidence":0.7}]}
 
 JSON:`
 
-// Extract performs LLM-based entity extraction
+// ExtractedRelationship represents a relationship between entities
+type ExtractedRelationship struct {
+	Subject    string
+	Predicate  string
+	Object     string
+	Confidence float64
+}
+
+// ExtractionResult contains both entities and relationships
+type ExtractionResult struct {
+	Entities      []ExtractedEntity
+	Relationships []ExtractedRelationship
+}
+
+// Extract performs LLM-based entity extraction (legacy, returns entities only)
 func (e *DeepExtractor) Extract(text string) ([]ExtractedEntity, error) {
+	result, err := e.ExtractAll(text)
+	if err != nil {
+		return nil, err
+	}
+	return result.Entities, nil
+}
+
+// ExtractAll performs LLM-based entity and relationship extraction
+func (e *DeepExtractor) ExtractAll(text string) (*ExtractionResult, error) {
 	if e.generator == nil {
 		return nil, fmt.Errorf("no generator configured")
 	}
@@ -74,29 +141,61 @@ func (e *DeepExtractor) Extract(text string) ([]ExtractedEntity, error) {
 		response = strings.TrimSpace(response)
 	}
 
-	var rawEntities []struct {
-		Name       string  `json:"name"`
-		Type       string  `json:"type"`
-		Confidence float64 `json:"confidence"`
+	// Try to parse as new format (object with entities and relationships)
+	var rawResult struct {
+		Entities []struct {
+			Name       string  `json:"name"`
+			Type       string  `json:"type"`
+			Confidence float64 `json:"confidence"`
+		} `json:"entities"`
+		Relationships []struct {
+			Subject    string  `json:"subject"`
+			Predicate  string  `json:"predicate"`
+			Object     string  `json:"object"`
+			Confidence float64 `json:"confidence"`
+		} `json:"relationships"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &rawEntities); err != nil {
-		// Try to find JSON array in response
-		start := strings.Index(response, "[")
+	// Determine if response is array (legacy) or object (new format)
+	arrayStart := strings.Index(response, "[")
+	objectStart := strings.Index(response, "{")
+
+	// If array comes before object (or no object), try legacy format first
+	if arrayStart >= 0 && (objectStart < 0 || arrayStart < objectStart) {
+		var rawEntities []struct {
+			Name       string  `json:"name"`
+			Type       string  `json:"type"`
+			Confidence float64 `json:"confidence"`
+		}
 		end := strings.LastIndex(response, "]")
-		if start >= 0 && end > start {
-			response = response[start : end+1]
-			if err := json.Unmarshal([]byte(response), &rawEntities); err != nil {
-				return nil, fmt.Errorf("failed to parse response: %w", err)
+		if end > arrayStart {
+			if err := json.Unmarshal([]byte(response[arrayStart:end+1]), &rawEntities); err == nil {
+				rawResult.Entities = rawEntities
+				goto parseComplete
 			}
-		} else {
-			return nil, fmt.Errorf("failed to parse response: %w", err)
 		}
 	}
 
-	// Convert to ExtractedEntity
-	var entities []ExtractedEntity
-	for _, raw := range rawEntities {
+	// Try new object format
+	if objectStart >= 0 {
+		end := strings.LastIndex(response, "}")
+		if end > objectStart {
+			if err := json.Unmarshal([]byte(response[objectStart:end+1]), &rawResult); err != nil {
+				return nil, fmt.Errorf("failed to parse response: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("no valid JSON found in response")
+		}
+	} else {
+		return nil, fmt.Errorf("no valid JSON found in response")
+	}
+
+parseComplete:
+
+	// Convert to result
+	result := &ExtractionResult{}
+
+	for _, raw := range rawResult.Entities {
 		if raw.Name == "" {
 			continue
 		}
@@ -107,29 +206,182 @@ func (e *DeepExtractor) Extract(text string) ([]ExtractedEntity, error) {
 			confidence = 0.7
 		}
 
-		entities = append(entities, ExtractedEntity{
+		result.Entities = append(result.Entities, ExtractedEntity{
 			Name:       raw.Name,
 			Type:       entityType,
 			Confidence: confidence,
 		})
 	}
 
-	return entities, nil
+	for _, raw := range rawResult.Relationships {
+		if raw.Subject == "" || raw.Object == "" || raw.Predicate == "" {
+			continue
+		}
+
+		confidence := raw.Confidence
+		if confidence <= 0 {
+			confidence = 0.7
+		}
+
+		result.Relationships = append(result.Relationships, ExtractedRelationship{
+			Subject:    raw.Subject,
+			Predicate:  raw.Predicate,
+			Object:     raw.Object,
+			Confidence: confidence,
+		})
+	}
+
+	// Post-process to fix types and filter noise
+	result = postProcessEntities(text, result)
+
+	return result, nil
 }
 
-// parseEntityType converts a string to EntityType
+// postProcessEntities fixes entity types, filters noise, and adds regex-detected entities
+func postProcessEntities(text string, result *ExtractionResult) *ExtractionResult {
+	// Track entities by name for deduplication
+	seenNames := make(map[string]bool)
+	var filtered []ExtractedEntity
+
+	for _, e := range result.Entities {
+		nameLower := strings.ToLower(e.Name)
+
+		// Skip noise entities
+		if noiseEntities[nameLower] {
+			continue
+		}
+
+		// Fix misclassified types based on content
+		if emailRegex.MatchString(e.Name) {
+			e.Type = graph.EntityEmail
+		} else if moneyRegex.MatchString(e.Name) {
+			e.Type = graph.EntityMoney
+		}
+
+		// Track seen names
+		if !seenNames[nameLower] {
+			seenNames[nameLower] = true
+			filtered = append(filtered, e)
+		}
+	}
+
+	// Add emails found by regex that LLM missed
+	for _, match := range emailRegex.FindAllString(text, -1) {
+		nameLower := strings.ToLower(match)
+		if !seenNames[nameLower] {
+			seenNames[nameLower] = true
+			filtered = append(filtered, ExtractedEntity{
+				Name:       match,
+				Type:       graph.EntityEmail,
+				Confidence: 0.95,
+			})
+		}
+	}
+
+	// Add money amounts found by regex that LLM missed
+	for _, match := range moneyRegex.FindAllString(text, -1) {
+		nameLower := strings.ToLower(match)
+		if !seenNames[nameLower] {
+			seenNames[nameLower] = true
+			filtered = append(filtered, ExtractedEntity{
+				Name:       match,
+				Type:       graph.EntityMoney,
+				Confidence: 0.95,
+			})
+		}
+	}
+
+	result.Entities = filtered
+	return result
+}
+
+// PredicateToEdgeType converts a predicate string to an EdgeType
+func PredicateToEdgeType(predicate string) graph.EdgeType {
+	switch strings.ToLower(predicate) {
+	case "works_at":
+		return graph.EdgeWorksAt
+	case "lives_in":
+		return graph.EdgeLivesIn
+	case "married_to":
+		return graph.EdgeMarriedTo
+	case "sibling_of":
+		return graph.EdgeSiblingOf
+	case "parent_of":
+		return graph.EdgeParentOf
+	case "child_of":
+		return graph.EdgeChildOf
+	case "friend_of":
+		return graph.EdgeFriendOf
+	case "works_on":
+		return graph.EdgeWorksOn
+	case "located_in":
+		return graph.EdgeLocatedIn
+	case "part_of":
+		return graph.EdgePartOf
+	case "studied_at":
+		return graph.EdgeStudiedAt
+	case "met_at":
+		return graph.EdgeMetAt
+	case "cofounder_of":
+		return graph.EdgeCofounderOf
+	case "owner_of":
+		return graph.EdgeOwnerOf
+	case "has_email":
+		return graph.EdgeHasEmail
+	case "prefers":
+		return graph.EdgePrefers
+	case "allergic_to":
+		return graph.EdgeAllergicTo
+	case "has_pet":
+		return graph.EdgeHasPet
+	default:
+		return graph.EdgeRelatedTo
+	}
+}
+
+// parseEntityType converts a string to EntityType (OntoNotes-compatible + extensions)
 func parseEntityType(s string) graph.EntityType {
-	switch strings.ToLower(s) {
-	case "person":
+	switch strings.ToUpper(s) {
+	case "PERSON":
 		return graph.EntityPerson
-	case "project":
-		return graph.EntityProject
-	case "concept":
-		return graph.EntityConcept
-	case "location":
-		return graph.EntityLocation
-	case "time":
+	case "ORG", "ORGANIZATION":
+		return graph.EntityOrg
+	case "GPE":
+		return graph.EntityGPE
+	case "LOC", "LOCATION":
+		return graph.EntityLoc
+	case "FAC", "FACILITY":
+		return graph.EntityFac
+	case "PRODUCT":
+		return graph.EntityProduct
+	case "EVENT":
+		return graph.EntityEvent
+	case "WORK_OF_ART", "PROJECT": // Map legacy "project" to work_of_art
+		return graph.EntityWorkOfArt
+	case "LAW":
+		return graph.EntityLaw
+	case "LANGUAGE":
+		return graph.EntityLanguage
+	case "NORP":
+		return graph.EntityNorp
+	case "DATE":
+		return graph.EntityDate
+	case "TIME":
 		return graph.EntityTime
+	case "MONEY":
+		return graph.EntityMoney
+	case "PERCENT":
+		return graph.EntityPercent
+	case "QUANTITY":
+		return graph.EntityQuantity
+	case "CARDINAL":
+		return graph.EntityCardinal
+	case "ORDINAL":
+		return graph.EntityOrdinal
+	case "EMAIL":
+		return graph.EntityEmail
+	case "PET", "ANIMAL":
+		return graph.EntityPet
 	default:
 		return graph.EntityOther
 	}
