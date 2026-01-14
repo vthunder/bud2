@@ -10,7 +10,7 @@
     },
     "notion": {
       "args": [],
-      "command": "/Users/thunder/src/bud2/bin/notion-mcp",
+      "command": "/Users/thunder/src/efficient-notion-mcp/efficient-notion-mcp",
       "type": "stdio"
     }
   }

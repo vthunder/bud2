@@ -1588,83 +1588,8 @@ func main() {
 		return "[]", nil
 	})
 
-	// Notion sync tools (pull/diff/push for efficient markdown ↔ Notion sync)
-	// Tools will load NOTION_API_KEY from env or .env file at runtime
-	{
-		server.RegisterTool("notion_pull", mcp.ToolDef{
-			Description: "Pull a Notion page to a local markdown file. Fetches all blocks and comments, converts to markdown with frontmatter. Comments are preserved as blockquotes.",
-			Properties: map[string]mcp.PropDef{
-				"page_id":    {Type: "string", Description: "Notion page ID (with or without dashes)"},
-				"output_dir": {Type: "string", Description: "Directory to save the markdown file. Default: /tmp/notion"},
-			},
-			Required: []string{"page_id"},
-		}, func(ctx any, args map[string]any) (string, error) {
-			pageID, _ := args["page_id"].(string)
-			if pageID == "" {
-				return "", fmt.Errorf("page_id is required")
-			}
-			outputDir, _ := args["output_dir"].(string)
-
-			client, err := notion.NewSyncClient()
-			if err != nil {
-				return "", err
-			}
-
-			result, err := client.PullPage(pageID, outputDir)
-			if err != nil {
-				return "", err
-			}
-
-			return fmt.Sprintf("Pulled page '%s' to %s\n\nPage ID: %s\nContent length: %d characters",
-				result.Title, result.FilePath, result.PageID, len(result.Markdown)), nil
-		})
-
-		server.RegisterTool("notion_diff", mcp.ToolDef{
-			Description: "Compare a local markdown file against its Notion page. Shows what would change if pushed.",
-			Properties: map[string]mcp.PropDef{
-				"file_path": {Type: "string", Description: "Path to the local markdown file (must have notion_id in frontmatter)"},
-			},
-			Required: []string{"file_path"},
-		}, func(ctx any, args map[string]any) (string, error) {
-			filePath, _ := args["file_path"].(string)
-			if filePath == "" {
-				return "", fmt.Errorf("file_path is required")
-			}
-
-			client, err := notion.NewSyncClient()
-			if err != nil {
-				return "", err
-			}
-
-			return client.DiffPage(filePath)
-		})
-
-		server.RegisterTool("notion_push", mcp.ToolDef{
-			Description: "Push a local markdown file to Notion. Erases existing content and replaces with markdown content. Comments in the file are preserved as blockquotes.",
-			Properties: map[string]mcp.PropDef{
-				"file_path": {Type: "string", Description: "Path to the local markdown file (must have notion_id in frontmatter)"},
-			},
-			Required: []string{"file_path"},
-		}, func(ctx any, args map[string]any) (string, error) {
-			filePath, _ := args["file_path"].(string)
-			if filePath == "" {
-				return "", fmt.Errorf("file_path is required")
-			}
-
-			client, err := notion.NewSyncClient()
-			if err != nil {
-				return "", err
-			}
-
-			if err := client.PushPage(filePath); err != nil {
-				return "", err
-			}
-
-			return fmt.Sprintf("Successfully pushed %s to Notion", filePath), nil
-		})
-
-		log.Println("Notion sync tools registered (notion_pull, notion_diff, notion_push)")
-	}
+	// Notion sync tools (notion_pull, notion_diff, notion_push) are now provided
+	// by the separate efficient-notion-mcp server for better modularity
 
 	// Google Calendar tools (only register if credentials are configured)
 	hasCalendarCreds := os.Getenv("GOOGLE_CALENDAR_CREDENTIALS") != "" || os.Getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE") != ""
