@@ -37,6 +37,7 @@ type SimpleSession struct {
 	pid       int
 	state     ProcessState
 	startedAt time.Time
+	statePath string // Path to state directory for reset coordination
 
 	// Track what's been sent to this session
 	seenItemIDs map[string]bool
@@ -51,11 +52,12 @@ type SimpleSession struct {
 }
 
 // NewSimpleSession creates a new simple session manager
-func NewSimpleSession(tmux *Tmux) *SimpleSession {
+func NewSimpleSession(tmux *Tmux, statePath string) *SimpleSession {
 	return &SimpleSession{
 		tmux:        tmux,
 		sessionID:   generateSessionUUID(),
 		seenItemIDs: make(map[string]bool),
+		statePath:   statePath,
 	}
 }
 
@@ -67,6 +69,33 @@ func generateSessionUUID() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%12x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// resetPendingPath returns the path to the reset pending flag file
+func (s *SimpleSession) resetPendingPath() string {
+	if s.statePath == "" {
+		return ""
+	}
+	return s.statePath + "/reset.pending"
+}
+
+// isResetPending checks if a memory reset is pending
+// When true, new sessions should not be started until Reset() is called
+func (s *SimpleSession) isResetPending() bool {
+	path := s.resetPendingPath()
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// clearResetPending removes the reset pending flag
+func (s *SimpleSession) clearResetPending() {
+	path := s.resetPendingPath()
+	if path != "" {
+		os.Remove(path)
+	}
 }
 
 // SessionID returns the current session ID
@@ -122,6 +151,21 @@ func (s *SimpleSession) IsReady() bool {
 
 // EnsureRunning ensures Claude is running, starting it if needed
 func (s *SimpleSession) EnsureRunning(cfg ClaudeConfig) error {
+	// Check for reset pending BEFORE acquiring lock (allows Reset() to clear flag)
+	// This prevents race condition where new session starts with old session ID
+	// before memory_reset's reset_session signal is processed
+	if s.isResetPending() {
+		log.Printf("[simple-session] Reset pending, waiting for reset_session signal...")
+		deadline := time.Now().Add(10 * time.Second)
+		for s.isResetPending() && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if s.isResetPending() {
+			log.Printf("[simple-session] Warning: reset still pending after timeout, clearing flag")
+			s.clearResetPending()
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -176,13 +220,16 @@ func (s *SimpleSession) startClaude(cfg ClaudeConfig) error {
 	pidFile := fmt.Sprintf("/tmp/bud-claude-%s.pid", MainWindowName)
 
 	// Determine which flag to use
+	// --session-id creates a new session, --resume continues an existing one by ID
+	// (Note: --continue continues the most recent session in the directory without
+	// accepting a session ID, so we use --resume for explicit session resumption)
 	sessionFlag := "--session-id"
 	sessionFile := s.findSessionFile()
 	if sessionFile != "" {
 		info, err := os.Stat(sessionFile)
 		if err == nil && info.Size() >= 100 {
-			log.Printf("[simple-session] Found valid session file, using --continue")
-			sessionFlag = "--continue"
+			log.Printf("[simple-session] Found valid session file, using --resume")
+			sessionFlag = "--resume"
 		} else if err == nil {
 			log.Printf("[simple-session] Found invalid session file (%d bytes), deleting", info.Size())
 			os.Remove(sessionFile)
@@ -616,4 +663,6 @@ func (s *SimpleSession) Reset() {
 	s.seenItemIDs = make(map[string]bool)
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
 	s.state = ProcessNone
+	s.clearResetPending() // Clear the pending flag so new sessions can start
+	log.Printf("[simple-session] Session reset complete, new session ID: %s", s.sessionID)
 }

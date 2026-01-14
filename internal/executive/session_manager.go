@@ -99,7 +99,7 @@ func (m *SessionManager) Focus(thread *types.Thread) (*ClaudeSession, error) {
 		session.sessionID = thread.SessionID
 		session.windowName = thread.WindowName
 		// If thread already had a session ID (not newly generated), the Claude Code
-		// session likely exists on disk. Use --continue to be safe.
+		// session likely exists on disk. Use --resume to be safe.
 		// Claude Code creates the session file on startup, even if it dies later.
 		session.sessionInitialized = !isNewSessionID
 		m.sessions[thread.ID] = session

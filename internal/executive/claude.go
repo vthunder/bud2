@@ -448,7 +448,7 @@ func (c *ClaudeSession) ensureClaudeRunning(cfg ClaudeConfig) error {
 
 	// Mark session as initialized immediately after startClaude succeeds
 	// Claude Code creates the session file on startup, before it's "ready"
-	// So even if initialization fails later, we need to use --continue next time
+	// So even if initialization fails later, we need to use --resume next time
 	c.sessionInitialized = true
 
 	// Wait for ready via /status command detection
@@ -471,9 +471,10 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 		return fmt.Errorf("cannot start Claude: empty session ID")
 	}
 
-	// Strategy: try --session-id first (safe, won't fall back to wrong session).
-	// If it fails with "already in use", retry with --continue.
-	// This avoids --continue's dangerous fallback behavior.
+	// Strategy: use --session-id for new sessions, --resume for existing ones.
+	// --resume takes a session ID and resumes that specific session.
+	// (--continue just resumes the most recent session in the directory, which
+	// could be wrong if multiple sessions are active in the same directory.)
 
 	log.Printf("[claude] Starting session: %s", c.sessionID)
 	c.processState = ProcessStarting
@@ -482,6 +483,9 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 	pidFile := fmt.Sprintf("/tmp/bud-claude-%s.pid", c.windowName)
 
 	// Determine which flag to use based on session file state
+	// --session-id creates a new session, --resume continues an existing one by ID
+	// (Note: --continue continues the most recent session in the directory without
+	// accepting a session ID, so we use --resume for explicit session resumption)
 	sessionFlag := "--session-id"
 	sessionFile, sessionFileSize := c.findSessionFile()
 
@@ -493,9 +497,9 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 			os.Remove(sessionFile)
 			sessionFlag = "--session-id"
 		} else {
-			// Session file exists and has content - use --continue
-			log.Printf("[claude] Found valid session file (%d bytes), using --continue", sessionFileSize)
-			sessionFlag = "--continue"
+			// Session file exists and has content - use --resume to continue by ID
+			log.Printf("[claude] Found valid session file (%d bytes), using --resume", sessionFileSize)
+			sessionFlag = "--resume"
 		}
 	} else {
 		log.Printf("[claude] No session file found, using --session-id")
