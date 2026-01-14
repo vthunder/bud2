@@ -18,6 +18,8 @@ state/
 *.swp
 /bud
 
+repomix.md
+
 # Generated deploy files (created by deploy/setup.sh)
 deploy/deploy.sh
 deploy/com.bud.daemon.plist
