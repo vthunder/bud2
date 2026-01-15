@@ -11,128 +11,70 @@ I can query and interact with external systems using MCP tools. Each integration
 
 ## Notion
 
-Query and edit Notion pages, databases, and blocks using the official Notion MCP server.
+Query and edit Notion pages and databases using the official `@notionhq/notion-mcp-server`.
 
-### Architecture
+### Setup
 
-**Official Notion MCP Tools** (`mcp__notion__API-*`) handle all HTTP operations.
-**Bud Conversion Tools** (`notion_*`) convert between markdown and Notion's block format.
+The official Notion MCP server is configured in `.mcp.json`:
+```json
+{
+  "notion": {
+    "command": "npx",
+    "args": ["-y", "@notionhq/notion-mcp-server"],
+    "env": { "NOTION_TOKEN": "${NOTION_API_KEY}" }
+  }
+}
+```
 
-Workflow:
-1. Use official API tools for all HTTP operations (search, get, update)
-2. Use Bud tools to convert markdown ↔ JSON blocks
+Create an integration at https://notion.so/profile/integrations and share pages with it.
 
-### Official API Tools
+### Available Tools
+
+The official MCP server provides ~21 tools. Key ones:
 
 | Tool | Purpose |
 |------|---------|
-| `API-post-search` | Search pages and databases by text |
-| `API-retrieve-a-page` | Get page properties |
-| `API-patch-page` | Update page properties |
-| `API-post-page` | Create new page |
-| `API-get-block-children` | Get blocks on a page |
-| `API-patch-block-children` | Append blocks to page |
-| `API-retrieve-a-block` | Get single block |
-| `API-update-a-block` | Update block content |
-| `API-delete-a-block` | Delete a block |
-| `API-query-data-source` | Query database with filters |
-| `API-retrieve-a-data-source` | Get database schema |
-| `API-move-page` | Move page to new parent |
-| `API-create-a-comment` | Add comment to page |
-| `API-retrieve-a-comment` | Get comments on page |
+| `notion__search` | Search pages and databases |
+| `notion__retrieve-a-page` | Get page properties |
+| `notion__retrieve-a-page-content` | Get page content (markdown mode) |
+| `notion__update-page-content` | Replace page content (markdown mode) |
+| `notion__create-a-page` | Create new page |
+| `notion__get-block-children` | Get blocks (JSON mode) |
+| `notion__append-block-children` | Append blocks |
+| `notion__query-a-database` | Query database with filters |
+| `notion__retrieve-a-database` | Get database schema |
+| `notion__create-a-comment` | Add comment to page |
+| `notion__retrieve-comments` | Get comments |
 
-### Bud Sync Tools (Recommended)
+### Markdown Mode (Recommended)
 
-Efficient bidirectional sync between markdown files and Notion pages. Uses direct API calls - much faster than manual block-by-block operations.
+The official MCP has built-in markdown support - no manual conversion needed:
 
-| Tool | Purpose |
-|------|---------|
-| `notion_pull` | Fetch page → local markdown file (with comments as blockquotes) |
-| `notion_diff` | Compare local file vs Notion page |
-| `notion_push` | Push local file → Notion (erase + replace, 2 API calls total) |
-
-**Setup:** Reads `NOTION_API_KEY` from environment or `.env` file automatically.
-
-**Workflow:**
+**Read page content:**
 ```
-# Pull a page to edit locally
-notion_pull(page_id="abc123")
-# → Creates /tmp/notion/PageTitle.md with frontmatter
-
-# Edit the markdown file (Claude is efficient at this!)
-
-# Check what would change
-notion_diff(file_path="/tmp/notion/PageTitle.md")
-
-# Push changes back
-notion_push(file_path="/tmp/notion/PageTitle.md")
+notion__retrieve-a-page-content(page_id="abc123")
+# Returns markdown directly
 ```
 
-**File format:**
-```markdown
----
-notion_id: abc123
-title: Page Title
-pulled_at: 2025-01-14T10:30:00Z
----
-
-# Content here
-
----
-
-## Comments
-
-> 💬 **username** *(Jan 14)*: Original comment preserved as blockquote
+**Update page content:**
 ```
-
-### Bud Conversion Tools
-
-Lower-level conversion utilities - use when you need fine-grained control:
-
-| Tool | Input | Output |
-|------|-------|--------|
-| `notion_get_content` | JSON blocks array | Markdown string |
-| `notion_create_page` | Markdown string | JSON blocks array |
-| `notion_insert_block` | Block type + markdown | Single JSON block |
-| `notion_update_block` | Markdown string | rich_text JSON array |
-| `notion_list_blocks` | JSON blocks array | Simplified ID/type list |
-
-### Common Workflows
-
-**Read page content as markdown:**
-```
-1. API-get-block-children(block_id="page-id")  → JSON blocks
-2. notion_get_content(blocks=<JSON from step 1>)  → markdown
-```
-
-**Write markdown to page:**
-```
-1. notion_create_page(markdown="# Title\n\n- Item 1")  → JSON blocks
-2. API-patch-block-children(block_id="page-id", children=<JSON from step 1>)
-```
-
-**Replace page content (use sync tools instead!):**
-```
-# Recommended: Use notion_pull → edit → notion_push
-
-# Manual approach (slow, many API calls):
-1. API-get-block-children(block_id="page-id")  → get block IDs
-2. For each block: API-delete-a-block(block_id=...)
-3. notion_create_page(markdown=<new content>)  → JSON blocks
-4. API-patch-block-children(block_id="page-id", children=<JSON from step 3>)
+notion__update-page-content(
+  page_id="abc123",
+  content="# New Title\n\nUpdated content here"
+)
 ```
 
 ### Searching
 
-```python
-API-post-search(query="Project Alpha")
+```
+notion__search(query="Project Alpha")
 ```
 
 ### Querying Databases
 
-```python
-API-query-data-source(
-  data_source_id="abc123",
+```
+notion__query-a-database(
+  database_id="abc123",
   filter={"property": "Status", "status": {"equals": "In Progress"}},
   sorts=[{"property": "Created", "direction": "descending"}]
 )
@@ -146,58 +88,29 @@ API-query-data-source(
 
 ### Creating Pages
 
-```python
-# Step 1: Convert markdown to blocks
-notion_create_page(markdown="## Section\n\n- Item 1\n- Item 2")
-# Returns: [{"type": "heading_2", ...}, {"type": "bulleted_list_item", ...}]
-
-# Step 2: Create page with blocks
-API-post-page(
-  parent={"page_id": "parent-id"},
-  properties={"title": [{"text": {"content": "New Page"}}]},
-  children=<blocks from step 1>
+```
+notion__create-a-page(
+  parent_page_id="parent-id",
+  title="New Page",
+  content="# Content\n\n- Item 1\n- Item 2"
 )
 ```
-
-### Block Format
-
-Notion API block structure:
-```json
-{"type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Text"}}]}}
-{"type": "heading_1", "heading_1": {"rich_text": [{"text": {"content": "Title"}}]}}
-{"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"text": {"content": "Item"}}]}}
-```
-
-Supported block types: `paragraph`, `heading_1`, `heading_2`, `heading_3`, `bulleted_list_item`, `numbered_list_item`, `to_do`, `quote`, `divider`, `table`
-
-### Markdown Formatting
-
-Bud tools support inline markdown: `**bold**`, `*italic*`, `` `code` ``, `[link](url)`
 
 ### Comments
 
-```python
-API-retrieve-a-comment(block_id="page-id")
-API-create-a-comment(
-  parent={"page_id": "page-id"},
-  rich_text=[{"text": {"content": "My comment"}}]
-)
 ```
-
-### Moving Pages
-
-```python
-API-move-page(
-  page_id="page-to-move",
-  parent={"type": "page_id", "page_id": "new-parent-id"}
+notion__retrieve-comments(block_id="page-id")
+notion__create-a-comment(
+  page_id="page-id",
+  content="My comment"
 )
 ```
 
 ### Tips
 
-- **Page IDs from URLs:** `notion.so/.../Page-Title-abc123` → `abc123`
-- **Pagination:** Official tools return `has_more` and `next_cursor` for large results
-- **100 block limit:** API-patch-block-children accepts max 100 blocks per call
+- **Page IDs from URLs:** `notion.so/.../Page-Title-abc123` → use `abc123`
+- **Use markdown mode** - `retrieve-a-page-content` and `update-page-content` are faster than working with JSON blocks
+- **Share pages with integration** - the integration can only access pages explicitly shared with it
 
 ## Google Calendar
 
@@ -276,22 +189,15 @@ github_project_items(project=1, sprint="Sprint 65")
 
 ## Using Integrations in Reflexes
 
-Integrations can also be used in reflex pipelines for autonomous data pulling:
+MCP tools (Notion, Calendar, GitHub) are called through the executive (Claude). For autonomous integration workflows, reflexes can wake the executive with relevant context:
 
 ```yaml
-name: daily-project-sync
+name: daily-sync-reminder
 trigger:
   schedule: "0 9 * * *"
 pipeline:
-  - action: notion_query_db
-    database_id: "abc123"
-    filter: {"property": "Status", "status": {"equals": "In Progress"}}
-    output: projects
-  - action: condition
-    if: "len(projects.results) > 5"
-    then:
-      - action: wake_executive
-        message: "{{len(projects.results)}} projects in progress"
+  - action: wake_executive
+    message: "Morning sync: Check Notion project status and today's calendar"
 ```
 
-See `state/notes/reflexes.md` for more on creating reflexes.
+For simpler triggers, reflexes can use internal Bud tools directly (GTD, journal, etc). See `state/notes/reflexes.md` for more on creating reflexes.
