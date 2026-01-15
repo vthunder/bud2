@@ -11,6 +11,13 @@ BUD_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$BUD_DIR"
 
+# Source .env file for environment variables (NOTION_API_KEY, etc.)
+if [ -f "$BUD_DIR/.env" ]; then
+    set -a  # auto-export all variables
+    source "$BUD_DIR/.env"
+    set +a
+fi
+
 echo "$(date): === Starting bud ===" >> "$LOG_FILE"
 
 # Run bud, capturing both stdout and stderr to log file
