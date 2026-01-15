@@ -512,7 +512,10 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
 	}
 
-	wrapper := fmt.Sprintf("echo $$ > %s && exec %s", pidFile, claudeCmd)
+	// Source .env to ensure MCP servers get API keys (NOTION_API_KEY, etc.)
+	wd, _ := os.Getwd()
+	envFile := wd + "/.env"
+	wrapper := fmt.Sprintf("set -a; source %s 2>/dev/null; set +a; echo $$ > %s && exec %s", envFile, pidFile, claudeCmd)
 	log.Printf("[claude] Starting with PID tracking: %s", claudeCmd)
 
 	if err := c.tmux.SendKeys(c.windowName, wrapper); err != nil {
