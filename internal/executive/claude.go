@@ -512,12 +512,11 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
 	}
 
-	// Pass MCP-related env vars directly from bud's environment.
-	// The .env is sourced by run-bud.sh, so bud has these vars.
-	// We export them explicitly rather than sourcing in tmux (which was unreliable).
+	// Pass MCP-related env vars to Claude.
+	// Try os.Getenv() first (set by godotenv.Load() in main.go), then fall back to reading .env directly.
 	var envExports string
 	for _, key := range []string{"NOTION_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"} {
-		if val := os.Getenv(key); val != "" {
+		if val := getEnvWithFallback(key); val != "" {
 			envExports += fmt.Sprintf("export %s='%s'; ", key, val)
 		}
 	}
@@ -776,4 +775,45 @@ func truncatePrompt(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// getEnvWithFallback tries os.Getenv first, then reads from .env file directly
+func getEnvWithFallback(key string) string {
+	// First try the environment (godotenv.Load() in main.go should have set this)
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+
+	// Fall back to reading .env file directly
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	envFile := wd + "/.env"
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		return ""
+	}
+
+	// Parse .env file (simple KEY=VALUE format)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx > 0 {
+			k := strings.TrimSpace(line[:idx])
+			v := strings.TrimSpace(line[idx+1:])
+			// Remove quotes if present
+			if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+				v = v[1 : len(v)-1]
+			}
+			if k == key {
+				return v
+			}
+		}
+	}
+
+	return ""
 }
