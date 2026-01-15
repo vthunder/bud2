@@ -512,10 +512,16 @@ func (c *ClaudeSession) startClaude(cfg ClaudeConfig) error {
 		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
 	}
 
-	// Source .env to ensure MCP servers get API keys (NOTION_API_KEY, etc.)
-	wd, _ := os.Getwd()
-	envFile := wd + "/.env"
-	wrapper := fmt.Sprintf("set -a; source %s 2>/dev/null; set +a; echo $$ > %s && exec %s", envFile, pidFile, claudeCmd)
+	// Pass MCP-related env vars directly from bud's environment.
+	// The .env is sourced by run-bud.sh, so bud has these vars.
+	// We export them explicitly rather than sourcing in tmux (which was unreliable).
+	var envExports string
+	for _, key := range []string{"NOTION_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"} {
+		if val := os.Getenv(key); val != "" {
+			envExports += fmt.Sprintf("export %s='%s'; ", key, val)
+		}
+	}
+	wrapper := fmt.Sprintf("%secho $$ > %s && exec %s", envExports, pidFile, claudeCmd)
 	log.Printf("[claude] Starting with PID tracking: %s", claudeCmd)
 
 	if err := c.tmux.SendKeys(c.windowName, wrapper); err != nil {
