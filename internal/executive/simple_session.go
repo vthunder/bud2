@@ -40,7 +40,8 @@ type SimpleSession struct {
 	statePath string // Path to state directory for reset coordination
 
 	// Track what's been sent to this session
-	seenItemIDs map[string]bool
+	seenItemIDs    map[string]bool
+	seenMemoryIDs  map[string]bool // Track which memory traces have been sent
 
 	// Track conversation buffer sync to avoid re-sending already-seen context
 	// Only buffer entries after this time need to be sent
@@ -54,10 +55,11 @@ type SimpleSession struct {
 // NewSimpleSession creates a new simple session manager
 func NewSimpleSession(tmux *Tmux, statePath string) *SimpleSession {
 	return &SimpleSession{
-		tmux:        tmux,
-		sessionID:   generateSessionUUID(),
-		seenItemIDs: make(map[string]bool),
-		statePath:   statePath,
+		tmux:          tmux,
+		sessionID:     generateSessionUUID(),
+		seenItemIDs:   make(map[string]bool),
+		seenMemoryIDs: make(map[string]bool),
+		statePath:     statePath,
 	}
 }
 
@@ -113,6 +115,23 @@ func (s *SimpleSession) MarkItemsSeen(ids []string) {
 	for _, id := range ids {
 		s.seenItemIDs[id] = true
 	}
+}
+
+// HasSeenMemory returns true if a memory trace has been sent to this session
+func (s *SimpleSession) HasSeenMemory(id string) bool {
+	return s.seenMemoryIDs[id]
+}
+
+// MarkMemoriesSeen marks memory traces as having been sent to Claude
+func (s *SimpleSession) MarkMemoriesSeen(ids []string) {
+	for _, id := range ids {
+		s.seenMemoryIDs[id] = true
+	}
+}
+
+// SeenMemoryCount returns how many memories have been sent in this session
+func (s *SimpleSession) SeenMemoryCount() int {
+	return len(s.seenMemoryIDs)
 }
 
 // LastBufferSync returns when the buffer was last synced to this session
@@ -661,6 +680,7 @@ func (s *SimpleSession) Reset() {
 	s.cleanup()
 	s.sessionID = generateSessionUUID()
 	s.seenItemIDs = make(map[string]bool)
+	s.seenMemoryIDs = make(map[string]bool)
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
 	s.state = ProcessNone
 	s.clearResetPending() // Clear the pending flag so new sessions can start

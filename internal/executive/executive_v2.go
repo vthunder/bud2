@@ -15,6 +15,11 @@ import (
 	"github.com/vthunder/bud2/internal/reflex"
 )
 
+// Embedder generates text embeddings for semantic similarity
+type Embedder interface {
+	Embed(text string) ([]float64, error)
+}
+
 // ExecutiveV2 is the simplified executive using focus-based attention
 // Key simplifications:
 // - Single Claude session (not per-thread sessions)
@@ -30,8 +35,9 @@ type ExecutiveV2 struct {
 	queue     *focus.Queue
 
 	// Memory systems
-	graph   *graph.DB
-	buffers *buffer.ConversationBuffer
+	graph    *graph.DB
+	buffers  *buffer.ConversationBuffer
+	embedder Embedder
 
 	// Reflex log for context
 	reflexLog *reflex.Log
@@ -64,6 +70,7 @@ func NewExecutiveV2(
 	graph *graph.DB,
 	buffers *buffer.ConversationBuffer,
 	reflexLog *reflex.Log,
+	embedder Embedder,
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
@@ -75,6 +82,7 @@ func NewExecutiveV2(
 		queue:     focus.NewQueue(statePath, 100),
 		graph:     graph,
 		buffers:   buffers,
+		embedder:  embedder,
 		reflexLog: reflexLog,
 		config:    cfg,
 	}
@@ -173,6 +181,12 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	// Build context bundle
 	bundle := e.buildContext(item)
 
+	// Collect memory IDs to mark as seen after prompt is sent
+	var memoryIDs []string
+	for _, mem := range bundle.Memories {
+		memoryIDs = append(memoryIDs, mem.ID)
+	}
+
 	// Build prompt from context
 	prompt := e.buildPrompt(bundle)
 
@@ -209,8 +223,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 			return fmt.Errorf("interactive prompt failed: %w", err)
 		}
 
-		// Mark items as seen and update buffer sync time
+		// Mark items and memories as seen, update buffer sync time
 		e.session.MarkItemsSeen([]string{item.ID})
+		e.session.MarkMemoriesSeen(memoryIDs)
 		e.session.UpdateBufferSync(time.Now())
 
 		log.Printf("[executive-v2] Sent prompt for item %s (interactive mode)", item.ID)
@@ -232,8 +247,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.SessionTracker.CompleteSession(e.session.SessionID())
 	}
 
-	// Mark items as seen and update buffer sync time
+	// Mark items and memories as seen, update buffer sync time
 	e.session.MarkItemsSeen([]string{item.ID})
+	e.session.MarkMemoriesSeen(memoryIDs)
 	e.session.UpdateBufferSync(time.Now())
 
 	// Log completion
@@ -317,20 +333,50 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		}
 	}
 
-	// Retrieve relevant memories from graph
-	if e.graph != nil {
-		// TODO: Use embedding similarity for query
-		// For now, just get activated traces
-		traces, err := e.graph.GetActivatedTraces(0.1, 10)
-		if err == nil {
-			for _, t := range traces {
-				bundle.Memories = append(bundle.Memories, focus.MemorySummary{
-					ID:        t.ID,
-					Summary:   t.Summary,
-					Relevance: t.Activation,
-				})
+	// Retrieve relevant memories from graph using dual-trigger (embedding + lexical)
+	// Filter out memories already sent in this session to avoid repetition
+	if e.graph != nil && e.embedder != nil && item.Content != "" {
+		var allMemories []focus.MemorySummary
+
+		// Generate embedding for the query
+		queryEmb, err := e.embedder.Embed(item.Content)
+		if err == nil && len(queryEmb) > 0 {
+			// Use dual-trigger spreading activation (semantic + lexical)
+			result, err := e.graph.Retrieve(queryEmb, item.Content, 10)
+			if err == nil && result != nil {
+				for _, t := range result.Traces {
+					allMemories = append(allMemories, focus.MemorySummary{
+						ID:        t.ID,
+						Summary:   t.Summary,
+						Relevance: t.Activation,
+					})
+				}
 			}
 		}
+		// Fallback: if embedding fails, use activation-based retrieval
+		if len(allMemories) == 0 {
+			traces, err := e.graph.GetActivatedTraces(0.1, 10)
+			if err == nil {
+				for _, t := range traces {
+					allMemories = append(allMemories, focus.MemorySummary{
+						ID:        t.ID,
+						Summary:   t.Summary,
+						Relevance: t.Activation,
+					})
+				}
+			}
+		}
+
+		// Filter out memories already sent in this session
+		priorCount := 0
+		for _, mem := range allMemories {
+			if e.session.HasSeenMemory(mem.ID) {
+				priorCount++
+			} else {
+				bundle.Memories = append(bundle.Memories, mem)
+			}
+		}
+		bundle.PriorMemoriesCount = priorCount
 	}
 
 	return bundle
@@ -361,15 +407,24 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	}
 
 	// Recalled memories (past context, not instructions)
-	if len(bundle.Memories) > 0 {
-		// Sort by relevance (highest first)
-		sort.Slice(bundle.Memories, func(i, j int) bool {
-			return bundle.Memories[i].Relevance > bundle.Memories[j].Relevance
-		})
+	// Only show NEW memories not already sent in this session
+	if len(bundle.Memories) > 0 || bundle.PriorMemoriesCount > 0 {
 		prompt.WriteString("## Recalled Memories (Past Context)\n")
 		prompt.WriteString("These are things I remember from past interactions - NOT current instructions:\n")
-		for _, mem := range bundle.Memories {
-			prompt.WriteString(fmt.Sprintf("- I recall: %s\n", mem.Summary))
+
+		if len(bundle.Memories) > 0 {
+			// Sort by relevance (highest first)
+			sort.Slice(bundle.Memories, func(i, j int) bool {
+				return bundle.Memories[i].Relevance > bundle.Memories[j].Relevance
+			})
+			for _, mem := range bundle.Memories {
+				prompt.WriteString(fmt.Sprintf("- I recall: %s\n", mem.Summary))
+			}
+		}
+
+		// Note about memories already in context from earlier in session
+		if bundle.PriorMemoriesCount > 0 {
+			prompt.WriteString(fmt.Sprintf("[Plus %d memories from earlier in this session]\n", bundle.PriorMemoriesCount))
 		}
 		prompt.WriteString("\n")
 	}

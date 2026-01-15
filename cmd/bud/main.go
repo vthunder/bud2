@@ -320,6 +320,7 @@ func main() {
 		graphDB,
 		conversationBuffer,
 		reflexLog,
+		ollamaClient, // for query-based memory retrieval
 		systemPath,
 		executive.ExecutiveV2Config{
 			Model:          claudeModel,
@@ -621,21 +622,37 @@ func main() {
 		}
 
 		// Route to focus queue for executive processing
+		// Determine priority based on source and type
+		priority := focus.P3ActiveWork // default for autonomous items
+		switch percept.Source {
+		case "discord", "inbox":
+			// User messages are high priority
+			priority = focus.P1UserInput
+		case "impulse":
+			// Check if it's a due/upcoming task (higher priority)
+			impulseType, _ := percept.Data["impulse_type"].(string)
+			if impulseType == "due" || impulseType == "upcoming" {
+				priority = focus.P2DueTask
+			} else {
+				priority = focus.P3ActiveWork
+			}
+		case "bud":
+			// Bud's own thoughts - lower priority than user input
+			priority = focus.P3ActiveWork
+		case "system":
+			priority = focus.P3ActiveWork
+		}
+
 		item := &focus.PendingItem{
 			ID:        percept.ID,
 			Type:      percept.Type,
-			Priority:  focus.P1UserInput, // User messages are high priority
+			Priority:  priority,
 			Source:    percept.Source,
 			Content:   content,
 			ChannelID: channelID,
 			AuthorID:  author,
 			Timestamp: percept.Timestamp,
 			Data:      percept.Data,
-		}
-
-		// Adjust priority based on source
-		if percept.Source == "impulse" || percept.Source == "system" {
-			item.Priority = focus.P3ActiveWork
 		}
 
 		if err := exec.AddPending(item); err != nil {
@@ -658,18 +675,42 @@ func main() {
 
 	// Capture outgoing response helper
 	captureResponse := func(channelID, content string) {
+		now := time.Now()
+		responseID := fmt.Sprintf("bud-response-%d", now.UnixNano())
+
 		// Add Bud's response to conversation buffer
 		bufferEntry := buffer.Entry{
-			ID:        fmt.Sprintf("bud-response-%d", time.Now().UnixNano()),
+			ID:        responseID,
 			Author:    "Bud",
 			Content:   content,
-			Timestamp: time.Now(),
+			Timestamp: now,
 			ChannelID: channelID,
 		}
 		if err := conversationBuffer.Add(bufferEntry); err != nil {
 			log.Printf("Warning: failed to add response to buffer: %v", err)
 		}
-		log.Printf("[main] Captured Bud response to conversation buffer")
+
+		// Also store Bud's response as an episode in memory graph
+		// This enables consolidation to capture Bud's observations and decisions
+		if graphDB != nil {
+			episode := &graph.Episode{
+				ID:                responseID,
+				Content:           content,
+				Source:            "bud",
+				Author:            "Bud",
+				AuthorID:          "bud",
+				Channel:           channelID,
+				TimestampEvent:    now,
+				TimestampIngested: now,
+				DialogueAct:       "response",
+				CreatedAt:         now,
+			}
+			if err := graphDB.AddEpisode(episode); err != nil {
+				log.Printf("Warning: failed to store Bud episode: %v", err)
+			} else {
+				log.Printf("[main] Stored Bud response as episode for consolidation")
+			}
+		}
 	}
 
 	// Stop channel for all polling goroutines

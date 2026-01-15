@@ -638,10 +638,86 @@ u_i(t+1) = (1-δ) * a_i(t) + Σ_{j∈N(i)} S * w_ji * a_j(t) / fan(j)
 
 ---
 
+## Part 7: Spreading Activation Implementation (2026-01-15)
+
+Based on the Synapse paper (arxiv:2601.02744), implemented full spreading activation algorithm.
+
+### 7.1 Algorithm Parameters
+
+```go
+// From internal/graph/activation.go
+
+// Per-iteration decay
+DecayRate    = 0.5  // δ - retention factor (1-δ retained per iteration)
+SpreadFactor = 0.8  // S - spreading coefficient
+
+// Iterations
+DefaultIters = 3    // T - iterations to stability
+
+// Lateral inhibition
+InhibitionStrength = 0.15  // β - suppression strength
+InhibitionTopM     = 7     // M - number of winners
+
+// Sigmoid transform
+SigmoidGamma = 5.0  // γ - steepness
+SigmoidTheta = 0.5  // θ - firing threshold
+
+// Seeding thresholds
+MinSimilarityThreshold = 0.3  // minimum cosine similarity to seed
+SeedBoost = 0.5               // initial activation for seed nodes
+
+// Feeling of Knowing
+FoKThreshold = 0.12  // reject if max activation below this
+```
+
+### 7.2 Dual-Trigger Seeding
+
+Both triggers contribute seed nodes (union):
+
+1. **Semantic trigger**: Embedding cosine similarity ≥ 0.3
+2. **Lexical trigger**: Keyword matching (BM25-style)
+   - Tokenize query, filter stop words
+   - Match against trace summaries
+   - Score by keyword overlap count
+
+### 7.3 Spreading Activation Algorithm
+
+```
+For each query:
+1. Seed nodes from dual triggers → activation = 0.5
+2. For T=3 iterations:
+   a. Propagate: contribution = S * weight * activation / fan_out
+   b. Self-decay: new_activation = (1-δ) * old_activation
+   c. Floor protection: seed nodes min 0.3 (prevents isolated node death)
+3. Lateral inhibition: top M=7 suppress competitors
+   û_i = max(0, u_i - β * Σ(u_k - u_i)) for u_k > u_i
+4. Sigmoid transform: σ(x) = 1/(1+exp(-γ(x-θ)))
+5. FoK check: reject if max < 0.12
+```
+
+### 7.4 Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Fresh activation per query | Follows Synapse model; no stale warmth |
+| Minimum similarity threshold | Prevents seeding dissimilar traces |
+| Seed node floor (0.3) | Prevents isolated nodes from vanishing |
+| Top-M inhibition | Winners suppress without threshold artifacts |
+| Sigmoid post-processing | Natural bounds, interpretable as probability |
+
+### 7.5 Files Changed
+
+- `internal/graph/activation.go` - Full algorithm implementation
+- `internal/executive/executive_v2.go` - Pass query text for dual trigger
+- `internal/graph/graph_test.go` - Updated test signatures
+
+---
+
 ## Appendix: Research Sources
 
 See `memory-research.md` for full research notes. Key sources:
 
+- [Synapse](https://arxiv.org/abs/2601.02744) - Spreading activation for LLM agents (implemented)
 - [MemGPT](https://arxiv.org/abs/2310.08560) - Two-tier memory, self-editing
 - [A-MEM](https://arxiv.org/abs/2502.12110) - Zettelkasten-style linking
 - [Zep/Graphiti](https://arxiv.org/abs/2501.13956) - Three-tier temporal graph

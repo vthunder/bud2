@@ -56,13 +56,14 @@ type FocusState struct {
 
 // ContextBundle represents assembled context for the executive
 type ContextBundle struct {
-	CurrentFocus  *PendingItem
-	Suspended     []*PendingItem
-	BufferContent string            // Conversation buffer for current scope
-	Memories      []MemorySummary   // Retrieved memory traces
-	ReflexLog     []ReflexActivity  // Recent reflex activity
-	CoreIdentity  []string          // Core identity statements
-	Metadata      map[string]string // Additional context
+	CurrentFocus       *PendingItem
+	Suspended          []*PendingItem
+	BufferContent      string            // Conversation buffer for current scope
+	Memories           []MemorySummary   // Retrieved memory traces (new ones only)
+	PriorMemoriesCount int               // Count of memories already sent this session
+	ReflexLog          []ReflexActivity  // Recent reflex activity
+	CoreIdentity       []string          // Core identity statements
+	Metadata           map[string]string // Additional context
 }
 
 // MemorySummary is a simplified view of a memory trace for context

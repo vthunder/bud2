@@ -85,8 +85,8 @@ func (r *Resolver) Resolve(extracted ExtractedEntity, config ResolveConfig) (*Re
 		if err == nil && len(embedding) > 0 {
 			entity, err := r.db.FindSimilarEntity(embedding, config.EmbeddingThreshold)
 			if err == nil && entity != nil {
-				// Add as alias for future matches
-				r.db.AddEntityAlias(entity.ID, extracted.Name)
+				// Note: Don't add alias here - embedding similarity doesn't imply identity
+				// Aliases should only come from name-based matches (e.g., "Sarah" → "Sarah Chen")
 				result.Entity = entity
 				result.MatchedBy = "embedding"
 				if config.IncrementSalience {

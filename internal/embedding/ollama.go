@@ -160,20 +160,27 @@ func (c *Client) Summarize(fragments []string) (string, error) {
 
 Guidelines:
 - Refer to the human as "the user" or "the owner"
-- Use first person for your own perspective ("I learned that...", "The user told me...")
-- Capture key facts worth remembering: names, preferences, relationships, dates, facts
+- Use first person for your own perspective
+- Capture: facts, decisions, observations, insights, not just what was said
 - Be concise (1-2 sentences max)
-- Output ONLY the memory, no commentary or explanation
+- Output ONLY the memory, no commentary
 
-Examples:
+Examples - User statements:
 Input: "My favorite coffee shop is Blue Bottle on Market Street"
 Memory: The user's favorite coffee shop is Blue Bottle on Market Street.
 
 Input: "Sarah is my cofounder, she handles product"
-Memory: I learned that Sarah is the user's cofounder who handles product.
+Memory: Sarah is the user's cofounder who handles product.
 
-Input: "Hey can you help me with something?"
-Memory: The user asked for help with something.
+Examples - Bud's observations and decisions:
+Input: "Bud: I implemented dual-trigger seeding combining semantic embeddings and keyword matching for better memory retrieval."
+Memory: I implemented dual-trigger seeding for memory retrieval, combining semantic and lexical matching.
+
+Input: "Bud: Looking at the code, the issue is that consolidation only runs on user messages - my responses aren't stored as episodes."
+Memory: I discovered that consolidation only ran on user messages; my responses were not being stored as episodes.
+
+Input: "Bud: The API returns 429 errors under load. I added exponential backoff with jitter to handle rate limiting."
+Memory: I noticed the API was rate-limited and added exponential backoff with jitter.
 
 Input:
 `

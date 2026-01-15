@@ -145,7 +145,7 @@ func TestFeelingOfKnowing(t *testing.T) {
 
 	// Query with similar embedding - should find it
 	similarQuery := []float64{0.85, 0.15, 0.0, 0.0}
-	result, err := db.Retrieve(similarQuery, 5)
+	result, err := db.Retrieve(similarQuery, "project deadline", 5)
 	if err != nil {
 		t.Fatalf("Retrieve failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestFeelingOfKnowing(t *testing.T) {
 
 	// Query with very different embedding - FoK should reject
 	differentQuery := []float64{0.0, 0.0, 0.9, 0.1}
-	result, err = db.Retrieve(differentQuery, 5)
+	result, err = db.Retrieve(differentQuery, "unrelated topic", 5)
 	if err != nil {
 		t.Fatalf("Retrieve failed: %v", err)
 	}
