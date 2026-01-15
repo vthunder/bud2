@@ -569,6 +569,11 @@ func main() {
 		}
 		activityLog.LogInput(inputSummary, percept.Source, channelID)
 
+		// Check for reflex config updates (hot reload)
+		if reloaded := reflexEngine.CheckForUpdates(); reloaded > 0 {
+			log.Printf("[main] Hot-reloaded %d reflex config(s)", reloaded)
+		}
+
 		// Try reflexes first
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

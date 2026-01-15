@@ -27,10 +27,11 @@ type AttentionChecker interface {
 
 // Engine manages and executes reflexes
 type Engine struct {
-	reflexes  map[string]*Reflex
-	actions   *ActionRegistry
-	reflexDir string
-	mu        sync.RWMutex
+	reflexes    map[string]*Reflex
+	actions     *ActionRegistry
+	reflexDir   string
+	mu          sync.RWMutex
+	fileModTime map[string]time.Time // Track file mod times for hot reload
 
 	// Default channel for notifications (used when no channel_id in context)
 	defaultChannel string
@@ -64,9 +65,10 @@ type Engine struct {
 // NewEngine creates a new reflex engine
 func NewEngine(statePath string) *Engine {
 	e := &Engine{
-		reflexes:  make(map[string]*Reflex),
-		actions:   NewActionRegistry(),
-		reflexDir: filepath.Join(statePath, "system", "reflexes"),
+		reflexes:    make(map[string]*Reflex),
+		actions:     NewActionRegistry(),
+		reflexDir:   filepath.Join(statePath, "system", "reflexes"),
+		fileModTime: make(map[string]time.Time),
 	}
 	e.createGTDActions()
 	return e
@@ -155,6 +157,7 @@ func (e *Engine) Load() error {
 
 	// Load each file
 	e.reflexes = make(map[string]*Reflex)
+	e.fileModTime = make(map[string]time.Time)
 	for _, file := range files {
 		reflex, err := e.loadReflexFile(file)
 		if err != nil {
@@ -162,11 +165,84 @@ func (e *Engine) Load() error {
 			continue
 		}
 		e.reflexes[reflex.Name] = reflex
+		// Track mod time for hot reload
+		if info, err := os.Stat(file); err == nil {
+			e.fileModTime[file] = info.ModTime()
+		}
 		log.Printf("[reflex] Loaded: %s", reflex.Name)
 	}
 
 	log.Printf("[reflex] Loaded %d reflexes", len(e.reflexes))
+
+	// Merge stats from separate stats file (so stats don't overwrite config)
+	e.loadStats()
+
 	return nil
+}
+
+// CheckForUpdates checks if any reflex files have been modified and reloads them
+// Returns the number of reflexes that were reloaded
+func (e *Engine) CheckForUpdates() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	reloaded := 0
+
+	// Find all YAML files
+	files, _ := filepath.Glob(filepath.Join(e.reflexDir, "*.yaml"))
+	yamlFiles, _ := filepath.Glob(filepath.Join(e.reflexDir, "*.yml"))
+	files = append(files, yamlFiles...)
+
+	// Check for new or modified files
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			continue
+		}
+
+		lastMod, known := e.fileModTime[file]
+		if !known || info.ModTime().After(lastMod) {
+			// File is new or modified - reload it
+			reflex, err := e.loadReflexFile(file)
+			if err != nil {
+				log.Printf("[reflex] Failed to reload %s: %v", file, err)
+				continue
+			}
+
+			// Preserve stats from old reflex if it existed
+			if oldReflex, exists := e.reflexes[reflex.Name]; exists {
+				reflex.FireCount = oldReflex.FireCount
+				reflex.LastFired = oldReflex.LastFired
+			}
+
+			e.reflexes[reflex.Name] = reflex
+			e.fileModTime[file] = info.ModTime()
+			log.Printf("[reflex] Hot-reloaded: %s", reflex.Name)
+			reloaded++
+		}
+	}
+
+	// Check for deleted files
+	currentFiles := make(map[string]bool)
+	for _, file := range files {
+		currentFiles[file] = true
+	}
+	for file := range e.fileModTime {
+		if !currentFiles[file] {
+			// File was deleted - find and remove the reflex
+			for name := range e.reflexes {
+				reflexFile := filepath.Join(e.reflexDir, name+".yaml")
+				if reflexFile == file || filepath.Join(e.reflexDir, name+".yml") == file {
+					delete(e.reflexes, name)
+					log.Printf("[reflex] Removed (file deleted): %s", name)
+					break
+				}
+			}
+			delete(e.fileModTime, file)
+		}
+	}
+
+	return reloaded
 }
 
 func (e *Engine) loadReflexFile(path string) (*Reflex, error) {
@@ -369,11 +445,79 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 	}, nil
 }
 
-// saveReflexStats persists FireCount and LastFired to the reflex YAML file
+// reflexStats holds stats for all reflexes, stored separately from config
+type reflexStats struct {
+	Stats map[string]struct {
+		FireCount int       `json:"fire_count"`
+		LastFired time.Time `json:"last_fired"`
+	} `json:"stats"`
+}
+
+// statsFilePath returns the path to the stats file
+func (e *Engine) statsFilePath() string {
+	return filepath.Join(e.reflexDir, "reflex-stats.json")
+}
+
+// loadStats loads stats from the separate stats file and merges into loaded reflexes
+func (e *Engine) loadStats() {
+	data, err := os.ReadFile(e.statsFilePath())
+	if err != nil {
+		// No stats file yet, that's fine
+		return
+	}
+
+	var stats reflexStats
+	if err := json.Unmarshal(data, &stats); err != nil {
+		log.Printf("[reflex] Failed to parse stats file: %v", err)
+		return
+	}
+
+	// Merge stats into loaded reflexes
+	for name, s := range stats.Stats {
+		if reflex, ok := e.reflexes[name]; ok {
+			reflex.FireCount = s.FireCount
+			reflex.LastFired = s.LastFired
+		}
+	}
+}
+
+// saveReflexStats persists FireCount and LastFired to a separate stats file
+// This avoids overwriting manual config edits
 func (e *Engine) saveReflexStats(reflex *Reflex) {
-	// Note: SaveReflex acquires the lock, so don't call from within a locked section
-	if err := e.SaveReflex(reflex); err != nil {
-		log.Printf("[reflex] Failed to persist stats for %s: %v", reflex.Name, err)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Load existing stats
+	var stats reflexStats
+	data, err := os.ReadFile(e.statsFilePath())
+	if err == nil {
+		json.Unmarshal(data, &stats)
+	}
+	if stats.Stats == nil {
+		stats.Stats = make(map[string]struct {
+			FireCount int       `json:"fire_count"`
+			LastFired time.Time `json:"last_fired"`
+		})
+	}
+
+	// Update stats for this reflex
+	stats.Stats[reflex.Name] = struct {
+		FireCount int       `json:"fire_count"`
+		LastFired time.Time `json:"last_fired"`
+	}{
+		FireCount: reflex.FireCount,
+		LastFired: reflex.LastFired,
+	}
+
+	// Write back
+	data, err = json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		log.Printf("[reflex] Failed to marshal stats: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(e.statsFilePath(), data, 0644); err != nil {
+		log.Printf("[reflex] Failed to write stats file: %v", err)
 	}
 }
 

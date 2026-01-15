@@ -14,12 +14,32 @@ var (
 	emailRegex = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
 	moneyRegex = regexp.MustCompile(`\$[\d,]+(?:\.\d{2})?[kKmMbB]?|\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:dollars?|USD|EUR|GBP)`)
 
-	// Noise entities to filter out (system artifacts, pronouns)
+	// Noise entities to filter out (system artifacts, pronouns, conversational fragments)
 	noiseEntities = map[string]bool{
+		// Pronouns
 		"i": true, "me": true, "my": true, "you": true, "your": true,
 		"he": true, "she": true, "it": true, "they": true, "we": true,
 		"this": true, "that": true, "speaker": true, "user": true,
+		// System/meta terms
 		"memory_reset": true, "memory": true, "your memory": true,
+		// Conversational fragments (often misclassified as PRODUCT)
+		"ok": true, "okay": true, "yes": true, "no": true, "done": true,
+		"create": true, "created": true, "redeployed": true, "restart": true,
+		"try again": true, "the project": true, "the prompt": true,
+		"context": true, "event": true, "backend": true, "tables": true,
+		"repo": true, "diff": true, "push": true, "pull": true,
+		// Single numbers/letters
+		"1": true, "2": true, "3": true, "a": true, "b": true, "c": true,
+		// Common exclamations
+		"omg": true, "wow": true, "nice": true, "great": true, "good": true,
+	}
+
+	// Product-specific noise (short phrases that aren't real products)
+	productNoise = map[string]bool{
+		"option 2": true, "option a": true, "option b": true, "option 1": true,
+		"ok commit": true, "ok let's try it!": true, "omg how annoying": true,
+		"their hosted version": true, "the project": true, "the prompt": true,
+		"try again": true, "update the page": true,
 	}
 )
 
@@ -248,6 +268,16 @@ func postProcessEntities(text string, result *ExtractionResult) *ExtractionResul
 
 		// Skip noise entities
 		if noiseEntities[nameLower] {
+			continue
+		}
+
+		// Skip product-specific noise
+		if e.Type == graph.EntityProduct && productNoise[nameLower] {
+			continue
+		}
+
+		// Skip very short entities (likely noise)
+		if len(e.Name) <= 2 {
 			continue
 		}
 
