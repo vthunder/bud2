@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -1244,12 +1245,16 @@ func writeMCPConfig(statePath string) error {
 		},
 	}
 
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
+	// Use encoder with SetEscapeHTML(false) to preserve characters like > in paths
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(config); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(".mcp.json", data, 0644); err != nil {
+	if err := os.WriteFile(".mcp.json", buf.Bytes(), 0644); err != nil {
 		return err
 	}
 

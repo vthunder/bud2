@@ -67,6 +67,18 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 
+## MCP Server Changes
+
+When modifying MCP server code (e.g., `efficient-notion-mcp`):
+
+1. **Make changes** in the source repo
+2. **Commit and push** to remote
+3. **Update dependency** in bud2: `go get github.com/vthunder/efficient-notion-mcp@latest`
+4. **Rebuild**: `./scripts/build.sh`
+5. **Restart bud** - MCP servers are spawned at startup, so changes won't take effect until restart
+
+**Common mistake**: Forgetting step 5. The MCP server binary is rebuilt, but the running instance is still the old code. Always restart after MCP changes.
+
 ## Safety
 
 - Never force push to main/master

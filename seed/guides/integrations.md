@@ -11,17 +11,17 @@ I can query and interact with external systems using MCP tools. Each integration
 
 ## Notion
 
-Query and edit Notion pages and databases using the official `@notionhq/notion-mcp-server`.
+Sync Notion pages as markdown files using `efficient-notion-mcp`.
 
 ### Setup
 
-The official Notion MCP server is configured in `.mcp.json`:
+The efficient-notion-mcp server is configured in `.mcp.json`:
 ```json
 {
   "notion": {
-    "command": "npx",
-    "args": ["-y", "@notionhq/notion-mcp-server"],
-    "env": { "NOTION_TOKEN": "${NOTION_API_KEY}" }
+    "command": "/Users/thunder/src/bud2/bin/efficient-notion-mcp",
+    "args": [],
+    "env": { "NOTION_API_KEY": "${NOTION_API_KEY}" }
   }
 }
 ```
@@ -30,86 +30,137 @@ Create an integration at https://notion.so/profile/integrations and share pages 
 
 ### Available Tools
 
-The official MCP server provides ~21 tools. Key ones:
-
 | Tool | Purpose |
 |------|---------|
-| `notion__search` | Search pages and databases |
-| `notion__retrieve-a-page` | Get page properties |
-| `notion__retrieve-a-page-content` | Get page content (markdown mode) |
-| `notion__update-page-content` | Replace page content (markdown mode) |
-| `notion__create-a-page` | Create new page |
-| `notion__get-block-children` | Get blocks (JSON mode) |
-| `notion__append-block-children` | Append blocks |
-| `notion__query-a-database` | Query database with filters |
-| `notion__retrieve-a-database` | Get database schema |
-| `notion__create-a-comment` | Add comment to page |
-| `notion__retrieve-comments` | Get comments |
+| `notion_pull` | Download a Notion page as markdown with frontmatter |
+| `notion_push` | Upload markdown file to Notion (erase+replace) |
+| `notion_diff` | Compare local markdown against live Notion content |
+| `notion_query` | Query a database with filters, returns flattened JSON |
+| `notion_schema` | Get database property names and types |
 
-### Markdown Mode (Recommended)
+### Pull a Page
 
-The official MCP has built-in markdown support - no manual conversion needed:
+Downloads a Notion page and saves it as a markdown file with frontmatter:
 
-**Read page content:**
 ```
-notion__retrieve-a-page-content(page_id="abc123")
-# Returns markdown directly
+notion_pull(page_id="abc123", output_dir="/tmp/notion")
 ```
 
-**Update page content:**
+**Output file format:**
+```markdown
+---
+notion_id: abc123
+title: My Page Title
+pulled_at: 2025-01-15T10:30:00-08:00
+---
+
+# Page content here...
+
+---
+
+## Comments
+
+> **Author Name** *(Jan 15, 2025)*: Comment text here
 ```
-notion__update-page-content(
-  page_id="abc123",
-  content="# New Title\n\nUpdated content here"
+
+The `output_dir` is optional (defaults to `/tmp/notion`).
+
+### Push a Page
+
+Uploads a local markdown file to Notion. The file must have `notion_id` in its frontmatter:
+
+```
+notion_push(file_path="/tmp/notion/My Page Title.md")
+```
+
+**How it works:**
+1. Reads the markdown file
+2. Erases all existing content on the Notion page (single API call)
+3. Converts markdown to Notion blocks
+4. Appends blocks in batches of 100
+
+This is much faster than block-by-block updates.
+
+### Diff a Page
+
+Compares local markdown against the current Notion page content:
+
+```
+notion_diff(file_path="/tmp/notion/My Page Title.md")
+```
+
+Returns a diff showing what would change if you pushed.
+
+### Query a Database
+
+Query a Notion database with optional filters and sorts. Returns flattened JSON (not Notion's verbose nested format):
+
+```
+notion_query(
+  database_id="15ae67c666dd8073b484d1b4ccee3080",
+  filter={"property": "Status", "status": {"equals": "Active Thread"}},
+  sorts=[{"property": "Priority", "direction": "ascending"}],
+  limit=50
 )
 ```
 
-### Searching
-
-```
-notion__search(query="Project Alpha")
-```
-
-### Querying Databases
-
-```
-notion__query-a-database(
-  database_id="abc123",
-  filter={"property": "Status", "status": {"equals": "In Progress"}},
-  sorts=[{"property": "Created", "direction": "descending"}]
-)
+**Example response:**
+```json
+{
+  "results": [
+    {"_id": "abc123", "Name": "Project Alpha", "Status": "Active Thread", "Priority": "P0"},
+    {"_id": "def456", "Name": "Project Beta", "Status": "Active Thread", "Priority": "P1"}
+  ],
+  "has_more": false
+}
 ```
 
 **Filter examples:**
 - Status: `{"property": "Status", "status": {"equals": "Done"}}`
-- Text: `{"property": "Name", "title": {"contains": "urgent"}}`
+- Text contains: `{"property": "Name", "title": {"contains": "urgent"}}`
 - Checkbox: `{"property": "Archived", "checkbox": {"equals": false}}`
 - Compound: `{"and": [filter1, filter2]}`
 
-### Creating Pages
+### Get Database Schema
+
+Get property names and types for a database:
 
 ```
-notion__create-a-page(
-  parent_page_id="parent-id",
-  title="New Page",
-  content="# Content\n\n- Item 1\n- Item 2"
-)
+notion_schema(database_id="15ae67c666dd8073b484d1b4ccee3080")
 ```
 
-### Comments
+**Example response:**
+```json
+[
+  {"name": "Name", "type": "title"},
+  {"name": "Status", "type": "status"},
+  {"name": "Priority", "type": "select"},
+  {"name": "Due Date", "type": "date"}
+]
+```
+
+### Workflow Example
 
 ```
-notion__retrieve-comments(block_id="page-id")
-notion__create-a-comment(
-  page_id="page-id",
-  content="My comment"
-)
+# 1. Pull page to edit locally
+notion_pull(page_id="abc123")
+# → Saved to /tmp/notion/Project Notes.md
+
+# 2. Edit the file (or have Claude edit it)
+# ... make changes ...
+
+# 3. Check what changed
+notion_diff(file_path="/tmp/notion/Project Notes.md")
+
+# 4. Push changes back
+notion_push(file_path="/tmp/notion/Project Notes.md")
 ```
 
 ### Tips
 
 - **Page IDs from URLs:** `notion.so/.../Page-Title-abc123` → use `abc123`
-- **Use markdown mode** - `retrieve-a-page-content` and `update-page-content` are faster than working with JSON blocks
+- **Markdown conversion:** All Notion↔markdown conversion happens inside the MCP server
+- **Comments:** Page-level comments are included when pulling (block-level comments are not currently supported)
 - **Share pages with integration** - the integration can only access pages explicitly shared with it
 
 ## Google Calendar

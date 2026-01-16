@@ -19,6 +19,7 @@ I remember context across conversations. If I didn't save it, I won't remember i
 # Reference Guides
 
 I have detailed guides in state/system/guides/ for various capabilities:
+- projects.md: Project folders in state/projects/, notes.md files, Notion doc syncing
 - systems.md: Task queue and ideas backlog formats
 - gtd.md: Owner's GTD system (areas, projects, tasks) in user_tasks.json
 - integrations.md: Query patterns for external systems (Notion, Calendar, GitHub)

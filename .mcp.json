@@ -9,13 +9,10 @@
       "type": "stdio"
     },
     "notion": {
-      "args": [
-        "-y",
-        "@notionhq/notion-mcp-server"
-      ],
-      "command": "npx",
+      "args": [],
+      "command": "/Users/thunder/src/bud2/bin/efficient-notion-mcp",
       "env": {
-        "NOTION_TOKEN": "${NOTION_API_KEY}"
+        "NOTION_DEBUG": "1"
       },
       "type": "stdio"
     }
