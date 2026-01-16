@@ -9,7 +9,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/tsawler/prose/v3 v3.0.0-beta2
-	github.com/vthunder/efficient-notion-mcp v0.0.0-20260115220716-90de3c0ad27e
+	github.com/vthunder/efficient-notion-mcp v0.0.0-20260116112257-1fb11e96552e
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.44.0
 )
