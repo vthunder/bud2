@@ -22,6 +22,13 @@ import (
 const (
 	// MainWindowName is the single tmux window for the Claude session
 	MainWindowName = "bud-main"
+
+	// MaxSessionContentSize is the threshold for actual content size before auto-reset.
+	// This measures only the message/content fields from user and assistant entries
+	// since the last compaction boundary - a much better proxy for context usage than
+	// raw file size. Based on analysis, ~250KB content correlates to ~155K tokens
+	// which is near Claude's compaction threshold. We use 300KB to give some headroom.
+	MaxSessionContentSize = 300 * 1024 // 300KB of actual content
 )
 
 // SimpleSession manages a single persistent Claude session
@@ -41,7 +48,9 @@ type SimpleSession struct {
 
 	// Track what's been sent to this session
 	seenItemIDs    map[string]bool
-	seenMemoryIDs  map[string]bool // Track which memory traces have been sent
+	seenMemoryIDs  map[string]bool   // Track which memory traces have been sent
+	memoryIDMap    map[string]int    // Map trace_id -> display ID (M1, M2, etc.)
+	nextMemoryID   int               // Next display ID to assign
 
 	// Track conversation buffer sync to avoid re-sending already-seen context
 	// Only buffer entries after this time need to be sent
@@ -59,6 +68,8 @@ func NewSimpleSession(tmux *Tmux, statePath string) *SimpleSession {
 		sessionID:     generateSessionUUID(),
 		seenItemIDs:   make(map[string]bool),
 		seenMemoryIDs: make(map[string]bool),
+		memoryIDMap:   make(map[string]int),
+		nextMemoryID:  1,
 		statePath:     statePath,
 	}
 }
@@ -132,6 +143,23 @@ func (s *SimpleSession) MarkMemoriesSeen(ids []string) {
 // SeenMemoryCount returns how many memories have been sent in this session
 func (s *SimpleSession) SeenMemoryCount() int {
 	return len(s.seenMemoryIDs)
+}
+
+// GetOrAssignMemoryID returns the display ID for a trace, assigning one if needed
+// This ensures the same trace always gets the same ID within a session
+func (s *SimpleSession) GetOrAssignMemoryID(traceID string) int {
+	if id, exists := s.memoryIDMap[traceID]; exists {
+		return id
+	}
+	id := s.nextMemoryID
+	s.memoryIDMap[traceID] = id
+	s.nextMemoryID++
+	return id
+}
+
+// GetMemoryID returns the display ID for a trace, or 0 if not assigned
+func (s *SimpleSession) GetMemoryID(traceID string) int {
+	return s.memoryIDMap[traceID]
 }
 
 // LastBufferSync returns when the buffer was last synced to this session
@@ -427,6 +455,114 @@ func (s *SimpleSession) findSessionFile() string {
 	return ""
 }
 
+// SessionContentSize calculates the actual content size of the session since
+// the last compaction boundary. This counts only the message/content fields
+// from user and assistant entries, excluding thinking blocks and metadata.
+// Returns 0 if the file doesn't exist or can't be parsed.
+func (s *SimpleSession) SessionContentSize() int64 {
+	path := s.findSessionFile()
+	if path == "" {
+		return 0
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+
+	// First pass: find last compaction boundary line number
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB max line size
+
+	var lastCompactLine int
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		// Look for compact_boundary subtype
+		if strings.Contains(line, `"subtype":"compact_boundary"`) ||
+			strings.Contains(line, `"subtype": "compact_boundary"`) {
+			lastCompactLine = lineNum
+		}
+	}
+
+	// Second pass: sum content from entries after last compaction
+	file.Seek(0, 0)
+	scanner = bufio.NewScanner(file)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var totalSize int64
+	lineNum = 0
+	for scanner.Scan() {
+		lineNum++
+		if lineNum <= lastCompactLine {
+			continue
+		}
+
+		line := scanner.Text()
+		totalSize += extractContentSize(line)
+	}
+
+	return totalSize
+}
+
+// extractContentSize extracts the size of actual content from a session entry
+func extractContentSize(line string) int64 {
+	var entry struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return 0
+	}
+
+	switch entry.Type {
+	case "user":
+		// User content is a string
+		var content string
+		if err := json.Unmarshal(entry.Message.Content, &content); err == nil {
+			return int64(len(content))
+		}
+
+	case "assistant":
+		// Assistant content is an array of content blocks
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(entry.Message.Content, &blocks); err == nil {
+			var size int64
+			for _, block := range blocks {
+				// Only count text blocks, skip thinking
+				if block.Type == "text" {
+					size += int64(len(block.Text))
+				}
+			}
+			return size
+		}
+	}
+
+	return 0
+}
+
+// ShouldReset returns true if the session content has grown too large and
+// should be reset before sending the next prompt. This prevents Claude Code's
+// auto-compaction from triggering and keeps context management predictable.
+func (s *SimpleSession) ShouldReset() bool {
+	size := s.SessionContentSize()
+	if size > MaxSessionContentSize {
+		log.Printf("[simple-session] Session content size %d bytes exceeds threshold %d, should reset",
+			size, MaxSessionContentSize)
+		return true
+	}
+	return false
+}
+
 // SendPrompt sends a prompt to Claude interactively
 func (s *SimpleSession) SendPrompt(prompt string, cfg ClaudeConfig) error {
 	s.mu.Lock()
@@ -681,6 +817,8 @@ func (s *SimpleSession) Reset() {
 	s.sessionID = generateSessionUUID()
 	s.seenItemIDs = make(map[string]bool)
 	s.seenMemoryIDs = make(map[string]bool)
+	s.memoryIDMap = make(map[string]int)
+	s.nextMemoryID = 1
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
 	s.state = ProcessNone
 	s.clearResetPending() // Clear the pending flag so new sessions can start
