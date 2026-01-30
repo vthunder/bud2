@@ -64,6 +64,10 @@ type ExecutiveV2Config struct {
 	OnExecWake     func(focusID, context string)
 	OnExecDone     func(focusID, summary string, durationSec float64)
 	OnMemoryEval   func(eval string) // Called when Claude outputs memory self-evaluation
+
+	// WakeupInstructions is the content of seed/wakeup.md, injected into
+	// autonomous wake prompts to give Claude concrete work to do.
+	WakeupInstructions string
 }
 
 // NewExecutiveV2 creates a new v2 executive
@@ -475,6 +479,13 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 		}
 		prompt.WriteString(fmt.Sprintf("Content: %s\n", bundle.CurrentFocus.Content))
 		prompt.WriteString("\n")
+
+		// For autonomous wake impulses, inject the wakeup checklist
+		// so Claude has concrete instructions instead of a vague "do background work"
+		if bundle.CurrentFocus.Type == "wake" && e.config.WakeupInstructions != "" {
+			prompt.WriteString(e.config.WakeupInstructions)
+			prompt.WriteString("\n")
+		}
 	}
 
 	// Memory self-eval instruction (only if memories were shown)

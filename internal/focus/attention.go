@@ -76,9 +76,18 @@ func (a *Attention) SelectNext() *PendingItem {
 		return a.selectItem(0)
 	}
 
-	// User input wins unless P0
+	// User input always wins unless P0
 	for i, item := range a.pending {
 		if item.Type == "user_input" {
+			return a.selectItem(i)
+		}
+	}
+
+	// System impulses (autonomous wakes, task impulses) bypass arousal threshold.
+	// They already passed the budget gate in main.go, so double-gating is redundant
+	// and causes autonomous wakes to silently do nothing.
+	for i, item := range a.pending {
+		if item.Source == "impulse" || item.Source == "system" {
 			return a.selectItem(i)
 		}
 	}

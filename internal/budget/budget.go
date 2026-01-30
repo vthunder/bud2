@@ -10,7 +10,7 @@ type ThinkingBudget struct {
 	tracker *SessionTracker
 
 	// Limits
-	DailyMinutes       float64       // Max thinking minutes per day (e.g., 30)
+	DailyMinutes       float64       // Max thinking minutes per day (default 360 = 6 hours)
 	MaxSessionDuration time.Duration // Max single session length (e.g., 10 min)
 }
 
@@ -18,7 +18,7 @@ type ThinkingBudget struct {
 func NewThinkingBudget(tracker *SessionTracker) *ThinkingBudget {
 	return &ThinkingBudget{
 		tracker:            tracker,
-		DailyMinutes:       30,               // 30 minutes/day default
+		DailyMinutes:       360,              // 6 hours/day default
 		MaxSessionDuration: 10 * time.Minute, // 10 min max per session
 	}
 }

@@ -149,8 +149,8 @@ func main() {
 		}
 	}
 
-	// Parse daily budget (default 30 minutes)
-	dailyBudgetMinutes := 30.0
+	// Parse daily budget (default 360 minutes = 6 hours)
+	dailyBudgetMinutes := 360.0
 	if dailyBudgetStr != "" {
 		if v, err := strconv.ParseFloat(dailyBudgetStr, 64); err == nil {
 			dailyBudgetMinutes = v
@@ -235,6 +235,15 @@ func main() {
 	seedPath := "seed/core_seed.md"
 	if err := bootstrapCoreTraces(graphDB, seedPath); err != nil {
 		log.Printf("Warning: failed to bootstrap core traces: %v", err)
+	}
+
+	// Load wakeup instructions for autonomous wake prompts
+	wakeupInstructions := ""
+	if data, err := os.ReadFile("seed/wakeup.md"); err == nil {
+		wakeupInstructions = string(data)
+		log.Printf("[main] Loaded wakeup instructions (%d bytes)", len(data))
+	} else {
+		log.Printf("[main] No wakeup.md found (autonomous wakes will use default prompt)")
 	}
 
 	// Initialize motivation stores (for autonomous impulses)
@@ -326,11 +335,12 @@ func main() {
 		ollamaClient, // for query-based memory retrieval
 		systemPath,
 		executive.ExecutiveV2Config{
-			Model:          claudeModel,
-			WorkDir:        ".",
-			UseInteractive: useInteractive,
-			BotAuthor:      "Bud", // Filter out bot's own responses on incremental buffer sync
-			SessionTracker: sessionTracker,
+			Model:              claudeModel,
+			WorkDir:            ".",
+			UseInteractive:     useInteractive,
+			BotAuthor:          "Bud", // Filter out bot's own responses on incremental buffer sync
+			SessionTracker:     sessionTracker,
+			WakeupInstructions: wakeupInstructions,
 			OnExecWake: func(focusID, context string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
 			},
