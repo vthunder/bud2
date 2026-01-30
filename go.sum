@@ -61,10 +61,8 @@ github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+F
 github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9fESEdAacY=
 github.com/tsawler/prose/v3 v3.0.0-beta2 h1:Kl+K5Zp+PMffpF8armlzXyzVXOp8RVAYIZHVKh5Lr+U=
 github.com/tsawler/prose/v3 v3.0.0-beta2/go.mod h1:sPUW6WuYbZwwTCsp72BsCD4nbJzMprY+hYFhD3KfnRU=
-github.com/vthunder/efficient-notion-mcp v0.0.0-20260116140255-1a83d9079125 h1:Tz0ASY95Zci94Rrr7bqrj9i0ZzyhbhV6FCYotsIh1zw=
-github.com/vthunder/efficient-notion-mcp v0.0.0-20260116140255-1a83d9079125/go.mod h1:Biu0T8YDYX6S7Mzvbmt8ehaQlm5FNlB5znINwGa6ZoQ=
-github.com/vthunder/efficient-notion-mcp v0.0.0-20260116142631-9c7f1a649e68 h1:cxgZuTcahsRBwyWO+gL904i7C/lW1bo0XD9M/JCp5qw=
-github.com/vthunder/efficient-notion-mcp v0.0.0-20260116142631-9c7f1a649e68/go.mod h1:Biu0T8YDYX6S7Mzvbmt8ehaQlm5FNlB5znINwGa6ZoQ=
+github.com/vthunder/efficient-notion-mcp v0.0.0-20260120161249-c4afc21ea562 h1:ENmnxuKs6UioTME1hBGZRnm+oKKcMj09t0VpbsAusPg=
+github.com/vthunder/efficient-notion-mcp v0.0.0-20260120161249-c4afc21ea562/go.mod h1:Biu0T8YDYX6S7Mzvbmt8ehaQlm5FNlB5znINwGa6ZoQ=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=
 github.com/yosida95/uritemplate/v3 v3.0.2/go.mod h1:ILOh0sOhIJR3+L/8afwt/kE++YT040gmv5BQTMR2HP4=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=

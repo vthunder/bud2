@@ -311,6 +311,8 @@ type QueryItemsParams struct {
 	ProjectNumber int
 	Status        string // Filter by status field value (e.g., "Backlog", "In Progress")
 	Sprint        string // Filter by sprint name (e.g., "Sprint 65") or "current" for latest, "backlog" for no sprint
+	TeamArea      string // Filter by Team / Area field (e.g., "SE", "Docs", "Nexus")
+	Priority      string // Filter by Priority field (e.g., "P0", "P1", "P2")
 	MaxItems      int    // Limit results (default 100)
 }
 
@@ -321,9 +323,9 @@ func (c *Client) QueryItems(params QueryItemsParams) ([]ProjectItem, error) {
 		params.MaxItems = 100
 	}
 
-	// When filtering by status or sprint, we need to fetch more items to find matches
+	// When filtering, we need to fetch more items to find matches
 	// Use pagination to fetch up to 500 items when filtering
-	needsFilter := params.Status != "" || params.Sprint != ""
+	needsFilter := params.Status != "" || params.Sprint != "" || params.TeamArea != "" || params.Priority != ""
 	pageSize := params.MaxItems
 	maxFetch := params.MaxItems
 	if needsFilter {
@@ -504,6 +506,22 @@ func (c *Client) QueryItems(params QueryItemsParams) ([]ProjectItem, error) {
 					if !hasSprint || !strings.EqualFold(sprint, params.Sprint) {
 						continue
 					}
+				}
+			}
+
+			// Apply team/area filter if specified
+			if params.TeamArea != "" {
+				teamArea, ok := item.FieldValues["Team / Area"]
+				if !ok || !strings.EqualFold(teamArea, params.TeamArea) {
+					continue
+				}
+			}
+
+			// Apply priority filter if specified
+			if params.Priority != "" {
+				priority, ok := item.FieldValues["Priority"]
+				if !ok || !strings.EqualFold(priority, params.Priority) {
+					continue
 				}
 			}
 

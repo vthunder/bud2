@@ -28,6 +28,8 @@ The efficient-notion-mcp server is configured in `.mcp.json`:
 
 Create an integration at https://notion.so/profile/integrations and share pages with it.
 
+> **For MCP server changes:** When modifying the efficient-notion-mcp code, see [repositories.md](repositories.md#mcp-server-changes) for the full workflow.
+
 ### Available Tools
 
 | Tool | Purpose |
@@ -43,7 +45,11 @@ Create an integration at https://notion.so/profile/integrations and share pages 
 Downloads a Notion page and saves it as a markdown file with frontmatter:
 
 ```
-notion_pull(page_id="abc123", output_dir="/tmp/notion")
+# Save to specific file path (recommended)
+notion_pull(page_id="abc123", output_path="/path/to/README.md")
+
+# Save to directory (uses page title as filename)
+notion_pull(page_id="abc123", output_path="/tmp/notion")
 ```
 
 **Output file format:**
@@ -142,18 +148,17 @@ notion_schema(database_id="15ae67c666dd8073b484d1b4ccee3080")
 ### Workflow Example
 
 ```
-# 1. Pull page to edit locally
-notion_pull(page_id="abc123")
-# → Saved to /tmp/notion/Project Notes.md
+# 1. Pull page to specific location
+notion_pull(page_id="abc123", output_path="~/project/README.md")
 
 # 2. Edit the file (or have Claude edit it)
 # ... make changes ...
 
 # 3. Check what changed
-notion_diff(file_path="/tmp/notion/Project Notes.md")
+notion_diff(file_path="~/project/README.md")
 
 # 4. Push changes back
-notion_push(file_path="/tmp/notion/Project Notes.md")
+notion_push(file_path="~/project/README.md")
 ```
 
 ### Tips
@@ -230,12 +235,28 @@ github_list_projects()
 
 **Get sprint backlog:**
 ```
-github_project_items(project=1, status="Backlog")
+github_project_items(project=2, status="Backlog")
 ```
 
 **Get current sprint items:**
 ```
-github_project_items(project=1, sprint="Sprint 65")
+github_project_items(project=2, sprint="Sprint 65")
+```
+
+**Filter by team/area:**
+```
+github_project_items(project=2, team_area="SE")
+github_project_items(project=2, team_area="Docs")
+```
+
+**Filter by priority:**
+```
+github_project_items(project=2, priority="P0")
+```
+
+**Combine filters:**
+```
+github_project_items(project=2, sprint="Sprint 65", team_area="SE", status="Todo")
 ```
 
 ## Using Integrations in Reflexes

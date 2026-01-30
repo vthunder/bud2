@@ -40,8 +40,9 @@ type Engine struct {
 	attention AttentionChecker
 
 	// Callbacks for integration
-	onReply func(channelID, message string) error
-	onReact func(channelID, messageID, emoji string) error
+	onReply            func(channelID, message string) error
+	onInteractionReply func(token, appID, message string) error // for slash command followup responses
+	onReact            func(channelID, messageID, emoji string) error
 
 	// GTD store for gtd_* actions
 	gtdStore interface {
@@ -77,6 +78,12 @@ func NewEngine(statePath string) *Engine {
 // SetReplyCallback sets the callback for reply actions
 func (e *Engine) SetReplyCallback(cb func(channelID, message string) error) {
 	e.onReply = cb
+}
+
+// SetInteractionReplyCallback sets the callback for slash command interaction responses
+// The callback receives token and appID strings (not a full Interaction object)
+func (e *Engine) SetInteractionReplyCallback(cb func(token, appID, message string) error) {
+	e.onInteractionReply = cb
 }
 
 // SetReactCallback sets the callback for react actions
@@ -522,10 +529,6 @@ func (e *Engine) saveReflexStats(reflex *Reflex) {
 }
 
 func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
-	if e.onReply == nil {
-		return fmt.Errorf("reply callback not configured")
-	}
-
 	message := ""
 	if m, ok := step.Params["message"].(string); ok {
 		rendered, err := renderTemplate(m, vars)
@@ -533,6 +536,25 @@ func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
 			return err
 		}
 		message = rendered
+	}
+
+	if message == "" {
+		return fmt.Errorf("message required for reply")
+	}
+
+	// Check if this is a slash command - use interaction followup response
+	// (We already sent a deferred response, so need to edit it)
+	if token, ok := vars["interaction_token"].(string); ok && token != "" {
+		appID, _ := vars["app_id"].(string)
+		if e.onInteractionReply != nil && appID != "" {
+			return e.onInteractionReply(token, appID, message)
+		}
+		// Fall through to regular reply if no interaction callback
+	}
+
+	// Regular message reply
+	if e.onReply == nil {
+		return fmt.Errorf("reply callback not configured")
 	}
 
 	// Try to get channel_id from vars (e.g., Discord message context)
@@ -548,9 +570,6 @@ func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
 
 	if channelID == "" {
 		return fmt.Errorf("channel_id required (none in context and no default configured)")
-	}
-	if message == "" {
-		return fmt.Errorf("message required for reply")
 	}
 
 	return e.onReply(channelID, message)
@@ -676,6 +695,30 @@ func (e *Engine) Process(ctx context.Context, source, typ, content string, data 
 	}
 
 	matches := e.Match(source, typ, content)
+	if len(matches) == 0 {
+		return false, nil
+	}
+
+	// Filter by slash command routing
+	// If message has slash_command: only match reflexes for that command
+	// If message has no slash_command: only match reflexes without slash command requirement
+	slashCmd, hasSlash := data["slash_command"].(string)
+	filtered := matches[:0]
+	for _, reflex := range matches {
+		if hasSlash {
+			// Message is from a slash command - only match slash-specific reflexes
+			if reflex.Trigger.SlashCommand == slashCmd {
+				filtered = append(filtered, reflex)
+			}
+		} else {
+			// Normal message - only match reflexes without slash command requirement
+			if reflex.Trigger.SlashCommand == "" {
+				filtered = append(filtered, reflex)
+			}
+		}
+	}
+	matches = filtered
+
 	if len(matches) == 0 {
 		return false, nil
 	}

@@ -1,8 +1,9 @@
 name: gtd-handler
-description: Handle GTD queries using Ollama classification
+description: Handle GTD queries via /gtd slash command
 priority: 10
 trigger:
   source: inbox
+  slash_command: gtd
   classifier: ollama
   model: qwen2.5:7b
   intents:
@@ -11,27 +12,18 @@ trigger:
     - gtd_show_logbook
     - gtd_add_inbox
     - gtd_complete
-    - not_gtd
   prompt: |
-    You classify messages for a GTD task system. Be VERY conservative.
-
-    ONLY use a GTD intent if the user is EXPLICITLY asking about their task list, inbox, or todos.
+    Classify this GTD query. The user invoked /gtd, so they want task management.
 
     Intents:
-    - gtd_show_today: Explicitly asks for today's tasks (e.g., "what's on my list today", "show today's tasks")
-    - gtd_show_inbox: Explicitly asks for inbox items (e.g., "what's in my inbox", "show inbox")
-    - gtd_show_logbook: Explicitly asks for completed tasks (e.g., "what did I complete", "show logbook")
-    - gtd_add_inbox: Explicitly adding an item (e.g., "add X to inbox", "capture X")
-    - gtd_complete: Explicitly completing a task (e.g., "mark X as done", "complete X")
-    - not_gtd: EVERYTHING ELSE - feedback, questions, project discussions, general chat, technical requests
-
-    Default to "not_gtd" when uncertain. Feedback about the system is NOT a GTD query.
+    - gtd_show_today: Asks for today's tasks (e.g., "today", "what's on my list", "tasks")
+    - gtd_show_inbox: Asks for inbox items (e.g., "inbox", "what's waiting")
+    - gtd_show_logbook: Asks for completed tasks (e.g., "done", "completed", "logbook")
+    - gtd_add_inbox: Adding an item (e.g., "add buy milk", "capture call doctor")
+    - gtd_complete: Completing a task (e.g., "complete X", "done with X")
 
     Answer with ONE intent name only.
 pipeline:
-  - action: gate
-    condition: "{{.intent}} == not_gtd"
-    stop: true
   - action: gtd_dispatch
     output: response
   - action: reply

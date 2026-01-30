@@ -1,18 +1,42 @@
 # Projects Guide
 
-Projects are tracked in `state/projects/`. This provides a place for project-specific notes, Notion docs, and insights.
+Projects are tracked in `state/projects/`. This provides a place for project-specific notes and internal state.
 
-## Structure
+## Project Types
+
+Projects can have a `type` in their notes.md frontmatter. **Convention: `type: X` means load `X.md` guide.**
+
+```yaml
+---
+type: avail-style       # → load avail-style.md guide
+docs: ~/src/project-docs/nightshade/
+---
+```
+
+When loading a project:
+1. Read `notes.md` and check for `type:` in frontmatter
+2. If present, load `state/system/guides/<type>.md`
+3. Follow workflows in that guide
+
+### Standard Projects (no type)
+
+Simple projects with all files in `state/projects/`:
 
 ```
 state/projects/
 ├── org-name/
 │   └── project-name/
 │       ├── notes.md        # Freeform project notes
-│       ├── Notion-Doc.md   # Synced from Notion (has notion_id in frontmatter)
-│       └── subproject/     # Nested projects allowed
-│           └── notes.md
+│       └── Notion-Doc.md   # Synced from Notion (optional)
 ```
+
+### Avail-Style Projects (`type: avail-style`)
+
+Team-collaborative projects with shared docs in a separate repo. See [avail-style.md](./avail-style.md) for full details.
+
+**Key difference:** Docs live in `~/src/project-docs/` (shared), not in `state/projects/` (internal).
+
+## Structure
 
 - Projects are folders under `state/projects/`
 - Projects can have subprojects (nested folders)

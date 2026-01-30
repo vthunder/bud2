@@ -21,6 +21,12 @@ type retryState struct {
 	nextRetry    time.Time
 }
 
+// PendingInteraction contains info needed to follow up on a slash command
+type PendingInteraction struct {
+	Token string
+	AppID string
+}
+
 // DiscordEffector sends messages to Discord
 type DiscordEffector struct {
 	getSession       func() *discordgo.Session // getter to always use current session
@@ -35,6 +41,9 @@ type DiscordEffector struct {
 	onError          func(actionID, actionType, errMsg string)           // permanent failure
 	onRetry          func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration) // transient failure, will retry
 	stopChan         chan struct{}
+
+	// Pending interaction callback (for slash command followups)
+	getPendingInteraction func(channelID string) *PendingInteraction
 
 	// Retry state tracking
 	retryMu     sync.Mutex
@@ -94,6 +103,11 @@ func (e *DiscordEffector) SetOnError(callback func(actionID, actionType, errMsg 
 // SetOnRetry sets a callback for when actions fail transiently and will be retried
 func (e *DiscordEffector) SetOnRetry(callback func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration)) {
 	e.onRetry = callback
+}
+
+// SetPendingInteractionCallback sets the callback for retrieving pending slash command interactions
+func (e *DiscordEffector) SetPendingInteractionCallback(callback func(channelID string) *PendingInteraction) {
+	e.getPendingInteraction = callback
 }
 
 // Start begins polling the outbox for actions
@@ -269,6 +283,13 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 		return fmt.Errorf("missing content")
 	}
 
+	// Check for pending slash command interaction (needs followup response instead of regular message)
+	if e.getPendingInteraction != nil {
+		if interaction := e.getPendingInteraction(channelID); interaction != nil {
+			return e.sendInteractionFollowup(interaction, content)
+		}
+	}
+
 	// Chunk message if too long
 	chunks := chunkMessage(content, MaxDiscordMessageLength)
 
@@ -291,6 +312,48 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 	if e.onAction != nil {
 		source, _ := action.Payload["source"].(string)
 		e.onAction("send_message", channelID, content, source)
+	}
+	return nil
+}
+
+// sendInteractionFollowup edits the deferred response for a slash command
+func (e *DiscordEffector) sendInteractionFollowup(interaction *PendingInteraction, content string) error {
+	session := e.getSession()
+
+	// Chunk message if too long (Discord interaction responses also have 2000 char limit)
+	chunks := chunkMessage(content, MaxDiscordMessageLength)
+
+	// First chunk edits the original deferred response
+	_, err := session.InteractionResponseEdit(&discordgo.Interaction{
+		AppID: interaction.AppID,
+		Token: interaction.Token,
+	}, &discordgo.WebhookEdit{
+		Content: &chunks[0],
+	})
+	if err != nil {
+		return fmt.Errorf("failed to edit interaction response: %w", err)
+	}
+	log.Printf("[discord-effector] Edited interaction response (followup)")
+
+	// Additional chunks sent as followup messages
+	for i := 1; i < len(chunks); i++ {
+		_, err := session.FollowupMessageCreate(&discordgo.Interaction{
+			AppID: interaction.AppID,
+			Token: interaction.Token,
+		}, true, &discordgo.WebhookParams{
+			Content: chunks[i],
+		})
+		if err != nil {
+			return fmt.Errorf("failed to send followup chunk %d/%d: %w", i+1, len(chunks), err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if e.onSend != nil {
+		e.onSend("", content) // No channel ID for interaction responses
+	}
+	if e.onAction != nil {
+		e.onAction("interaction_followup", "", content, "")
 	}
 	return nil
 }

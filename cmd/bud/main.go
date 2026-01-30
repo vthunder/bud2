@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
@@ -122,6 +123,7 @@ func main() {
 	discordToken := os.Getenv("DISCORD_TOKEN")
 	discordChannel := os.Getenv("DISCORD_CHANNEL_ID")
 	discordOwner := os.Getenv("DISCORD_OWNER_ID")
+	discordGuildID := os.Getenv("DISCORD_GUILD_ID") // For slash command registration
 	statePath := os.Getenv("STATE_PATH")
 	if statePath == "" {
 		statePath = "state"
@@ -334,6 +336,15 @@ func main() {
 			},
 			OnExecDone: func(focusID, summary string, durationSec float64) {
 				activityLog.LogExecDone(summary, focusID, durationSec, "executive")
+			},
+			OnMemoryEval: func(eval string) {
+				activityLog.Log(activity.Entry{
+					Type:    "memory_eval",
+					Summary: "Memory self-evaluation",
+					Data: map[string]any{
+						"eval": eval,
+					},
+				})
 			},
 		},
 	)
@@ -773,6 +784,16 @@ func main() {
 				},
 			})
 		})
+		// Wire pending interaction callback for slash command followups
+		discordEffector.SetPendingInteractionCallback(func(channelID string) *effectors.PendingInteraction {
+			if interaction := discordSense.GetPendingInteraction(channelID); interaction != nil {
+				return &effectors.PendingInteraction{
+					Token: interaction.Token,
+					AppID: interaction.AppID,
+				}
+			}
+			return nil
+		})
 		discordEffector.Start()
 
 		// Start health monitor for connection resilience
@@ -804,6 +825,23 @@ func main() {
 			}
 			outbox.Add(action)
 			return nil
+		}
+
+		// Wire interaction reply callback for slash commands (edits deferred response)
+		reflexEngine.SetInteractionReplyCallback(func(token, appID, message string) error {
+			log.Printf("[reflex] Editing interaction response: %s", truncate(message, 50))
+			_, err := discordSense.Session().InteractionResponseEdit(&discordgo.Interaction{
+				AppID: appID,
+				Token: token,
+			}, &discordgo.WebhookEdit{
+				Content: &message,
+			})
+			return err
+		})
+
+		// Register slash commands (guild-specific for fast updates, or global if no guild ID)
+		if err := discordSense.RegisterSlashCommands(discordGuildID); err != nil {
+			log.Printf("Warning: failed to register slash commands: %v", err)
 		}
 
 		log.Println("[main] Discord sense and effector started")

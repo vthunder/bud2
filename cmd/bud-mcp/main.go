@@ -70,6 +70,9 @@ func main() {
 	// Create MCP server
 	server := mcp.NewServer()
 
+	// Initialize activity log for observability (needed by talk_to_user for memory eval logging)
+	activityLog := activity.New(statePath)
+
 	// Get default channel from environment
 	defaultChannel := os.Getenv("DISCORD_CHANNEL_ID")
 
@@ -234,12 +237,22 @@ func main() {
 	server.RegisterTool("signal_done", mcp.ToolDef{
 		Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",
 		Properties: map[string]mcp.PropDef{
-			"session_id": {Type: "string", Description: "The current session ID (if known)"},
-			"summary":    {Type: "string", Description: "Brief summary of what was accomplished (optional)"},
+			"session_id":  {Type: "string", Description: "The current session ID (if known)"},
+			"summary":     {Type: "string", Description: "Brief summary of what was accomplished (optional)"},
+			"memory_eval": {Type: "object", Description: "Memory usefulness ratings as {\"M1\": 5, \"M2\": 1} where 1=not useful, 5=very useful"},
 		},
 	}, func(ctx any, args map[string]any) (string, error) {
 		sessionID, _ := args["session_id"].(string)
 		summary, _ := args["summary"].(string)
+		memoryEval, _ := args["memory_eval"].(map[string]any)
+
+		// Build extra fields
+		extra := map[string]any{
+			"session_id": sessionID,
+		}
+		if len(memoryEval) > 0 {
+			extra["memory_eval"] = memoryEval
+		}
 
 		// Write as inbox message with type=signal
 		msg := map[string]any{
@@ -249,9 +262,7 @@ func main() {
 			"content":   summary,
 			"timestamp": time.Now().Format(time.RFC3339),
 			"status":    "pending",
-			"extra": map[string]any{
-				"session_id": sessionID,
-			},
+			"extra":     extra,
 		}
 
 		// Write to inbox file (unified queue)
@@ -267,7 +278,11 @@ func main() {
 			return "", fmt.Errorf("failed to write signal: %w", err)
 		}
 
-		log.Printf("Session done signal: session=%s summary=%s", sessionID, truncate(summary, 50))
+		if len(memoryEval) > 0 {
+			log.Printf("Session done signal: session=%s summary=%s memory_eval=%v", sessionID, truncate(summary, 50), memoryEval)
+		} else {
+			log.Printf("Session done signal: session=%s summary=%s", sessionID, truncate(summary, 50))
+		}
 		return "Done signal recorded. Ready for new prompts.", nil
 	})
 
@@ -398,9 +413,6 @@ func main() {
 		data, _ := json.MarshalIndent(result, "", "  ")
 		return string(data), nil
 	})
-
-	// Initialize activity log for observability
-	activityLog := activity.New(statePath)
 
 	// Register journal_log tool (writes to activity.jsonl for unified logging)
 	// Kept for backwards compatibility - all logging now goes to activity.jsonl
@@ -1846,6 +1858,8 @@ func main() {
 					"project":   {Type: "number", Description: "The project number"},
 					"status":    {Type: "string", Description: "Filter by Status field (e.g., 'Backlog', 'In Progress', 'Done')"},
 					"sprint":    {Type: "string", Description: "Filter by Sprint (e.g., 'Sprint 65'). Use 'backlog' for items with no sprint assigned."},
+					"team_area": {Type: "string", Description: "Filter by Team / Area field (e.g., 'SE', 'Docs', 'Nexus', 'DevOps')"},
+					"priority":  {Type: "string", Description: "Filter by Priority field (e.g., 'P0', 'P1', 'P2')"},
 					"max_items": {Type: "number", Description: "Maximum items to return (default 100)"},
 					"verbose":   {Type: "boolean", Description: "If true, return full JSON with all fields. Default: false (compact format)"},
 				},
@@ -1867,6 +1881,12 @@ func main() {
 				if sprint, ok := args["sprint"].(string); ok {
 					params.Sprint = sprint
 				}
+				if teamArea, ok := args["team_area"].(string); ok {
+					params.TeamArea = teamArea
+				}
+				if priority, ok := args["priority"].(string); ok {
+					params.Priority = priority
+				}
 				if maxItems, ok := args["max_items"].(float64); ok && maxItems > 0 {
 					params.MaxItems = int(maxItems)
 				}
@@ -1877,22 +1897,25 @@ func main() {
 				}
 
 				if len(items) == 0 {
-					filterDesc := ""
+					var filters []string
 					if params.Status != "" {
-						filterDesc = fmt.Sprintf(" with status '%s'", params.Status)
+						filters = append(filters, fmt.Sprintf("status '%s'", params.Status))
 					}
 					if params.Sprint != "" {
-						if filterDesc != "" {
-							filterDesc += " and"
-						}
 						if params.Sprint == "backlog" {
-							filterDesc += " in backlog (no sprint)"
+							filters = append(filters, "in backlog (no sprint)")
 						} else {
-							filterDesc += fmt.Sprintf(" in '%s'", params.Sprint)
+							filters = append(filters, fmt.Sprintf("sprint '%s'", params.Sprint))
 						}
 					}
-					if filterDesc != "" {
-						return fmt.Sprintf("No items%s.", filterDesc), nil
+					if params.TeamArea != "" {
+						filters = append(filters, fmt.Sprintf("team '%s'", params.TeamArea))
+					}
+					if params.Priority != "" {
+						filters = append(filters, fmt.Sprintf("priority '%s'", params.Priority))
+					}
+					if len(filters) > 0 {
+						return fmt.Sprintf("No items matching: %s.", strings.Join(filters, ", ")), nil
 					}
 					return "No items in project.", nil
 				}

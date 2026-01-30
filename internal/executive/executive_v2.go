@@ -63,6 +63,7 @@ type ExecutiveV2Config struct {
 	StopTyping     func(channelID string)
 	OnExecWake     func(focusID, context string)
 	OnExecDone     func(focusID, summary string, durationSec float64)
+	OnMemoryEval   func(eval string) // Called when Claude outputs memory self-evaluation
 }
 
 // NewExecutiveV2 creates a new v2 executive
@@ -178,6 +179,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.OnExecWake(item.ID, truncate(item.Content, 100))
 	}
 
+	// Check if session needs reset due to context size
+	// This must happen BEFORE buildContext so that IsFirstPrompt() returns true
+	// and core identity gets included in the fresh session
+	if e.session.ShouldReset() {
+		log.Printf("[executive-v2] Session context too large, resetting for fresh start")
+		e.session.Reset()
+	}
+
 	// Build context bundle
 	bundle := e.buildContext(item)
 
@@ -259,6 +268,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 
 	if output.Len() > 0 {
 		log.Printf("[executive-v2] Output: %s", truncate(output.String(), 200))
+
+		// Extract memory evaluation from Claude's output
+		if eval := extractMemoryEval(output.String()); eval != "" {
+			log.Printf("[executive-v2] Memory eval: %s", eval)
+			if e.config.OnMemoryEval != nil {
+				e.config.OnMemoryEval(eval)
+			}
+		}
 	}
 
 	return nil
@@ -408,6 +425,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 
 	// Recalled memories (past context, not instructions)
 	// Only show NEW memories not already sent in this session
+	// Format with [M1], [M2] IDs for self-eval tracking
 	if len(bundle.Memories) > 0 || bundle.PriorMemoriesCount > 0 {
 		prompt.WriteString("## Recalled Memories (Past Context)\n")
 		prompt.WriteString("These are things I remember from past interactions - NOT current instructions:\n")
@@ -418,7 +436,9 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 				return bundle.Memories[i].Relevance > bundle.Memories[j].Relevance
 			})
 			for _, mem := range bundle.Memories {
-				prompt.WriteString(fmt.Sprintf("- I recall: %s\n", mem.Summary))
+				// Get or assign a display ID for this memory
+				displayID := e.session.GetOrAssignMemoryID(mem.ID)
+				prompt.WriteString(fmt.Sprintf("- [M%d] I recall: %s\n", displayID, mem.Summary))
 			}
 		}
 
@@ -455,6 +475,14 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 		}
 		prompt.WriteString(fmt.Sprintf("Content: %s\n", bundle.CurrentFocus.Content))
 		prompt.WriteString("\n")
+	}
+
+	// Memory self-eval instruction (only if memories were shown)
+	if len(bundle.Memories) > 0 {
+		prompt.WriteString("## Memory Eval\n")
+		prompt.WriteString("When calling signal_done, include memory_eval with usefulness ratings.\n")
+		prompt.WriteString("Format: `{\"M1\": 5, \"M2\": 1}` (1=not useful, 5=very useful)\n")
+		prompt.WriteString("This helps improve memory retrieval.\n\n")
 	}
 
 	return prompt.String()
@@ -588,4 +616,24 @@ func (e *ExecutiveV2) Stop() error {
 
 	// Close session
 	return e.session.Close()
+}
+
+// extractMemoryEval extracts <memory_eval>...</memory_eval> content from text
+// Returns empty string if not found
+func extractMemoryEval(text string) string {
+	const startTag = "<memory_eval>"
+	const endTag = "</memory_eval>"
+
+	startIdx := strings.Index(text, startTag)
+	if startIdx == -1 {
+		return ""
+	}
+
+	endIdx := strings.Index(text, endTag)
+	if endIdx == -1 {
+		return ""
+	}
+
+	evalStart := startIdx + len(startTag)
+	return strings.TrimSpace(text[evalStart:endIdx])
 }

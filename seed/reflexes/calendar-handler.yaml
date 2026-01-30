@@ -1,21 +1,14 @@
 name: calendar-handler
-description: Handle calendar queries using Ollama classification
+description: Handle calendar queries via /cal slash command
 priority: 8
 trigger:
   source: inbox
-  classifier: ollama
-  model: qwen2.5:7b
-  intents:
-    - calendar_today
-    - calendar_upcoming
-    - calendar_query
-    - calendar_free
-    - not_calendar
+  pattern: "^/cal(?:\\s+(.*))?$"
+  extract:
+    - query
 pipeline:
-  - action: gate
-    condition: "{{.intent}} == not_calendar"
-    stop: true
   - action: calendar_dispatch
+    input: "{{.query}}"
     output: response
   - action: reply
     message: "{{.response}}"

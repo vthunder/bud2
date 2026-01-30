@@ -154,6 +154,20 @@ func (msg *InboxMessage) messageToPercept() *types.Percept {
 		author = "Bud"
 	}
 
+	// Build percept data with core fields
+	data := map[string]any{
+		"channel_id": channelID,
+		"message_id": msg.ID,
+		"author_id":  msg.AuthorID,
+		"author":     author,
+		"content":    msg.Content,
+	}
+
+	// Copy Extra fields (e.g., slash_command, interaction_token for Discord slash commands)
+	for k, v := range msg.Extra {
+		data[k] = v
+	}
+
 	return &types.Percept{
 		ID:        fmt.Sprintf("inbox-%s", msg.ID),
 		Source:    source,
@@ -161,13 +175,7 @@ func (msg *InboxMessage) messageToPercept() *types.Percept {
 		Intensity: intensity,
 		Timestamp: msg.Timestamp,
 		Tags:      []string{source},
-		Data: map[string]any{
-			"channel_id": channelID,
-			"message_id": msg.ID,
-			"author_id":  msg.AuthorID,
-			"author":     author,
-			"content":    msg.Content,
-		},
+		Data:      data,
 		Features: map[string]any{
 			"conversation_id": conversationID,
 		},

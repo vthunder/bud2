@@ -24,10 +24,11 @@ type Reflex struct {
 
 // Trigger defines when a reflex fires
 type Trigger struct {
-	Pattern string   `yaml:"pattern"` // regex pattern to match
-	Extract []string `yaml:"extract"` // named capture groups to extract
-	Source  string   `yaml:"source"`  // optional: only match specific sources (discord, github, etc)
-	Type    string   `yaml:"type"`    // optional: only match specific types (message, notification, etc)
+	Pattern      string   `yaml:"pattern"`       // regex pattern to match
+	Extract      []string `yaml:"extract"`       // named capture groups to extract
+	Source       string   `yaml:"source"`        // optional: only match specific sources (discord, github, etc)
+	Type         string   `yaml:"type"`          // optional: only match specific types (message, notification, etc)
+	SlashCommand string   `yaml:"slash_command"` // optional: only match this Discord slash command
 
 	// Classifier configuration
 	Classifier string   `yaml:"classifier"` // "regex" (default), "ollama", or "none"

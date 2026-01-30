@@ -14,6 +14,13 @@ import (
 // DefaultMaxDisconnectDuration is how long to allow disconnection before hard reset
 const DefaultMaxDisconnectDuration = 10 * time.Minute
 
+// PendingInteraction tracks a slash command interaction awaiting response
+type PendingInteraction struct {
+	Token     string    // Interaction token (valid 15 min)
+	AppID     string    // Application ID
+	CreatedAt time.Time // When the interaction was received
+}
+
 // DiscordSense listens to Discord and produces percepts
 type DiscordSense struct {
 	session   *discordgo.Session
@@ -35,6 +42,10 @@ type DiscordSense struct {
 	stopMonitor       chan struct{}
 	maxDisconnectDur  time.Duration
 	onProlongedOutage func(duration time.Duration) // callback for prolonged outage
+
+	// Pending slash command interactions awaiting response
+	interactionsMu      sync.Mutex
+	pendingInteractions map[string]*PendingInteraction // keyed by channel ID
 }
 
 // DiscordConfig holds Discord connection settings
@@ -52,22 +63,24 @@ func NewDiscordSense(cfg DiscordConfig, inbox *memory.Inbox) (*DiscordSense, err
 	}
 
 	sense := &DiscordSense{
-		session:          session,
-		token:            cfg.Token,
-		channelID:        cfg.ChannelID,
-		ownerID:          cfg.OwnerID,
-		inbox:            inbox,
-		maxDisconnectDur: DefaultMaxDisconnectDuration,
+		session:             session,
+		token:               cfg.Token,
+		channelID:           cfg.ChannelID,
+		ownerID:             cfg.OwnerID,
+		inbox:               inbox,
+		maxDisconnectDur:    DefaultMaxDisconnectDuration,
+		pendingInteractions: make(map[string]*PendingInteraction),
 	}
 
 	// Register handlers
 	session.AddHandler(sense.handleMessage)
+	session.AddHandler(sense.handleInteraction)
 	session.AddHandler(sense.handleConnect)
 	session.AddHandler(sense.handleDisconnect)
 	session.AddHandler(sense.handleResumed)
 
-	// We only need message content
-	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
+	// We need message content and guild info for slash commands
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuilds
 
 	return sense, nil
 }
@@ -382,6 +395,134 @@ func (d *DiscordSense) checkConnectionHealth() {
 	}
 }
 
+// handleInteraction processes incoming Discord slash command interactions
+func (d *DiscordSense) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Only handle application commands (slash commands)
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+
+	cmdData := i.ApplicationCommandData()
+	cmdName := cmdData.Name
+
+	// Extract query from options (we use a single "query" option for most commands)
+	var query string
+	for _, opt := range cmdData.Options {
+		if opt.Name == "query" {
+			query = opt.StringValue()
+		}
+	}
+
+	// Get user info
+	var authorID, authorName string
+	if i.Member != nil && i.Member.User != nil {
+		authorID = i.Member.User.ID
+		authorName = i.Member.User.Username
+	} else if i.User != nil {
+		authorID = i.User.ID
+		authorName = i.User.Username
+	}
+
+	// Only allow owner to use commands (if owner is configured)
+	if d.ownerID != "" && authorID != d.ownerID {
+		// Respond with error to non-owner
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Sorry, you don't have permission to use this command.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	// Get channel ID early (needed for storing pending interaction)
+	channelID := i.ChannelID
+	if channelID == "" && d.channelID != "" {
+		channelID = d.channelID
+	}
+
+	// Send deferred response immediately (Discord requires response within 3 seconds)
+	// We'll follow up with the actual response later via InteractionResponseEdit
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		log.Printf("[discord-sense] Failed to send deferred response: %v", err)
+		return
+	}
+
+	// Store pending interaction for followup response
+	d.StorePendingInteraction(channelID, &PendingInteraction{
+		Token:     i.Interaction.Token,
+		AppID:     i.Interaction.AppID,
+		CreatedAt: time.Now(),
+	})
+
+	// Build extra data with slash command context
+	extra := map[string]any{
+		"slash_command":     cmdName,
+		"interaction_token": i.Interaction.Token, // Token for followup (valid 15 min)
+		"interaction_id":    i.Interaction.ID,
+		"app_id":            i.Interaction.AppID,
+		"is_owner":          authorID == d.ownerID,
+	}
+
+	// Create inbox message
+	msg := &memory.InboxMessage{
+		ID:        fmt.Sprintf("discord-slash-%s", i.ID),
+		Content:   query,
+		ChannelID: channelID,
+		AuthorID:  authorID,
+		Author:    authorName,
+		Extra:     extra,
+	}
+
+	log.Printf("[discord-sense] Slash command: /%s %s (from: %s)", cmdName, truncate(query, 30), authorName)
+
+	// Write to inbox
+	if d.inbox != nil {
+		d.inbox.Add(msg)
+	}
+}
+
+// RegisterSlashCommands registers application commands with Discord
+// If guildID is empty, commands are registered globally (takes up to 1 hour to propagate)
+func (d *DiscordSense) RegisterSlashCommands(guildID string) error {
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "gtd",
+			Description: "Interact with your GTD task system",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "query",
+					Description: "What do you want to do? (e.g., 'show today', 'add buy milk')",
+					Required:    true,
+				},
+			},
+		},
+	}
+
+	appID := d.session.State.User.ID
+
+	// Register commands
+	registered, err := d.session.ApplicationCommandBulkOverwrite(appID, guildID, commands)
+	if err != nil {
+		return fmt.Errorf("failed to register slash commands: %w", err)
+	}
+
+	for _, cmd := range registered {
+		scope := "global"
+		if guildID != "" {
+			scope = "guild"
+		}
+		log.Printf("[discord-sense] Registered slash command: /%s (%s)", cmd.Name, scope)
+	}
+
+	return nil
+}
+
 // HardReset completely closes and recreates the Discord session
 // Use this when the normal reconnection mechanism has failed
 func (d *DiscordSense) HardReset() error {
@@ -400,10 +541,11 @@ func (d *DiscordSense) HardReset() error {
 
 	// Re-register handlers
 	session.AddHandler(d.handleMessage)
+	session.AddHandler(d.handleInteraction)
 	session.AddHandler(d.handleConnect)
 	session.AddHandler(d.handleDisconnect)
 	session.AddHandler(d.handleResumed)
-	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent
+	session.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuilds
 
 	// Open connection
 	if err := session.Open(); err != nil {
@@ -422,4 +564,36 @@ func (d *DiscordSense) HardReset() error {
 
 	log.Printf("[discord-sense] Hard reset successful (total resets: %d)", resetCount)
 	return nil
+}
+
+// StorePendingInteraction stores an interaction token for later followup response
+func (d *DiscordSense) StorePendingInteraction(channelID string, interaction *PendingInteraction) {
+	d.interactionsMu.Lock()
+	defer d.interactionsMu.Unlock()
+	d.pendingInteractions[channelID] = interaction
+	log.Printf("[discord-sense] Stored pending interaction for channel %s", channelID)
+}
+
+// GetPendingInteraction retrieves and removes a pending interaction for a channel
+// Returns nil if no pending interaction exists or if it has expired (15 min)
+func (d *DiscordSense) GetPendingInteraction(channelID string) *PendingInteraction {
+	d.interactionsMu.Lock()
+	defer d.interactionsMu.Unlock()
+
+	interaction, exists := d.pendingInteractions[channelID]
+	if !exists {
+		return nil
+	}
+
+	// Check if token has expired (Discord tokens valid for 15 min)
+	if time.Since(interaction.CreatedAt) > 14*time.Minute {
+		delete(d.pendingInteractions, channelID)
+		log.Printf("[discord-sense] Pending interaction for channel %s expired", channelID)
+		return nil
+	}
+
+	// Remove from map (one-time use)
+	delete(d.pendingInteractions, channelID)
+	log.Printf("[discord-sense] Retrieved pending interaction for channel %s", channelID)
+	return interaction
 }
