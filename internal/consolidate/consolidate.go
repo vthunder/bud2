@@ -214,6 +214,17 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		}
 	}
 
+	// Skip ephemeral/low-value content that shouldn't become long-term memories
+	if isEphemeralContent(summary) {
+		// Link episodes to sentinel trace so they aren't retried by GetUnconsolidatedEpisodes
+		for _, ep := range group.episodes {
+			c.graph.LinkTraceToSource("_ephemeral", ep.ID)
+		}
+		log.Printf("[consolidate] Skipped ephemeral content (%d episodes): %s",
+			len(group.episodes), truncate(summary, 80))
+		return nil
+	}
+
 	// Generate trace ID
 	idSuffix := group.episodes[0].ID
 	if len(idSuffix) > 8 {
@@ -333,4 +344,29 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// isEphemeralContent returns true if the summary represents transient content
+// that shouldn't be stored as a long-term memory trace.
+func isEphemeralContent(summary string) bool {
+	lower := strings.ToLower(summary)
+
+	// Meeting countdown reminders ("X minutes and Y seconds")
+	if strings.Contains(lower, "minutes and") && strings.Contains(lower, "seconds") {
+		return true
+	}
+
+	// "starting in X minutes" without meaningful context
+	if strings.Contains(lower, "starting in") && strings.Contains(lower, "minutes") &&
+		len(summary) < 200 {
+		return true
+	}
+
+	// "starts in X minutes" variant
+	if strings.Contains(lower, "starts in") && strings.Contains(lower, "minutes") &&
+		len(summary) < 200 {
+		return true
+	}
+
+	return false
 }
