@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -142,6 +143,76 @@ func (g *DB) DecayActivation(factor float64) error {
 		UPDATE traces SET activation = activation * ? WHERE is_core = FALSE
 	`, factor)
 	return err
+}
+
+// DecayActivationByAge applies time-based decay to all non-core traces based on
+// time since last access. Uses exponential decay: activation *= exp(-lambda * hours_since_access)
+// This differentiates traces by recency — recently accessed traces keep high activation,
+// old untouched traces decay toward a floor.
+func (g *DB) DecayActivationByAge(lambda float64, floor float64) (int, error) {
+	now := time.Now()
+
+	rows, err := g.db.Query(`
+		SELECT id, activation, last_accessed FROM traces WHERE is_core = FALSE AND activation > ?
+	`, floor)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type update struct {
+		id            string
+		newActivation float64
+	}
+	var updates []update
+
+	for rows.Next() {
+		var id string
+		var activation float64
+		var lastAccessed time.Time
+		if err := rows.Scan(&id, &activation, &lastAccessed); err != nil {
+			continue
+		}
+
+		hoursSinceAccess := now.Sub(lastAccessed).Hours()
+		if hoursSinceAccess < 0 {
+			hoursSinceAccess = 0
+		}
+
+		decayFactor := math.Exp(-lambda * hoursSinceAccess)
+		newActivation := activation * decayFactor
+		if newActivation < floor {
+			newActivation = floor
+		}
+
+		if newActivation != activation {
+			updates = append(updates, update{id: id, newActivation: newActivation})
+		}
+	}
+
+	for _, u := range updates {
+		g.db.Exec(`UPDATE traces SET activation = ? WHERE id = ?`, u.newActivation, u.id)
+	}
+
+	return len(updates), nil
+}
+
+// BoostTraceAccess updates last_accessed and boosts activation for traces that were
+// retrieved and shown to the user. This keeps actively-used memories alive.
+func (g *DB) BoostTraceAccess(traceIDs []string, boost float64) error {
+	now := time.Now()
+	for _, id := range traceIDs {
+		_, err := g.db.Exec(`
+			UPDATE traces SET
+				last_accessed = ?,
+				activation = MIN(1.0, activation + ?)
+			WHERE id = ?
+		`, now, boost, id)
+		if err != nil {
+			continue
+		}
+	}
+	return nil
 }
 
 // LinkTraceToSource links a trace to a source episode

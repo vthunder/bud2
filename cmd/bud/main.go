@@ -1096,6 +1096,16 @@ func main() {
 				} else {
 					log.Println("[consolidate] No unconsolidated episodes found")
 				}
+
+				// Apply time-based activation decay
+				// lambda=0.005 means ~12% decay per day, ~50% after ~6 days
+				// floor=0.1 prevents traces from fully disappearing
+				decayed, err := graphDB.DecayActivationByAge(0.005, 0.1)
+				if err != nil {
+					log.Printf("[consolidate] Activation decay error: %v", err)
+				} else if decayed > 0 {
+					log.Printf("[consolidate] Decayed activation for %d traces", decayed)
+				}
 			}
 		}
 	}()

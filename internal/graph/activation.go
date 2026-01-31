@@ -291,11 +291,12 @@ func extractKeywords(query string) []string {
 const MinSimilarityThreshold = 0.3
 
 // FindSimilarTraces finds traces similar to the query embedding
-// Only returns traces with similarity above MinSimilarityThreshold
+// Scores combine semantic similarity with stored activation to prefer recent/active memories.
+// Only returns traces with similarity above MinSimilarityThreshold.
 func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
-	// Get all traces with embeddings
+	// Get all traces with embeddings and activation
 	rows, err := g.db.Query(`
-		SELECT id, embedding FROM traces WHERE embedding IS NOT NULL
+		SELECT id, embedding, activation FROM traces WHERE embedding IS NOT NULL
 	`)
 	if err != nil {
 		return nil, err
@@ -311,7 +312,8 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 	for rows.Next() {
 		var id string
 		var embBytes []byte
-		if err := rows.Scan(&id, &embBytes); err != nil {
+		var activation float64
+		if err := rows.Scan(&id, &embBytes, &activation); err != nil {
 			continue
 		}
 
@@ -323,11 +325,16 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 		sim := cosineSimilarity(queryEmb, embedding)
 		// Only include traces above minimum similarity threshold
 		if sim >= MinSimilarityThreshold {
-			candidates = append(candidates, scored{id: id, score: sim})
+			// Blend similarity with stored activation:
+			// 70% semantic similarity + 30% activation
+			// This biases toward recent/frequently-used traces while
+			// keeping semantic relevance as the primary signal.
+			blended := 0.7*sim + 0.3*activation
+			candidates = append(candidates, scored{id: id, score: blended})
 		}
 	}
 
-	// Sort by similarity descending
+	// Sort by blended score descending
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})

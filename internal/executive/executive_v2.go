@@ -398,6 +398,15 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			}
 		}
 		bundle.PriorMemoriesCount = priorCount
+
+		// Boost activation for newly shown memories (keeps used traces alive)
+		if len(bundle.Memories) > 0 {
+			shownIDs := make([]string, len(bundle.Memories))
+			for i, mem := range bundle.Memories {
+				shownIDs[i] = mem.ID
+			}
+			e.graph.BoostTraceAccess(shownIDs, 0.1)
+		}
 	}
 
 	return bundle
