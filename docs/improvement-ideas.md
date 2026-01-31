@@ -92,3 +92,26 @@ each was retrieved (e.g., "activated by similarity to 'project planning'" or
 "entity match: ProjectX"). This gives Claude metacognitive context about its own
 memory retrieval, allowing it to judge relevance rather than treating all
 retrieved memories as equally important.
+
+---
+
+## Architecture Notes
+
+### Arousal system is effectively dead code
+
+The arousal-based selection threshold in `internal/focus/attention.go` currently
+has no practical effect. Every item type in the system bypasses it:
+
+- **User input** (`Type == "user_input"`): bypassed explicitly
+- **P0 Critical**: bypassed explicitly
+- **System/impulse** (`Source == "impulse" || "system"`): bypassed after #3 above
+
+The threshold (`0.6 - arousal * 0.3`) only applies to items that don't match any
+of these categories, and no such items currently exist in the system.
+
+**Keep or remove?** The arousal system was designed for a future where many
+competing signal types would need filtering (e.g., proactive suggestions from
+consolidation, GitHub webhooks, email scanning). If those are added, arousal
+provides a "how busy am I" gate so low-priority signals get filtered during
+active work. If those never materialize, the arousal code can be removed with
+zero behavioral change.
