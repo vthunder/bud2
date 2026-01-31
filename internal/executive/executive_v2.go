@@ -356,6 +356,12 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 	// Retrieve relevant memories from graph using dual-trigger (embedding + lexical)
 	// Filter out memories already sent in this session to avoid repetition
+	// For autonomous wakes, limit to fewer memories since they're rarely useful (avg 1.61/5)
+	memoryLimit := 10
+	if item.Type == "wake" {
+		memoryLimit = 3
+	}
+
 	if e.graph != nil && e.embedder != nil && item.Content != "" {
 		var allMemories []focus.MemorySummary
 
@@ -363,7 +369,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		queryEmb, err := e.embedder.Embed(item.Content)
 		if err == nil && len(queryEmb) > 0 {
 			// Use dual-trigger spreading activation (semantic + lexical)
-			result, err := e.graph.Retrieve(queryEmb, item.Content, 10)
+			result, err := e.graph.Retrieve(queryEmb, item.Content, memoryLimit)
 			if err == nil && result != nil {
 				for _, t := range result.Traces {
 					allMemories = append(allMemories, focus.MemorySummary{
@@ -376,7 +382,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		}
 		// Fallback: if embedding fails, use activation-based retrieval
 		if len(allMemories) == 0 {
-			traces, err := e.graph.GetActivatedTraces(0.1, 10)
+			traces, err := e.graph.GetActivatedTraces(0.1, memoryLimit)
 			if err == nil {
 				for _, t := range traces {
 					allMemories = append(allMemories, focus.MemorySummary{
