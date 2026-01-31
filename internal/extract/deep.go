@@ -68,7 +68,7 @@ ENTITY TYPES (use these exact labels):
 - FAC: Buildings, hospitals, airports (UCSF Medical Center, SFO, the office)
 - DATE: Dates, years, relative dates, deadlines (2015, next Tuesday, March 15th, Q1)
 - TIME: Times of day (2pm, 6am, noon)
-- PRODUCT: Products, vehicles, technologies (Redis, Kubernetes, iPhone, Tesla Model 3)
+- PRODUCT: Named commercial products and vehicles only (iPhone, Tesla Model 3, Slack, Notion). NOT: generic tech terms, internal projects, code concepts, protocols, or tools being discussed in passing
 - MONEY: Monetary values, budgets, prices ($50k, $1 million, 500 dollars)
 - EMAIL: Email addresses (user@example.com, sarah.chen@company.com)
 - PET: Pet names, animals (cats named Pixel, dog named Max)
@@ -93,7 +93,13 @@ RELATIONSHIP TYPES (subject → predicate → object):
 - allergic_to: PERSON is allergic to PRODUCT
 - has_pet: PERSON has/owns PET
 
-IMPORTANT: When "my", "I", or "me" refers to the speaker, use "speaker" as the entity name.
+IMPORTANT: Be conservative. Only extract entities you are confident about (>0.8).
+Do NOT extract:
+- Generic technical terms or code concepts as PRODUCT (e.g., "memory system", "subprocess", "sessions")
+- Internal project names as PRODUCT (use ORG for teams/projects if they represent an organization)
+- Descriptions or phrases as entities (e.g., "autonomous wake-up" is not an entity)
+
+When "my", "I", or "me" refers to the speaker, use "speaker" as the entity name.
 For example: "My brother Marcus" → sibling_of(Marcus, speaker)
              "My car is a Tesla" → owner_of(speaker, Tesla Model 3)
 
@@ -281,6 +287,11 @@ func postProcessEntities(text string, result *ExtractionResult) *ExtractionResul
 			continue
 		}
 
+		// Skip PRODUCT entities that look like generic descriptions rather than named products
+		if e.Type == graph.EntityProduct && isGenericProductName(e.Name) {
+			continue
+		}
+
 		// Fix misclassified types based on content
 		if emailRegex.MatchString(e.Name) {
 			e.Type = graph.EntityEmail
@@ -323,6 +334,34 @@ func postProcessEntities(text string, result *ExtractionResult) *ExtractionResul
 
 	result.Entities = filtered
 	return result
+}
+
+// isGenericProductName returns true if the name looks like a generic description
+// rather than a named product. Generic descriptions contain common tech/project terms
+// and are typically multi-word phrases.
+func isGenericProductName(name string) bool {
+	lower := strings.ToLower(name)
+	words := strings.Fields(lower)
+
+	// Single well-known product names are fine
+	if len(words) == 1 {
+		return false
+	}
+
+	// Multi-word names containing generic terms are likely descriptions, not products
+	genericTerms := []string{
+		"system", "project", "session", "sessions", "service", "model",
+		"memory", "wake", "wake-up", "prompt", "repo", "subscription",
+		"reflex", "improvement", "evaluation", "check", "page", "doc",
+		"interactive", "autonomous", "converter", "notes", "guild",
+	}
+	for _, term := range genericTerms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // PredicateToEdgeType converts a predicate string to an EdgeType
