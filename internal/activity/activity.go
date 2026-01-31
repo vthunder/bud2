@@ -125,15 +125,19 @@ func (l *Log) LogExecWake(summary, threadID, context string) error {
 }
 
 // LogExecDone logs executive completing processing
-func (l *Log) LogExecDone(summary, threadID string, durationSec float64, completion string) error {
+func (l *Log) LogExecDone(summary, threadID string, durationSec float64, completion string, extraData map[string]any) error {
+	data := map[string]any{
+		"duration_sec": durationSec,
+		"completion":   completion,
+	}
+	for k, v := range extraData {
+		data[k] = v
+	}
 	return l.Log(Entry{
 		Type:     TypeExecDone,
 		Summary:  summary,
 		ThreadID: threadID,
-		Data: map[string]any{
-			"duration_sec": durationSec,
-			"completion":   completion,
-		},
+		Data:     data,
 	})
 }
 

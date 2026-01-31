@@ -345,7 +345,7 @@ func main() {
 				activityLog.LogExecWake("Executive processing", focusID, context)
 			},
 			OnExecDone: func(focusID, summary string, durationSec float64) {
-				activityLog.LogExecDone(summary, focusID, durationSec, "executive")
+				activityLog.LogExecDone(summary, focusID, durationSec, "executive", nil)
 			},
 			OnMemoryEval: func(eval string) {
 				activityLog.Log(activity.Entry{
@@ -372,18 +372,34 @@ func main() {
 			// Session completion signal
 			sessionID := ""
 			source := "signal_done"
+			var memoryEval map[string]any
 			if msg.Extra != nil {
 				sessionID, _ = msg.Extra["session_id"].(string)
 				if s, ok := msg.Extra["source"].(string); ok {
 					source = s
 				}
+				if eval, ok := msg.Extra["memory_eval"].(map[string]any); ok {
+					memoryEval = eval
+				}
 			}
 			if sessionID != "" {
 				session := sessionTracker.CompleteSession(sessionID)
 				if session != nil {
-					activityLog.LogExecDone(msg.Content, "", session.DurationSec, source)
+					var extraData map[string]any
+					if memoryEval != nil {
+						extraData = map[string]any{"memory_eval": memoryEval}
+					}
+					activityLog.LogExecDone(msg.Content, "", session.DurationSec, source, extraData)
 					log.Printf("[main] Signal: session %s completed via %s (%.1f sec)", sessionID, source, session.DurationSec)
 				}
+			}
+			// Log memory eval separately for easier querying
+			if memoryEval != nil {
+				activityLog.Log(activity.Entry{
+					Type:    "memory_eval",
+					Summary: "Memory self-evaluation via signal_done",
+					Data:    map[string]any{"eval": memoryEval},
+				})
 			}
 
 		case "reset_session":
