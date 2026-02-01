@@ -5,11 +5,11 @@ package consolidate
 import (
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/vthunder/bud2/internal/filter"
 	"github.com/vthunder/bud2/internal/graph"
 )
 
@@ -25,21 +25,19 @@ type Consolidator struct {
 	llm    LLMClient
 
 	// Configuration
-	TimeWindow       time.Duration // Max time span for grouping (default 30 min)
-	SimilarityThresh float64       // Embedding similarity threshold (default 0.7)
-	MinGroupSize     int           // Minimum episodes to form a group (default 1)
-	MaxGroupSize     int           // Maximum episodes per group (default 10)
+	TimeWindow   time.Duration // Max time span for grouping (default 30 min)
+	MinGroupSize int           // Minimum episodes to form a group (default 1)
+	MaxGroupSize int           // Maximum episodes per group (default 10)
 }
 
 // NewConsolidator creates a new consolidator
 func NewConsolidator(g *graph.DB, llm LLMClient) *Consolidator {
 	return &Consolidator{
-		graph:            g,
-		llm:              llm,
-		TimeWindow:       30 * time.Minute,
-		SimilarityThresh: 0.7,
-		MinGroupSize:     1,
-		MaxGroupSize:     10,
+		graph:        g,
+		llm:          llm,
+		TimeWindow:   30 * time.Minute,
+		MinGroupSize: 1,
+		MaxGroupSize: 10,
 	}
 }
 
@@ -83,8 +81,13 @@ func (c *Consolidator) Run() (int, error) {
 
 // groupEpisodes groups related episodes together based on:
 // 1. Time proximity (within TimeWindow)
-// 2. Entity overlap
-// 3. Embedding similarity
+// 2. Conversation thread (same channel + entity overlap)
+//
+// Embedding similarity is deliberately NOT used for grouping — it risks
+// merging topically-similar but contextually-separate conversations (e.g.
+// "coffee in Berlin" with Jane and "coffee in Tokyo" with Bob). Topical
+// connections are handled at retrieval time via entity-bridged spreading
+// activation instead.
 func (c *Consolidator) groupEpisodes(episodes []*graph.Episode) []*episodeGroup {
 	if len(episodes) == 0 {
 		return nil
@@ -143,7 +146,9 @@ func (c *Consolidator) groupEpisodes(episodes []*graph.Episode) []*episodeGroup 
 				continue
 			}
 
-			// Check entity overlap
+			// Check conversation thread: same channel or entity overlap
+			sameChannel := ep.Channel != "" && ep.Channel == candidate.Channel
+
 			candidateEntities := episodeEntities[candidate.ID]
 			hasEntityOverlap := false
 			for e := range candidateEntities {
@@ -153,15 +158,8 @@ func (c *Consolidator) groupEpisodes(episodes []*graph.Episode) []*episodeGroup 
 				}
 			}
 
-			// Check embedding similarity
-			similar := false
-			if len(ep.Embedding) > 0 && len(candidate.Embedding) > 0 {
-				sim := cosineSimilarity(ep.Embedding, candidate.Embedding)
-				similar = sim >= c.SimilarityThresh
-			}
-
-			// Add to group if related
-			if hasEntityOverlap || similar {
+			// Add to group if in same conversation thread
+			if sameChannel || hasEntityOverlap {
 				group.episodes = append(group.episodes, candidate)
 				for e := range candidateEntities {
 					group.entityIDs[e] = true
@@ -215,12 +213,12 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 	}
 
 	// Skip ephemeral/low-value content that shouldn't become long-term memories
-	if isEphemeralContent(summary) {
+	if isEphemeralContent(summary) || isAllLowInfo(group.episodes) {
 		// Link episodes to sentinel trace so they aren't retried by GetUnconsolidatedEpisodes
 		for _, ep := range group.episodes {
 			c.graph.LinkTraceToSource("_ephemeral", ep.ID)
 		}
-		log.Printf("[consolidate] Skipped ephemeral content (%d episodes): %s",
+		log.Printf("[consolidate] Skipped low-value content (%d episodes): %s",
 			len(group.episodes), truncate(summary, 80))
 		return nil
 	}
@@ -277,26 +275,6 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 	return nil
 }
 
-// cosineSimilarity calculates cosine similarity between two vectors
-func cosineSimilarity(a, b []float64) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-
-	var dotProduct, normA, normB float64
-	for i := range a {
-		dotProduct += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-
-	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
-}
-
 // calculateCentroid computes the centroid embedding from multiple episodes
 func calculateCentroid(episodes []*graph.Episode) []float64 {
 	if len(episodes) == 0 {
@@ -344,6 +322,26 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// isAllLowInfo returns true if every episode in the group is a backchannel or
+// greeting (e.g., "ok", "great", "hi"). Uses the dialogue_act field if set,
+// otherwise falls back to content-based classification.
+func isAllLowInfo(episodes []*graph.Episode) bool {
+	if len(episodes) == 0 {
+		return true
+	}
+	for _, ep := range episodes {
+		act := ep.DialogueAct
+		if act == "" {
+			// Fallback: classify content directly
+			act = string(filter.ClassifyDialogueAct(ep.Content))
+		}
+		if act != string(filter.ActBackchannel) && act != string(filter.ActGreeting) {
+			return false
+		}
+	}
+	return true
 }
 
 // isEphemeralContent returns true if the summary represents transient content
