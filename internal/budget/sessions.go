@@ -15,6 +15,23 @@ type Session struct {
 	StartedAt   time.Time  `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	DurationSec float64    `json:"duration_sec,omitempty"`
+
+	// Token usage (populated from Claude CLI result event)
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	NumTurns                 int `json:"num_turns,omitempty"`
+}
+
+// TokenUsage holds daily aggregated token counts
+type TokenUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	SessionCount             int `json:"session_count"`
+	TotalTurns               int `json:"total_turns"`
 }
 
 // SessionTracker tracks active and completed sessions
@@ -128,6 +145,44 @@ func (t *SessionTracker) LongestActiveSession() time.Duration {
 		}
 	}
 	return longest
+}
+
+// SetSessionUsage records token usage for a completed session
+func (t *SessionTracker) SetSessionUsage(sessionID string, input, output, cacheCreate, cacheRead, turns int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Find in completed sessions (most recent first)
+	for i := len(t.completed) - 1; i >= 0; i-- {
+		if t.completed[i].ID == sessionID {
+			t.completed[i].InputTokens = input
+			t.completed[i].OutputTokens = output
+			t.completed[i].CacheCreationInputTokens = cacheCreate
+			t.completed[i].CacheReadInputTokens = cacheRead
+			t.completed[i].NumTurns = turns
+			t.save()
+			return
+		}
+	}
+}
+
+// TodayTokenUsage returns aggregated token usage for today
+func (t *SessionTracker) TodayTokenUsage() TokenUsage {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	t.checkDayRollover()
+
+	var usage TokenUsage
+	for _, s := range t.completed {
+		usage.InputTokens += s.InputTokens
+		usage.OutputTokens += s.OutputTokens
+		usage.CacheCreationInputTokens += s.CacheCreationInputTokens
+		usage.CacheReadInputTokens += s.CacheReadInputTokens
+		usage.TotalTurns += s.NumTurns
+		usage.SessionCount++
+	}
+	return usage
 }
 
 // checkDayRollover resets completed sessions on new day

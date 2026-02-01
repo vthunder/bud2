@@ -328,8 +328,12 @@ func main() {
 			OnExecWake: func(focusID, context string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
 			},
-			OnExecDone: func(focusID, summary string, durationSec float64) {
-				activityLog.LogExecDone(summary, focusID, durationSec, "executive", nil)
+			OnExecDone: func(focusID, summary string, durationSec float64, usage *executive.SessionUsage) {
+				extra := map[string]any{}
+				if usage != nil {
+					extra["usage"] = usage
+				}
+				activityLog.LogExecDone(summary, focusID, durationSec, "executive", extra)
 			},
 			OnMemoryEval: func(eval string) {
 				activityLog.Log(activity.Entry{

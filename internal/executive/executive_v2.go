@@ -60,7 +60,7 @@ type ExecutiveV2Config struct {
 	StartTyping    func(channelID string)
 	StopTyping     func(channelID string)
 	OnExecWake     func(focusID, context string)
-	OnExecDone     func(focusID, summary string, durationSec float64)
+	OnExecDone     func(focusID, summary string, durationSec float64, usage *SessionUsage)
 	OnMemoryEval   func(eval string) // Called when Claude outputs memory self-evaluation
 
 	// WakeupInstructions is the content of seed/wakeup.md, injected into
@@ -232,6 +232,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.CompleteSession(e.session.SessionID())
+
+		// Record token usage from CLI result event
+		if usage := e.session.LastUsage(); usage != nil {
+			e.config.SessionTracker.SetSessionUsage(e.session.SessionID(),
+				usage.InputTokens, usage.OutputTokens,
+				usage.CacheCreationInputTokens, usage.CacheReadInputTokens,
+				usage.NumTurns)
+		}
 	}
 
 	// Mark items and memories as seen, update buffer sync time
@@ -239,9 +247,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	e.session.MarkMemoriesSeen(memoryIDs)
 	e.session.UpdateBufferSync(time.Now())
 
-	// Log completion
+	// Log completion with usage data
 	if e.config.OnExecDone != nil {
-		e.config.OnExecDone(item.ID, truncate(output.String(), 100), duration)
+		e.config.OnExecDone(item.ID, truncate(output.String(), 100), duration, e.session.LastUsage())
 	}
 
 	if output.Len() > 0 {
@@ -528,7 +536,7 @@ func (e *ExecutiveV2) toolComplete(item *focus.PendingItem, args map[string]any)
 	}
 
 	if e.config.OnExecDone != nil {
-		e.config.OnExecDone(item.ID, summary, 0)
+		e.config.OnExecDone(item.ID, summary, 0, e.session.LastUsage())
 	}
 
 	return "Focus marked complete", nil

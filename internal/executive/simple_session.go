@@ -41,6 +41,9 @@ type SimpleSession struct {
 	// Only buffer entries after this time need to be sent
 	lastBufferSync time.Time
 
+	// Usage from last completed prompt
+	lastUsage *SessionUsage
+
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
 	onOutput   func(text string)
@@ -284,6 +287,11 @@ func (s *SimpleSession) processStreamJSON(r io.Reader) {
 			continue
 		}
 
+		// For result events, parse usage from the full raw JSON
+		if event.Type == "result" {
+			s.parseResultUsage([]byte(line))
+		}
+
 		s.handleStreamEvent(event)
 	}
 
@@ -355,6 +363,57 @@ func (s *SimpleSession) processStderr(r io.Reader, buf *strings.Builder) {
 			}
 		}
 	}
+}
+
+// LastUsage returns the usage metrics from the last completed prompt, or nil
+func (s *SimpleSession) LastUsage() *SessionUsage {
+	return s.lastUsage
+}
+
+// parseResultUsage extracts token usage from a raw result event JSON line
+func (s *SimpleSession) parseResultUsage(raw []byte) {
+	var result struct {
+		NumTurns      int `json:"num_turns"`
+		DurationMs    int `json:"duration_ms"`
+		DurationApiMs int `json:"duration_api_ms"`
+		Usage         struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+		ModelUsage map[string]struct {
+			ContextWindow   int `json:"contextWindow"`
+			MaxOutputTokens int `json:"maxOutputTokens"`
+		} `json:"modelUsage"`
+	}
+
+	if err := json.Unmarshal(raw, &result); err != nil {
+		log.Printf("[simple-session] Failed to parse result usage: %v", err)
+		return
+	}
+
+	usage := &SessionUsage{
+		InputTokens:              result.Usage.InputTokens,
+		OutputTokens:             result.Usage.OutputTokens,
+		CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
+		NumTurns:                 result.NumTurns,
+		DurationMs:               result.DurationMs,
+		DurationApiMs:            result.DurationApiMs,
+	}
+
+	// Extract context window from first model in modelUsage
+	for _, m := range result.ModelUsage {
+		usage.ContextWindow = m.ContextWindow
+		usage.MaxOutputTokens = m.MaxOutputTokens
+		break
+	}
+
+	s.lastUsage = usage
+	log.Printf("[simple-session] Usage: input=%d output=%d cache_read=%d cache_create=%d turns=%d duration=%dms",
+		usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens,
+		usage.CacheCreationInputTokens, usage.NumTurns, usage.DurationMs)
 }
 
 // Close is a no-op since there's no persistent process to clean up in -p mode
