@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -393,4 +394,259 @@ func BenchmarkSpreadActivation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		db.SpreadActivation([]string{filepath.Base(tmpDir) + "-A0"}, 3)
 	}
+}
+
+// setupEntityBridgedDB creates a test DB with traces sharing entities.
+// Returns: db, cleanup, and the entity/trace IDs for assertions.
+//
+//	trace-1 --[entity-jane]--> trace-2
+//	trace-1 --[entity-jane, entity-proj]--> trace-3
+//	trace-4 has no shared entities
+func setupEntityBridgedDB(t *testing.T) (*DB, func()) {
+	t.Helper()
+	db, cleanup := setupTestDB(t)
+
+	// Create entities
+	db.AddEntity(&Entity{ID: "entity-jane", Name: "Jane", Type: EntityPerson, Salience: 0.8})
+	db.AddEntity(&Entity{ID: "entity-proj", Name: "Project Alpha", Type: EntityProduct, Salience: 0.6})
+	db.AddEntity(&Entity{ID: "entity-bob", Name: "Bob", Type: EntityPerson, Salience: 0.4})
+
+	// Add alias for Jane
+	db.AddEntityAlias("entity-jane", "Jane Smith")
+
+	// Create traces
+	db.AddTrace(&Trace{ID: "trace-1", Summary: "Meeting with Jane about Project Alpha", Activation: 0.5, Embedding: []float64{1.0, 0.0, 0.0, 0.0}})
+	db.AddTrace(&Trace{ID: "trace-2", Summary: "Jane's birthday is in March", Activation: 0.5, Embedding: []float64{0.0, 1.0, 0.0, 0.0}})
+	db.AddTrace(&Trace{ID: "trace-3", Summary: "Project Alpha deadline discussion with Jane", Activation: 0.5, Embedding: []float64{0.0, 0.0, 1.0, 0.0}})
+	db.AddTrace(&Trace{ID: "trace-4", Summary: "Unrelated trace about weather", Activation: 0.5, Embedding: []float64{0.0, 0.0, 0.0, 1.0}})
+
+	// Link traces to entities
+	db.LinkTraceToEntity("trace-1", "entity-jane")
+	db.LinkTraceToEntity("trace-1", "entity-proj")
+	db.LinkTraceToEntity("trace-2", "entity-jane")
+	db.LinkTraceToEntity("trace-3", "entity-jane")
+	db.LinkTraceToEntity("trace-3", "entity-proj")
+	db.LinkTraceToEntity("trace-4", "entity-bob")
+
+	return db, cleanup
+}
+
+func TestEntityBridgedNeighbors(t *testing.T) {
+	db, cleanup := setupEntityBridgedDB(t)
+	defer cleanup()
+
+	// trace-1 shares entity-jane with trace-2 and trace-3
+	// trace-1 also shares entity-proj with trace-3
+	neighbors, err := db.GetTraceNeighborsThroughEntities("trace-1", 15)
+	if err != nil {
+		t.Fatalf("GetTraceNeighborsThroughEntities failed: %v", err)
+	}
+
+	if len(neighbors) == 0 {
+		t.Fatal("Expected entity-bridged neighbors, got none")
+	}
+
+	// Should find trace-2 and trace-3 as neighbors
+	neighborIDs := make(map[string]float64)
+	for _, n := range neighbors {
+		neighborIDs[n.ID] = n.Weight
+		if n.Type != EdgeSharedEntity {
+			t.Errorf("Expected EdgeSharedEntity type, got %s", n.Type)
+		}
+	}
+
+	if _, ok := neighborIDs["trace-2"]; !ok {
+		t.Error("Expected trace-2 as neighbor (shares entity-jane)")
+	}
+	if _, ok := neighborIDs["trace-3"]; !ok {
+		t.Error("Expected trace-3 as neighbor (shares entity-jane and entity-proj)")
+	}
+	if _, ok := neighborIDs["trace-4"]; ok {
+		t.Error("trace-4 should NOT be a neighbor of trace-1 (no shared entities)")
+	}
+
+	t.Logf("Entity-bridged neighbors of trace-1: %+v", neighbors)
+}
+
+func TestEntityBridgedSpreadActivation(t *testing.T) {
+	db, cleanup := setupEntityBridgedDB(t)
+	defer cleanup()
+
+	// Spread from trace-1 — should reach trace-2 and trace-3 through entity bridges
+	activation, err := db.SpreadActivation([]string{"trace-1"}, 3)
+	if err != nil {
+		t.Fatalf("SpreadActivation failed: %v", err)
+	}
+
+	if activation["trace-2"] == 0 {
+		t.Error("Expected trace-2 to receive activation through entity bridge")
+	}
+	if activation["trace-3"] == 0 {
+		t.Error("Expected trace-3 to receive activation through entity bridge")
+	}
+
+	t.Logf("Entity-bridged activations: trace-1=%f, trace-2=%f, trace-3=%f, trace-4=%f",
+		activation["trace-1"], activation["trace-2"], activation["trace-3"], activation["trace-4"])
+}
+
+func TestEntitySeeding(t *testing.T) {
+	db, cleanup := setupEntityBridgedDB(t)
+	defer cleanup()
+
+	// Query mentioning "Jane" should seed Jane-related traces
+	matchedEntities, err := db.FindEntitiesByText("meeting with Jane tomorrow", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByText failed: %v", err)
+	}
+
+	if len(matchedEntities) == 0 {
+		t.Fatal("Expected to find entity 'Jane' in query text")
+	}
+
+	found := false
+	for _, e := range matchedEntities {
+		if e.ID == "entity-jane" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected entity-jane to be matched")
+	}
+
+	// Also test alias matching: "Jane Smith"
+	matchedAliases, err := db.FindEntitiesByText("I spoke with Jane Smith yesterday", 5)
+	if err != nil {
+		t.Fatalf("FindEntitiesByText failed: %v", err)
+	}
+
+	found = false
+	for _, e := range matchedAliases {
+		if e.ID == "entity-jane" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected entity-jane to be matched via alias 'Jane Smith'")
+	}
+}
+
+func TestEntitySeedingNoFalsePositives(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create entities with names that could cause false positives
+	db.AddEntity(&Entity{ID: "entity-ai", Name: "AI", Type: EntityProduct, Salience: 0.5})
+	db.AddEntity(&Entity{ID: "entity-go", Name: "Go", Type: EntityLanguage, Salience: 0.5})
+	db.AddEntity(&Entity{ID: "entity-ed", Name: "Ed", Type: EntityPerson, Salience: 0.5})
+
+	// "AI" is only 2 chars — should be skipped (< 3 char minimum)
+	matches, _ := db.FindEntitiesByText("I said something about AI today", 5)
+	for _, m := range matches {
+		if m.ID == "entity-ai" {
+			t.Error("Should not match 'AI' (too short, < 3 chars)")
+		}
+	}
+
+	// "Go" is only 2 chars — should be skipped
+	matches, _ = db.FindEntitiesByText("Let's go to the store", 5)
+	for _, m := range matches {
+		if m.ID == "entity-go" {
+			t.Error("Should not match 'Go' (too short, < 3 chars)")
+		}
+	}
+
+	// "Ed" is only 2 chars — should be skipped
+	matches, _ = db.FindEntitiesByText("I edited the file", 5)
+	for _, m := range matches {
+		if m.ID == "entity-ed" {
+			t.Error("Should not match 'Ed' (too short, < 3 chars)")
+		}
+	}
+
+	// But longer names should match with word boundaries
+	db.AddEntity(&Entity{ID: "entity-alice", Name: "Alice", Type: EntityPerson, Salience: 0.5})
+	matches, _ = db.FindEntitiesByText("I met Alice at the park", 5)
+	found := false
+	for _, m := range matches {
+		if m.ID == "entity-alice" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected to match 'Alice' as a whole word")
+	}
+
+	// "Alice" should NOT match inside "Malice"
+	matches, _ = db.FindEntitiesByText("There was no malice intended", 5)
+	for _, m := range matches {
+		if m.ID == "entity-alice" {
+			t.Error("Should not match 'Alice' inside 'malice' (word boundary)")
+		}
+	}
+}
+
+func TestEntityNeighborCap(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create one entity shared by many traces
+	db.AddEntity(&Entity{ID: "entity-shared", Name: "SharedThing", Type: EntityProduct, Salience: 0.5})
+
+	// Create source trace
+	db.AddTrace(&Trace{ID: "trace-source", Summary: "Source trace"})
+	db.LinkTraceToEntity("trace-source", "entity-shared")
+
+	// Create 20 traces sharing the same entity (more than MaxEdgesPerNode=15)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("trace-neighbor-%d", i)
+		db.AddTrace(&Trace{ID: id, Summary: fmt.Sprintf("Neighbor trace %d", i)})
+		db.LinkTraceToEntity(id, "entity-shared")
+	}
+
+	neighbors, err := db.GetTraceNeighborsThroughEntities("trace-source", MaxEdgesPerNode)
+	if err != nil {
+		t.Fatalf("GetTraceNeighborsThroughEntities failed: %v", err)
+	}
+
+	if len(neighbors) > MaxEdgesPerNode {
+		t.Errorf("Expected at most %d neighbors, got %d", MaxEdgesPerNode, len(neighbors))
+	}
+
+	t.Logf("Returned %d entity-bridged neighbors (cap=%d)", len(neighbors), MaxEdgesPerNode)
+}
+
+func TestMultiEntitySharedWeight(t *testing.T) {
+	db, cleanup := setupEntityBridgedDB(t)
+	defer cleanup()
+
+	neighbors, err := db.GetTraceNeighborsThroughEntities("trace-1", 15)
+	if err != nil {
+		t.Fatalf("GetTraceNeighborsThroughEntities failed: %v", err)
+	}
+
+	weightByID := make(map[string]float64)
+	for _, n := range neighbors {
+		weightByID[n.ID] = n.Weight
+	}
+
+	// trace-3 shares 2 entities (jane + project alpha) with trace-1 -> weight = min(1.0, 2*0.3) = 0.6
+	// trace-2 shares 1 entity (jane) with trace-1 -> weight = min(1.0, 1*0.3) = 0.3
+	w3 := weightByID["trace-3"]
+	w2 := weightByID["trace-2"]
+
+	if w3 <= w2 {
+		t.Errorf("Expected trace-3 (2 shared entities, weight=%f) to have higher weight than trace-2 (1 shared entity, weight=%f)", w3, w2)
+	}
+
+	if w3 != 0.6 {
+		t.Errorf("Expected trace-3 weight 0.6 (2 shared * 0.3), got %f", w3)
+	}
+
+	if w2 != 0.3 {
+		t.Errorf("Expected trace-2 weight 0.3 (1 shared * 0.3), got %f", w2)
+	}
+
+	t.Logf("Multi-entity weights: trace-2=%f, trace-3=%f", w2, w3)
 }

@@ -121,13 +121,17 @@ func (inv *Invalidator) CheckInvalidation(
 	return &result, nil
 }
 
-// IsExclusiveRelation returns true if the relation type typically allows only one object
-// (e.g., lives_in, works_at for primary job, has_email)
+// IsExclusiveRelation returns true if the relation type typically allows only one object.
+// With meta-relationships, located_in and kin_of can be exclusive in some contexts.
+// The invalidation LLM prompt handles the nuance of whether a specific instance contradicts.
 func IsExclusiveRelation(relType graph.EdgeType) bool {
 	switch relType {
-	case graph.EdgeLivesIn,
+	case graph.EdgeLocatedIn,
+		graph.EdgeKinOf,
+		// Legacy types (in case old data exists)
+		graph.EdgeLivesIn,
 		graph.EdgeMarriedTo,
-		graph.EdgeWorksAt: // Primary employer
+		graph.EdgeWorksAt:
 		return true
 	default:
 		return false

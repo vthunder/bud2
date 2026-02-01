@@ -17,30 +17,37 @@ const (
 	EdgeRelatedTo EdgeType = "RELATED_TO"
 	EdgeMentions  EdgeType = "MENTIONS"
 
-	// Entity edges (semantic relationships)
-	EdgeWorksAt    EdgeType = "WORKS_AT"    // PERSON → ORG
-	EdgeLivesIn    EdgeType = "LIVES_IN"    // PERSON → LOCATION
-	EdgeMarriedTo  EdgeType = "MARRIED_TO"  // PERSON → PERSON
-	EdgeSiblingOf  EdgeType = "SIBLING_OF"  // PERSON → PERSON
-	EdgeParentOf   EdgeType = "PARENT_OF"   // PERSON → PERSON
-	EdgeChildOf    EdgeType = "CHILD_OF"    // PERSON → PERSON
-	EdgeFriendOf   EdgeType = "FRIEND_OF"   // PERSON → PERSON
-	EdgeWorksOn    EdgeType = "WORKS_ON"    // PERSON → PROJECT/ORG
-	EdgeLocatedIn  EdgeType = "LOCATED_IN"  // ORG/FAC → LOCATION
-	EdgePartOf     EdgeType = "PART_OF"     // ORG → ORG (team → company)
-	EdgeStudiedAt  EdgeType = "STUDIED_AT"  // PERSON → ORG (school)
-	EdgeMetAt      EdgeType = "MET_AT"      // PERSON → LOCATION/ORG/EVENT
-	EdgeCofounderOf EdgeType = "COFOUNDER_OF" // PERSON → PERSON
-	EdgeOwnerOf    EdgeType = "OWNER_OF"    // PERSON → PRODUCT
-	EdgeHasEmail   EdgeType = "HAS_EMAIL"   // PERSON → EMAIL
-	EdgePrefers    EdgeType = "PREFERS"     // PERSON → PRODUCT/ORG/LOC
-	EdgeAllergicTo EdgeType = "ALLERGIC_TO" // PERSON → PRODUCT
-	EdgeHasPet     EdgeType = "HAS_PET"     // PERSON → PET
+	// Entity edges (meta-relationships)
+	EdgeAffiliatedWith EdgeType = "AFFILIATED_WITH" // Professional: works_at, works_on, part_of, studied_at, cofounder_of
+	EdgeKinOf          EdgeType = "KIN_OF"          // Family: married_to, sibling_of, parent_of, child_of
+	EdgeKnows          EdgeType = "KNOWS"           // Social: friend_of, met_at
+	EdgeLocatedIn      EdgeType = "LOCATED_IN"      // Spatial: lives_in, located_in
+	EdgeHas            EdgeType = "HAS"             // Possession/attribute: owner_of, has_email, has_pet, prefers, allergic_to
+
+	// Legacy edge types (kept for backward compatibility with existing data)
+	EdgeWorksAt     EdgeType = "WORKS_AT"
+	EdgeLivesIn     EdgeType = "LIVES_IN"
+	EdgeMarriedTo   EdgeType = "MARRIED_TO"
+	EdgeSiblingOf   EdgeType = "SIBLING_OF"
+	EdgeParentOf    EdgeType = "PARENT_OF"
+	EdgeChildOf     EdgeType = "CHILD_OF"
+	EdgeFriendOf    EdgeType = "FRIEND_OF"
+	EdgeWorksOn     EdgeType = "WORKS_ON"
+	EdgePartOf      EdgeType = "PART_OF"
+	EdgeStudiedAt   EdgeType = "STUDIED_AT"
+	EdgeMetAt       EdgeType = "MET_AT"
+	EdgeCofounderOf EdgeType = "COFOUNDER_OF"
+	EdgeOwnerOf     EdgeType = "OWNER_OF"
+	EdgeHasEmail    EdgeType = "HAS_EMAIL"
+	EdgePrefers     EdgeType = "PREFERS"
+	EdgeAllergicTo  EdgeType = "ALLERGIC_TO"
+	EdgeHasPet      EdgeType = "HAS_PET"
 
 	// Trace edges
 	EdgeSourcedFrom   EdgeType = "SOURCED_FROM"
 	EdgeInvolves      EdgeType = "INVOLVES"
 	EdgeInvalidatedBy EdgeType = "INVALIDATED_BY"
+	EdgeSharedEntity  EdgeType = "SHARED_ENTITY"
 )
 
 // EntityType defines categories of entities (OntoNotes-compatible schema)

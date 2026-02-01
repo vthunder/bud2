@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -242,8 +243,50 @@ func (g *DB) AddTraceRelation(fromID, toID string, relType EdgeType, weight floa
 	return err
 }
 
-// GetTraceNeighbors returns neighbors of a trace for spreading activation
+// GetTraceNeighbors returns neighbors of a trace for spreading activation.
+// Merges direct trace-to-trace relations with entity-bridged neighbors.
 func (g *DB) GetTraceNeighbors(id string) ([]Neighbor, error) {
+	// Get direct trace-to-trace neighbors
+	direct, err := g.getDirectTraceNeighbors(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get entity-bridged neighbors
+	bridged, err := g.GetTraceNeighborsThroughEntities(id, MaxEdgesPerNode)
+	if err != nil {
+		// Non-fatal: fall back to direct only
+		bridged = nil
+	}
+
+	// Merge: direct edges take priority, entity-bridged fill in
+	seen := make(map[string]bool)
+	var merged []Neighbor
+	for _, n := range direct {
+		seen[n.ID] = true
+		merged = append(merged, n)
+	}
+	for _, n := range bridged {
+		if !seen[n.ID] {
+			seen[n.ID] = true
+			merged = append(merged, n)
+		}
+	}
+
+	// Cap at MaxEdgesPerNode
+	if len(merged) > MaxEdgesPerNode {
+		// Sort by weight descending to keep strongest edges
+		sort.Slice(merged, func(i, j int) bool {
+			return merged[i].Weight > merged[j].Weight
+		})
+		merged = merged[:MaxEdgesPerNode]
+	}
+
+	return merged, nil
+}
+
+// getDirectTraceNeighbors returns neighbors from direct trace_relations edges.
+func (g *DB) getDirectTraceNeighbors(id string) ([]Neighbor, error) {
 	rows, err := g.db.Query(`
 		SELECT to_id, weight, relation_type FROM trace_relations WHERE from_id = ?
 		UNION ALL
@@ -264,6 +307,53 @@ func (g *DB) GetTraceNeighbors(id string) ([]Neighbor, error) {
 		}
 		n.Type = EdgeType(relType)
 		neighbors = append(neighbors, n)
+	}
+
+	return neighbors, nil
+}
+
+// GetTraceNeighborsThroughEntities finds traces that share entities with the given trace.
+// Edge weight is min(1.0, shared_count * 0.3).
+func (g *DB) GetTraceNeighborsThroughEntities(traceID string, maxNeighbors int) ([]Neighbor, error) {
+	if maxNeighbors <= 0 {
+		maxNeighbors = MaxEdgesPerNode
+	}
+
+	rows, err := g.db.Query(`
+		SELECT te2.trace_id, COUNT(DISTINCT te1.entity_id) as shared, AVG(e.salience) as sal
+		FROM trace_entities te1
+		JOIN trace_entities te2 ON te1.entity_id = te2.entity_id
+		JOIN entities e ON e.id = te1.entity_id
+		WHERE te1.trace_id = ? AND te2.trace_id != ?
+		GROUP BY te2.trace_id
+		ORDER BY shared DESC, sal DESC
+		LIMIT ?
+	`, traceID, traceID, maxNeighbors)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var neighbors []Neighbor
+	for rows.Next() {
+		var neighborID string
+		var sharedCount int
+		var salience float64
+		if err := rows.Scan(&neighborID, &sharedCount, &salience); err != nil {
+			continue
+		}
+
+		weight := float64(sharedCount) * 0.3
+		if weight > 1.0 {
+			weight = 1.0
+		}
+
+		neighbors = append(neighbors, Neighbor{
+			ID:     neighborID,
+			Weight: weight,
+			Type:   EdgeSharedEntity,
+		})
 	}
 
 	return neighbors, nil

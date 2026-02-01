@@ -251,6 +251,12 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (2)")
 	}
 
+	// Migration v3: Add index on trace_entities(entity_id) for entity-bridged activation
+	if version < 3 {
+		g.db.Exec("CREATE INDEX IF NOT EXISTS idx_trace_entities_entity ON trace_entities(entity_id)")
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (3)")
+	}
+
 	return nil
 }
 

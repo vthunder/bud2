@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -465,6 +468,71 @@ func (g *DB) IncrementEntitySalience(entityID string, increment float64) error {
 		UPDATE entities SET salience = salience + ?, updated_at = ? WHERE id = ?
 	`, increment, time.Now(), entityID)
 	return err
+}
+
+// FindEntitiesByText matches entity names and aliases against query text using
+// word-boundary awareness. Returns up to maxResults entities sorted by salience.
+func (g *DB) FindEntitiesByText(queryText string, maxResults int) ([]*Entity, error) {
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	entities, err := g.GetAllEntities(500)
+	if err != nil {
+		return nil, err
+	}
+
+	queryLower := strings.ToLower(queryText)
+
+	type scored struct {
+		entity *Entity
+	}
+
+	var matches []*Entity
+	seen := make(map[string]bool)
+
+	for _, e := range entities {
+		if seen[e.ID] {
+			continue
+		}
+
+		// Check canonical name and all aliases
+		names := append([]string{e.Name}, e.Aliases...)
+		for _, name := range names {
+			if len(name) < 3 {
+				continue
+			}
+			if containsWholeWord(queryLower, strings.ToLower(name)) {
+				matches = append(matches, e)
+				seen[e.ID] = true
+				break
+			}
+		}
+	}
+
+	// Sort by salience descending
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Salience > matches[j].Salience
+	})
+
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	return matches, nil
+}
+
+// containsWholeWord checks if text contains word as a whole word (word-boundary aware).
+func containsWholeWord(text, word string) bool {
+	// Escape regex special characters in the word
+	escaped := regexp.QuoteMeta(word)
+	pattern := `(?i)\b` + escaped + `\b`
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		// Fallback: simple contains check for names that break regex
+		return strings.Contains(text, word)
+	}
+	return re.MatchString(text)
 }
 
 // scanEntity scans a single row into an Entity

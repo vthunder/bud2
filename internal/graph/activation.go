@@ -176,6 +176,27 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 		}
 	}
 
+	// Trigger 3: Entity-based seeding — match entity names/aliases in query text
+	if queryText != "" {
+		matchedEntities, err := g.FindEntitiesByText(queryText, 5)
+		if err == nil {
+			for _, entity := range matchedEntities {
+				traceIDs, err := g.GetTracesForEntity(entity.ID)
+				if err != nil {
+					continue
+				}
+				// Cap at 5 traces per entity
+				cap := 5
+				if len(traceIDs) < cap {
+					cap = len(traceIDs)
+				}
+				for _, id := range traceIDs[:cap] {
+					seedSet[id] = true
+				}
+			}
+		}
+	}
+
 	// Convert set to slice
 	seedIDs := make([]string, 0, len(seedSet))
 	for id := range seedSet {
