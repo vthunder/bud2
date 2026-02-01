@@ -320,91 +320,53 @@ func main() {
 		return "Redeploy started. Service will restart momentarily.", nil
 	})
 
-	// Register close_claude_sessions tool - closes all Claude Code sessions in tmux
-	// This allows Bud to restart Claude itself
+	// Register close_claude_sessions tool - kills Claude Code -p processes
+	// This allows Bud to cleanly stop running Claude sessions before redeploy
 	server.RegisterTool("close_claude_sessions", mcp.ToolDef{
 		Description: "Close all Claude Code sessions running in tmux. Use this before trigger_redeploy to cleanly restart Claude. Returns list of closed session names.",
 		Properties:  map[string]mcp.PropDef{},
 	}, func(ctx any, args map[string]any) (string, error) {
-		// List all tmux windows with their current command
-		cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}")
+		// Find claude processes with --session-id (spawned by bud)
+		cmd := exec.Command("pgrep", "-f", "claude.*--session-id")
 		output, err := cmd.Output()
 		if err != nil {
-			return "", fmt.Errorf("failed to list tmux windows: %w", err)
+			// pgrep returns exit 1 when no processes found
+			result := map[string]any{
+				"closed": []string{},
+				"count":  0,
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return string(data), nil
 		}
 
-		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-		var closedWindows []string
+		pids := strings.Split(strings.TrimSpace(string(output)), "\n")
+		var closed []string
 		var errors []string
 
-		for _, line := range lines {
-			if line == "" {
+		for _, pidStr := range pids {
+			pidStr = strings.TrimSpace(pidStr)
+			if pidStr == "" {
 				continue
 			}
-			parts := strings.SplitN(line, ":", 4)
-			if len(parts) < 4 {
+
+			pid, err := strconv.Atoi(pidStr)
+			if err != nil {
 				continue
 			}
-			sessionName := parts[0]
-			windowIndex := parts[1]
-			windowName := parts[2]
-			currentCommand := parts[3]
 
-			// Identify Claude sessions by:
-			// 1. Command looks like a version number (e.g., "2.1.5") - typical of claude CLI
-			// 2. Command is "claude" or contains "claude"
-			// 3. Window name matches Claude session pattern (word-number like "owl-31")
-			isVersion := len(currentCommand) > 0 && strings.Count(currentCommand, ".") >= 1 &&
-				currentCommand[0] >= '0' && currentCommand[0] <= '9'
-			isClaudeCmd := strings.Contains(strings.ToLower(currentCommand), "claude")
-
-			// Check window name pattern: lowercase letters followed by dash and numbers
-			hasClaudeWindowName := false
-			if len(windowName) > 0 {
-				dashIdx := strings.LastIndex(windowName, "-")
-				if dashIdx > 0 && dashIdx < len(windowName)-1 {
-					prefix := windowName[:dashIdx]
-					suffix := windowName[dashIdx+1:]
-					// Check if prefix is all lowercase letters and suffix is all digits
-					allLetters := true
-					for _, c := range prefix {
-						if c < 'a' || c > 'z' {
-							allLetters = false
-							break
-						}
-					}
-					allDigits := true
-					for _, c := range suffix {
-						if c < '0' || c > '9' {
-							allDigits = false
-							break
-						}
-					}
-					hasClaudeWindowName = allLetters && allDigits && len(prefix) > 0 && len(suffix) > 0
-				}
-			}
-
-			if isVersion || isClaudeCmd || hasClaudeWindowName {
-				// Skip windows that are clearly not Claude (monitor, zsh, etc.)
-				if windowName == "monitor" || currentCommand == "zsh" || currentCommand == "bash" {
-					continue
-				}
-
-				// Kill the window
-				target := fmt.Sprintf("%s:%s", sessionName, windowIndex)
-				killCmd := exec.Command("tmux", "kill-window", "-t", target)
-				if err := killCmd.Run(); err != nil {
-					errors = append(errors, fmt.Sprintf("failed to kill %s: %v", windowName, err))
-				} else {
-					closedWindows = append(closedWindows, windowName)
-					log.Printf("Closed Claude session: %s", windowName)
-				}
+			// Send SIGTERM for graceful shutdown
+			killCmd := exec.Command("kill", "-TERM", pidStr)
+			if err := killCmd.Run(); err != nil {
+				errors = append(errors, fmt.Sprintf("failed to kill pid %d: %v", pid, err))
+			} else {
+				closed = append(closed, fmt.Sprintf("pid-%d", pid))
+				log.Printf("Sent SIGTERM to Claude process: %d", pid)
 			}
 		}
 
 		result := map[string]any{
-			"closed": closedWindows,
-			"count":  len(closedWindows),
+			"closed": closed,
+			"count":  len(closed),
 		}
 		if len(errors) > 0 {
 			result["errors"] = errors

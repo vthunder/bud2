@@ -27,7 +27,6 @@ type Embedder interface {
 // - Uses conversation buffer for reply chain context
 // - Uses graph layer for memory retrieval
 type ExecutiveV2 struct {
-	tmux    *Tmux
 	session *SimpleSession
 
 	// Focus-based attention
@@ -48,9 +47,8 @@ type ExecutiveV2 struct {
 
 // ExecutiveV2Config holds configuration for the v2 executive
 type ExecutiveV2Config struct {
-	Model          string
-	WorkDir        string
-	UseInteractive bool
+	Model   string
+	WorkDir string
 
 	// BotAuthor is the name used for bot messages in the buffer (e.g., "Bud")
 	// Used to filter out bot's own responses on incremental syncs
@@ -79,10 +77,8 @@ func NewExecutiveV2(
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
-	tmux := NewTmux()
 	return &ExecutiveV2{
-		tmux:      tmux,
-		session:   NewSimpleSession(tmux, statePath),
+		session:   NewSimpleSession(statePath),
 		attention: focus.New(),
 		queue:     focus.NewQueue(statePath, 100),
 		graph:     graph,
@@ -101,16 +97,12 @@ func (e *ExecutiveV2) SetTypingCallbacks(start, stop func(channelID string)) {
 
 // Start initializes the executive
 func (e *ExecutiveV2) Start() error {
-	if err := e.tmux.EnsureSession(); err != nil {
-		return fmt.Errorf("failed to create tmux session: %w", err)
-	}
-
 	// Load queue state
 	if err := e.queue.Load(); err != nil {
 		log.Printf("[executive-v2] Warning: failed to load queue: %v", err)
 	}
 
-	log.Println("[executive-v2] Started, tmux session ready")
+	log.Println("[executive-v2] Started")
 	return nil
 }
 
@@ -130,7 +122,9 @@ func (e *ExecutiveV2) AddPending(item *focus.PendingItem) error {
 // Returns true if an item was processed, false if queue was empty
 func (e *ExecutiveV2) ProcessNext(ctx context.Context) (bool, error) {
 	// Select next item from queue
-	e.attention.AddPending(e.queue.PopHighest())
+	if pending := e.queue.PopHighest(); pending != nil {
+		e.attention.AddPending(pending)
+	}
 	item := e.attention.SelectNext()
 	if item == nil {
 		return false, nil
@@ -226,31 +220,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 
 	startTime := time.Now()
 
-	if e.config.UseInteractive {
-		// Track session start
-		if e.config.SessionTracker != nil {
-			e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
-		}
-
-		if err := e.session.SendPrompt(prompt, claudeCfg); err != nil {
-			return fmt.Errorf("interactive prompt failed: %w", err)
-		}
-
-		// Mark items and memories as seen, update buffer sync time
-		e.session.MarkItemsSeen([]string{item.ID})
-		e.session.MarkMemoriesSeen(memoryIDs)
-		e.session.UpdateBufferSync(time.Now())
-
-		log.Printf("[executive-v2] Sent prompt for item %s (interactive mode)", item.ID)
-		return nil
-	}
-
-	// Programmatic mode
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
 	}
 
-	if err := e.session.SendPromptPrint(ctx, prompt, claudeCfg); err != nil {
+	if err := e.session.SendPrompt(ctx, prompt, claudeCfg); err != nil {
 		return fmt.Errorf("prompt failed: %w", err)
 	}
 
@@ -514,74 +488,29 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	return prompt.String()
 }
 
-// handleToolCall processes a tool call from Claude
+// handleToolCall observes tool calls from Claude's stream-json output.
+// In -p mode, MCP tools are executed by the CLI internally — this callback
+// is for side-effects like session tracking, not for tool execution.
+// MCP tool names are prefixed: mcp__bud2__talk_to_user, mcp__bud2__signal_done, etc.
 func (e *ExecutiveV2) handleToolCall(item *focus.PendingItem, name string, args map[string]any) (string, error) {
-	log.Printf("[executive-v2] Tool call for item %s: %s(%v)", item.ID, name, args)
+	log.Printf("[executive-v2] Tool call for item %s: %s", item.ID, name)
 
-	switch name {
-	case "respond_to_user", "send_message", "talk_to_user":
-		return e.toolRespondToUser(item, args)
+	// Match both bare names (legacy) and MCP-prefixed names
+	switch {
+	case strings.HasSuffix(name, "talk_to_user") || strings.HasSuffix(name, "send_message") || strings.HasSuffix(name, "respond_to_user"):
+		// Just log — bud-mcp handles actual Discord sending
+		if msg, ok := args["message"].(string); ok {
+			log.Printf("[executive-v2] talk_to_user: %s", truncate(msg, 100))
+		}
+		return "observed", nil
 
-	case "save_thought", "remember":
-		return e.toolSaveThought(args)
-
-	case "complete", "signal_done":
+	case strings.HasSuffix(name, "signal_done"):
 		return e.toolComplete(item, args)
 
 	default:
-		return "", fmt.Errorf("unknown tool: %s", name)
+		// Don't error on unmatched tools — this is just an observer
+		return "observed", nil
 	}
-}
-
-// toolRespondToUser queues a message to send
-func (e *ExecutiveV2) toolRespondToUser(item *focus.PendingItem, args map[string]any) (string, error) {
-	content, ok := args["content"].(string)
-	if !ok {
-		if msg, ok := args["message"].(string); ok {
-			content = msg
-		} else {
-			return "", fmt.Errorf("content/message is required")
-		}
-	}
-
-	channelID := item.ChannelID
-	if channelID == "" {
-		if ch, ok := args["channel_id"].(string); ok {
-			channelID = ch
-		}
-	}
-
-	if channelID == "" {
-		return "", fmt.Errorf("no channel_id available")
-	}
-
-	// TODO: Queue to outbox for effector
-	log.Printf("[executive-v2] Would send to %s: %s", channelID, truncate(content, 100))
-
-	return "Message queued for sending", nil
-}
-
-// toolSaveThought saves a thought to memory
-func (e *ExecutiveV2) toolSaveThought(args map[string]any) (string, error) {
-	content, ok := args["content"].(string)
-	if !ok {
-		return "", fmt.Errorf("content is required")
-	}
-
-	if e.graph != nil {
-		trace := &graph.Trace{
-			ID:        fmt.Sprintf("trace-%d", time.Now().UnixNano()),
-			Summary:   content,
-			Topic:     "thought",
-			IsCore:    false,
-			CreatedAt: time.Now(),
-		}
-		if err := e.graph.AddTrace(trace); err != nil {
-			return "", fmt.Errorf("failed to save thought: %w", err)
-		}
-	}
-
-	return "Thought saved", nil
 }
 
 // toolComplete marks the current focus as complete
@@ -620,9 +549,9 @@ func (e *ExecutiveV2) GetQueue() *focus.Queue {
 	return e.queue
 }
 
-// HasActiveSessions returns true if Claude is running
+// HasActiveSessions returns false since -p mode has no persistent process
 func (e *ExecutiveV2) HasActiveSessions() bool {
-	return e.session.IsReady()
+	return false
 }
 
 // TodayThinkingMinutes returns total thinking time today

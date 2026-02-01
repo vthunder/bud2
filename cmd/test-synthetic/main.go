@@ -474,65 +474,8 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// waitForClaudeIdle waits for Claude to show the prompt (not "Doing...")
+// waitForClaudeIdle waits briefly for Claude to finish processing.
+// With -p mode there's no tmux to poll, so we use a simple delay.
 func waitForClaudeIdle(timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-
-	// Get tmux window names
-	cmd := exec.Command("tmux", "list-windows", "-t", "bud2", "-F", "#{window_name}")
-	output, err := cmd.Output()
-	if err != nil {
-		// No tmux session, just use a small delay
-		time.Sleep(2 * time.Second)
-		return
-	}
-
-	// Find Claude windows to monitor
-	// v2 architecture: single "bud-main" window
-	// v1 architecture: "thread-*" windows
-	var claudeWindows []string
-	for _, name := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if name == "bud-main" || strings.HasPrefix(name, "thread-") {
-			claudeWindows = append(claudeWindows, name)
-		}
-	}
-
-	if len(claudeWindows) == 0 {
-		// No Claude windows - probably using non-interactive mode (subprocess)
-		// Just use a small delay
-		time.Sleep(2 * time.Second)
-		return
-	}
-
-	// Wait for all Claude windows to show the prompt (not busy)
-	for time.Now().Before(deadline) {
-		allIdle := true
-		for _, window := range claudeWindows {
-			target := fmt.Sprintf("bud2:%s", window)
-			cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-S", "-5")
-			output, err := cmd.Output()
-			if err != nil {
-				continue
-			}
-
-			content := string(output)
-			// Check if Claude is busy (showing "Doing..." status)
-			if strings.Contains(content, "Doing...") || strings.Contains(content, "* Doing") {
-				allIdle = false
-				break
-			}
-		}
-
-		if allIdle {
-			// Small buffer to ensure Claude has fully finished
-			time.Sleep(500 * time.Millisecond)
-			return
-		}
-
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	if verbose {
-		log.Printf("Timeout waiting for Claude to be idle")
-	}
+	time.Sleep(2 * time.Second)
 }

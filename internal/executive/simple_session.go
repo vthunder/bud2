@@ -10,19 +10,12 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-
-	"github.com/shirou/gopsutil/v3/process"
 )
 
 const (
-	// MainWindowName is the single tmux window for the Claude session
-	MainWindowName = "bud-main"
-
 	// MaxSessionContentSize is the threshold for actual content size before auto-reset.
 	// This measures only the message/content fields from user and assistant entries
 	// since the last compaction boundary - a much better proxy for context usage than
@@ -31,26 +24,18 @@ const (
 	MaxSessionContentSize = 300 * 1024 // 300KB of actual content
 )
 
-// SimpleSession manages a single persistent Claude session
-// This replaces the multi-session SessionManager approach with a simpler model:
-// - One Claude process in one tmux window
-// - Persists across focus switches
-// - Context switching = memory retrieval, not process management
+// SimpleSession manages a single persistent Claude session via `claude -p`
 type SimpleSession struct {
 	mu sync.Mutex
 
-	tmux      *Tmux
 	sessionID string
-	pid       int
-	state     ProcessState
-	startedAt time.Time
 	statePath string // Path to state directory for reset coordination
 
 	// Track what's been sent to this session
-	seenItemIDs    map[string]bool
-	seenMemoryIDs  map[string]bool   // Track which memory traces have been sent
-	memoryIDMap    map[string]int    // Map trace_id -> display ID (M1, M2, etc.)
-	nextMemoryID   int               // Next display ID to assign
+	seenItemIDs   map[string]bool
+	seenMemoryIDs map[string]bool // Track which memory traces have been sent
+	memoryIDMap   map[string]int  // Map trace_id -> display ID (M1, M2, etc.)
+	nextMemoryID  int             // Next display ID to assign
 
 	// Track conversation buffer sync to avoid re-sending already-seen context
 	// Only buffer entries after this time need to be sent
@@ -62,9 +47,8 @@ type SimpleSession struct {
 }
 
 // NewSimpleSession creates a new simple session manager
-func NewSimpleSession(tmux *Tmux, statePath string) *SimpleSession {
+func NewSimpleSession(statePath string) *SimpleSession {
 	return &SimpleSession{
-		tmux:          tmux,
 		sessionID:     generateSessionUUID(),
 		seenItemIDs:   make(map[string]bool),
 		seenMemoryIDs: make(map[string]bool),
@@ -189,18 +173,9 @@ func (s *SimpleSession) OnOutput(fn func(text string)) {
 	s.onOutput = fn
 }
 
-// IsReady returns true if Claude is running and ready
-func (s *SimpleSession) IsReady() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state == ProcessReady || s.state == ProcessBusy
-}
-
-// EnsureRunning ensures Claude is running, starting it if needed
-func (s *SimpleSession) EnsureRunning(cfg ClaudeConfig) error {
-	// Check for reset pending BEFORE acquiring lock (allows Reset() to clear flag)
-	// This prevents race condition where new session starts with old session ID
-	// before memory_reset's reset_session signal is processed
+// SendPrompt sends a prompt to Claude using print mode (non-interactive)
+func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg ClaudeConfig) error {
+	// Check for reset pending before sending
 	if s.isResetPending() {
 		log.Printf("[simple-session] Reset pending, waiting for reset_session signal...")
 		deadline := time.Now().Add(10 * time.Second)
@@ -216,427 +191,18 @@ func (s *SimpleSession) EnsureRunning(cfg ClaudeConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If we have a PID, verify it's still good
-	if s.pid != 0 {
-		if err := s.verifyRunning(); err == nil {
-			return nil // All good
-		}
-		log.Printf("[simple-session] Process verification failed, restarting...")
-		s.cleanup()
-	}
-
-	// Start fresh
-	if err := s.tmux.EnsureSession(); err != nil {
-		return fmt.Errorf("failed to ensure tmux session: %w", err)
-	}
-
-	// Kill any existing bud-main window (stale state)
-	if s.tmux.WindowExists(MainWindowName) {
-		log.Printf("[simple-session] Killing stale window %s", MainWindowName)
-		s.tmux.KillWindow(MainWindowName)
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	// Create window
-	if err := s.tmux.CreateWindow(MainWindowName); err != nil {
-		return fmt.Errorf("failed to create window: %w", err)
-	}
-
-	// Start Claude
-	if err := s.startClaude(cfg); err != nil {
-		s.tmux.KillWindow(MainWindowName)
-		return fmt.Errorf("failed to start Claude: %w", err)
-	}
-
-	// Wait for ready
-	log.Printf("[simple-session] Waiting for Claude to initialize (pid=%d)...", s.pid)
-	if err := s.waitForReady(90 * time.Second); err != nil {
-		s.cleanup()
-		return fmt.Errorf("Claude failed to initialize: %w", err)
-	}
-
-	log.Printf("[simple-session] Claude ready (pid=%d, session=%s)", s.pid, s.sessionID)
-	return nil
-}
-
-// startClaude starts Claude and captures its PID
-func (s *SimpleSession) startClaude(cfg ClaudeConfig) error {
-	s.state = ProcessStarting
-	s.startedAt = time.Now()
-
-	pidFile := fmt.Sprintf("/tmp/bud-claude-%s.pid", MainWindowName)
-
-	// Determine which flag to use
-	// --session-id creates a new session, --resume continues an existing one by ID
-	// (Note: --continue continues the most recent session in the directory without
-	// accepting a session ID, so we use --resume for explicit session resumption)
-	sessionFlag := "--session-id"
-	sessionFile := s.findSessionFile()
-	if sessionFile != "" {
-		info, err := os.Stat(sessionFile)
-		if err == nil && info.Size() >= 100 {
-			log.Printf("[simple-session] Found valid session file, using --resume")
-			sessionFlag = "--resume"
-		} else if err == nil {
-			log.Printf("[simple-session] Found invalid session file (%d bytes), deleting", info.Size())
-			os.Remove(sessionFile)
-		}
-	}
-
-	// Build Claude command
-	os.Remove(pidFile)
-	claudeCmd := fmt.Sprintf("claude --dangerously-skip-permissions %s %s", sessionFlag, s.sessionID)
-	if cfg.Model != "" {
-		claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
-	}
-
-	wrapper := fmt.Sprintf("echo $$ > %s && exec %s", pidFile, claudeCmd)
-	log.Printf("[simple-session] Starting Claude: %s", claudeCmd)
-
-	if err := s.tmux.SendKeys(MainWindowName, wrapper); err != nil {
-		s.state = ProcessDead
-		return fmt.Errorf("failed to send claude command: %w", err)
-	}
-
-	// Poll for PID file
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(pidFile)
-		if err == nil {
-			pidStr := strings.TrimSpace(string(data))
-			if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
-				s.pid = pid
-				os.Remove(pidFile)
-				log.Printf("[simple-session] Captured PID %d", s.pid)
-				return nil
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	s.state = ProcessDead
-	return fmt.Errorf("timeout waiting for Claude PID")
-}
-
-// waitForReady waits for Claude to be ready using /status
-func (s *SimpleSession) waitForReady(timeout time.Duration) error {
-	target := fmt.Sprintf("%s:%s", s.tmux.session, MainWindowName)
-
-	const (
-		pollInterval        = 200 * time.Millisecond
-		statusRetryInterval = 2 * time.Second
-	)
-
-	deadline := time.Now().Add(timeout)
-	startTime := time.Now()
-	var lastStatusSent time.Time
-
-	time.Sleep(1 * time.Second) // Initial delay
-
-	for time.Now().Before(deadline) {
-		// Send /status periodically
-		if lastStatusSent.IsZero() || time.Since(lastStatusSent) >= statusRetryInterval {
-			log.Printf("[simple-session] Sending /status to detect readiness...")
-			exec.Command("tmux", "send-keys", "-t", target, "Escape").Run()
-			time.Sleep(50 * time.Millisecond)
-			exec.Command("tmux", "send-keys", "-t", target, "-l", "/status").Run()
-			time.Sleep(50 * time.Millisecond)
-			exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
-			lastStatusSent = time.Now()
-		}
-
-		// Check for status dialog
-		output, err := s.tmux.CapturePane(MainWindowName, 30)
-		if err == nil && strings.Contains(strings.ToLower(output), "to cancel") {
-			log.Printf("[simple-session] Detected /status dialog after %.1fs, sending ESC",
-				time.Since(startTime).Seconds())
-
-			exec.Command("tmux", "send-keys", "-t", target, "Escape").Run()
-			time.Sleep(100 * time.Millisecond)
-
-			s.state = ProcessReady
-			return nil
-		}
-
-		// Check if process died
-		if s.pid != 0 {
-			proc, err := process.NewProcess(int32(s.pid))
-			if err != nil {
-				s.state = ProcessDead
-				output, _ := s.tmux.CapturePane(MainWindowName, 20)
-				return fmt.Errorf("Claude process died during startup. Output:\n%s", output)
-			}
-			running, _ := proc.IsRunning()
-			if !running {
-				s.state = ProcessDead
-				return fmt.Errorf("Claude process exited during startup")
-			}
-		}
-
-		time.Sleep(pollInterval)
-	}
-
-	output, _ := s.tmux.CapturePane(MainWindowName, 30)
-	return fmt.Errorf("timeout waiting for Claude (%.1fs). Output:\n%s", timeout.Seconds(), output)
-}
-
-// verifyRunning checks that Claude is still running
-func (s *SimpleSession) verifyRunning() error {
-	if !s.tmux.WindowExists(MainWindowName) {
-		return fmt.Errorf("window does not exist")
-	}
-
-	if s.pid == 0 {
-		return fmt.Errorf("no PID tracked")
-	}
-
-	proc, err := process.NewProcess(int32(s.pid))
-	if err != nil {
-		s.state = ProcessDead
-		return fmt.Errorf("process not found: %w", err)
-	}
-
-	running, _ := proc.IsRunning()
-	if !running {
-		s.state = ProcessDead
-		return fmt.Errorf("process not running")
-	}
-
-	cmdline, err := proc.Cmdline()
-	if err != nil {
-		return fmt.Errorf("failed to get cmdline: %w", err)
-	}
-	if !strings.Contains(cmdline, s.sessionID) {
-		s.state = ProcessDead
-		return fmt.Errorf("process cmdline does not contain session ID")
-	}
-
-	return nil
-}
-
-// cleanup kills the Claude process
-func (s *SimpleSession) cleanup() {
-	if s.pid != 0 {
-		log.Printf("[simple-session] Cleaning up process %d", s.pid)
-		syscall.Kill(s.pid, syscall.SIGTERM)
-		time.Sleep(200 * time.Millisecond)
-		syscall.Kill(s.pid, syscall.SIGKILL)
-		s.pid = 0
-	}
-	if s.tmux.WindowExists(MainWindowName) {
-		s.tmux.KillWindow(MainWindowName)
-	}
-	s.state = ProcessDead
-}
-
-// findSessionFile looks for the Claude session file
-func (s *SimpleSession) findSessionFile() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-
-	projectsDir := homeDir + "/.claude/projects"
-	entries, err := os.ReadDir(projectsDir)
-	if err != nil {
-		return ""
-	}
-
-	sessionFile := s.sessionID + ".jsonl"
-	for _, entry := range entries {
-		if entry.IsDir() {
-			path := projectsDir + "/" + entry.Name() + "/" + sessionFile
-			if _, err := os.Stat(path); err == nil {
-				return path
-			}
-		}
-	}
-
-	return ""
-}
-
-// SessionContentSize calculates the actual content size of the session since
-// the last compaction boundary. This counts only the message/content fields
-// from user and assistant entries, excluding thinking blocks and metadata.
-// Returns 0 if the file doesn't exist or can't be parsed.
-func (s *SimpleSession) SessionContentSize() int64 {
-	path := s.findSessionFile()
-	if path == "" {
-		return 0
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer file.Close()
-
-	// First pass: find last compaction boundary line number
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB max line size
-
-	var lastCompactLine int
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		// Look for compact_boundary subtype
-		if strings.Contains(line, `"subtype":"compact_boundary"`) ||
-			strings.Contains(line, `"subtype": "compact_boundary"`) {
-			lastCompactLine = lineNum
-		}
-	}
-
-	// Second pass: sum content from entries after last compaction
-	file.Seek(0, 0)
-	scanner = bufio.NewScanner(file)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	var totalSize int64
-	lineNum = 0
-	for scanner.Scan() {
-		lineNum++
-		if lineNum <= lastCompactLine {
-			continue
-		}
-
-		line := scanner.Text()
-		totalSize += extractContentSize(line)
-	}
-
-	return totalSize
-}
-
-// extractContentSize extracts the size of actual content from a session entry
-func extractContentSize(line string) int64 {
-	var entry struct {
-		Type    string `json:"type"`
-		Message struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		return 0
-	}
-
-	switch entry.Type {
-	case "user":
-		// User content is a string
-		var content string
-		if err := json.Unmarshal(entry.Message.Content, &content); err == nil {
-			return int64(len(content))
-		}
-
-	case "assistant":
-		// Assistant content is an array of content blocks
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(entry.Message.Content, &blocks); err == nil {
-			var size int64
-			for _, block := range blocks {
-				// Only count text blocks, skip thinking
-				if block.Type == "text" {
-					size += int64(len(block.Text))
-				}
-			}
-			return size
-		}
-	}
-
-	return 0
-}
-
-// ShouldReset returns true if the session content has grown too large and
-// should be reset before sending the next prompt. This prevents Claude Code's
-// auto-compaction from triggering and keeps context management predictable.
-func (s *SimpleSession) ShouldReset() bool {
-	size := s.SessionContentSize()
-	if size > MaxSessionContentSize {
-		log.Printf("[simple-session] Session content size %d bytes exceeds threshold %d, should reset",
-			size, MaxSessionContentSize)
-		return true
-	}
-	return false
-}
-
-// SendPrompt sends a prompt to Claude interactively
-func (s *SimpleSession) SendPrompt(prompt string, cfg ClaudeConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Ensure Claude is running
-	if err := s.ensureRunningLocked(cfg); err != nil {
-		return fmt.Errorf("failed to ensure Claude running: %w", err)
-	}
-
-	s.state = ProcessBusy
-	defer func() {
-		if s.state == ProcessBusy {
-			s.state = ProcessReady
-		}
-	}()
-
-	// Send the prompt
-	log.Printf("[simple-session] Sending prompt (pid=%d): %s", s.pid, truncatePrompt(prompt, 100))
-
-	target := fmt.Sprintf("%s:%s", s.tmux.session, MainWindowName)
-
-	// Send prompt text literally
-	cmdText := exec.Command("tmux", "send-keys", "-t", target, "-l", prompt)
-	if err := cmdText.Run(); err != nil {
-		return fmt.Errorf("failed to send prompt text: %w", err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	// Send Enter with retry
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		cmdEnter := exec.Command("tmux", "send-keys", "-t", target, "Enter")
-		if err := cmdEnter.Run(); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-
-	return fmt.Errorf("failed to send Enter after 3 attempts: %w", lastErr)
-}
-
-// ensureRunningLocked ensures Claude is running (must hold lock)
-func (s *SimpleSession) ensureRunningLocked(cfg ClaudeConfig) error {
-	if s.pid != 0 {
-		if err := s.verifyRunning(); err == nil {
-			return nil
-		}
-		log.Printf("[simple-session] Process verification failed, restarting...")
-		s.cleanup()
-	}
-
-	// Release lock for startup (it takes time)
-	s.mu.Unlock()
-	err := s.EnsureRunning(cfg)
-	s.mu.Lock()
-	return err
-}
-
-// SendPromptPrint sends a prompt using print mode (non-interactive)
-func (s *SimpleSession) SendPromptPrint(ctx context.Context, prompt string, cfg ClaudeConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	args := []string{
 		"--print",
-		"--session-id", s.sessionID,
+		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
+	}
+
+	// First prompt creates the session; subsequent prompts resume it
+	if s.IsFirstPrompt() {
+		args = append(args, "--session-id", s.sessionID)
+	} else {
+		args = append(args, "--resume", s.sessionID)
 	}
 
 	if cfg.Model != "" {
@@ -791,21 +357,8 @@ func (s *SimpleSession) processStderr(r io.Reader, buf *strings.Builder) {
 	}
 }
 
-// GetWindowOutput captures recent output from the tmux window
-func (s *SimpleSession) GetWindowOutput(lines int) (string, error) {
-	return s.tmux.CapturePane(MainWindowName, lines)
-}
-
-// Interrupt sends Ctrl+C to stop Claude
-func (s *SimpleSession) Interrupt() error {
-	return s.tmux.SendInterrupt(MainWindowName)
-}
-
-// Close destroys the session
+// Close is a no-op since there's no persistent process to clean up in -p mode
 func (s *SimpleSession) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanup()
 	return nil
 }
 
@@ -813,14 +366,154 @@ func (s *SimpleSession) Close() error {
 func (s *SimpleSession) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cleanup()
 	s.sessionID = generateSessionUUID()
 	s.seenItemIDs = make(map[string]bool)
 	s.seenMemoryIDs = make(map[string]bool)
 	s.memoryIDMap = make(map[string]int)
 	s.nextMemoryID = 1
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
-	s.state = ProcessNone
-	s.clearResetPending() // Clear the pending flag so new sessions can start
+	s.clearResetPending()          // Clear the pending flag so new sessions can start
 	log.Printf("[simple-session] Session reset complete, new session ID: %s", s.sessionID)
+}
+
+// findSessionFile looks for the Claude session file
+func (s *SimpleSession) findSessionFile() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	projectsDir := homeDir + "/.claude/projects"
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+
+	sessionFile := s.sessionID + ".jsonl"
+	for _, entry := range entries {
+		if entry.IsDir() {
+			path := projectsDir + "/" + entry.Name() + "/" + sessionFile
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+
+	return ""
+}
+
+// SessionContentSize calculates the actual content size of the session since
+// the last compaction boundary. This counts only the message/content fields
+// from user and assistant entries, excluding thinking blocks and metadata.
+// Returns 0 if the file doesn't exist or can't be parsed.
+func (s *SimpleSession) SessionContentSize() int64 {
+	path := s.findSessionFile()
+	if path == "" {
+		return 0
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+
+	// First pass: find last compaction boundary line number
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB max line size
+
+	var lastCompactLine int
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		// Look for compact_boundary subtype
+		if strings.Contains(line, `"subtype":"compact_boundary"`) ||
+			strings.Contains(line, `"subtype": "compact_boundary"`) {
+			lastCompactLine = lineNum
+		}
+	}
+
+	// Second pass: sum content from entries after last compaction
+	file.Seek(0, 0)
+	scanner = bufio.NewScanner(file)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	var totalSize int64
+	lineNum = 0
+	for scanner.Scan() {
+		lineNum++
+		if lineNum <= lastCompactLine {
+			continue
+		}
+
+		line := scanner.Text()
+		totalSize += extractContentSize(line)
+	}
+
+	return totalSize
+}
+
+// extractContentSize extracts the size of actual content from a session entry
+func extractContentSize(line string) int64 {
+	var entry struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return 0
+	}
+
+	switch entry.Type {
+	case "user":
+		// User content is a string
+		var content string
+		if err := json.Unmarshal(entry.Message.Content, &content); err == nil {
+			return int64(len(content))
+		}
+
+	case "assistant":
+		// Assistant content is an array of content blocks
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(entry.Message.Content, &blocks); err == nil {
+			var size int64
+			for _, block := range blocks {
+				// Only count text blocks, skip thinking
+				if block.Type == "text" {
+					size += int64(len(block.Text))
+				}
+			}
+			return size
+		}
+	}
+
+	return 0
+}
+
+// ShouldReset returns true if the session content has grown too large and
+// should be reset before sending the next prompt. This prevents Claude Code's
+// auto-compaction from triggering and keeps context management predictable.
+func (s *SimpleSession) ShouldReset() bool {
+	size := s.SessionContentSize()
+	if size > MaxSessionContentSize {
+		log.Printf("[simple-session] Session content size %d bytes exceeds threshold %d, should reset",
+			size, MaxSessionContentSize)
+		return true
+	}
+	return false
+}
+
+func truncatePrompt(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

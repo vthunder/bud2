@@ -26,6 +26,7 @@ import (
 	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/extract"
+	"github.com/vthunder/bud2/internal/filter"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
@@ -129,7 +130,6 @@ func main() {
 		statePath = "state"
 	}
 	claudeModel := os.Getenv("CLAUDE_MODEL")
-	useInteractive := os.Getenv("EXECUTIVE_INTERACTIVE") == "true"
 	syntheticMode := os.Getenv("SYNTHETIC_MODE") == "true"
 
 	// Check for existing bud process (before creating state directory)
@@ -215,6 +215,10 @@ func main() {
 	entityResolver := extract.NewResolver(graphDB, ollamaClient)
 	log.Println("[main] Entity extractor initialized (Ollama qwen2.5:7b)")
 
+	// Entropy filter - scores message quality for memory decisions
+	entropyFilter := filter.NewEntropyFilter(ollamaClient)
+	log.Println("[main] Entropy filter initialized")
+
 	// Memory consolidator - groups related episodes into traces
 	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient)
 	log.Println("[main] Memory consolidator initialized")
@@ -266,25 +270,6 @@ func main() {
 	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
 	thinkingBudget.DailyMinutes = dailyBudgetMinutes
 
-	// CPU watcher writes signals to inbox when it detects idle sessions
-	cpuWatcher := budget.NewCPUWatcher(sessionTracker)
-	cpuWatcher.SetOnComplete(func(session *budget.Session, summary string) {
-		msg := &memory.InboxMessage{
-			ID:        fmt.Sprintf("signal-cpu-%d", time.Now().UnixNano()),
-			Type:      "signal",
-			Subtype:   "done",
-			Content:   summary,
-			Timestamp: time.Now(),
-			Status:    "pending",
-			Extra: map[string]any{
-				"session_id": session.ID,
-				"source":     "cpu_watcher",
-			},
-		}
-		inbox.Add(msg)
-	})
-	cpuWatcher.Start()
-
 	todayUsed := sessionTracker.TodayThinkingMinutes()
 	log.Printf("[main] Session tracker initialized (used today: %.1f min, budget: %.0f min, remaining: %.1f min)",
 		todayUsed, dailyBudgetMinutes, dailyBudgetMinutes-todayUsed)
@@ -335,10 +320,9 @@ func main() {
 		ollamaClient, // for query-based memory retrieval
 		systemPath,
 		executive.ExecutiveV2Config{
-			Model:              claudeModel,
-			WorkDir:            ".",
-			UseInteractive:     useInteractive,
-			BotAuthor:          "Bud", // Filter out bot's own responses on incremental buffer sync
+			Model:     claudeModel,
+			WorkDir:   ".",
+			BotAuthor: "Bud", // Filter out bot's own responses on incremental buffer sync
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
 			OnExecWake: func(focusID, context string) {
@@ -438,8 +422,19 @@ func main() {
 			}
 		}
 
+		// Score content entropy for quality filtering
+		shouldExtract, entropyScore, _ := entropyFilter.ShouldCreateEpisode(msg.Content)
+		episode.EntropyScore = entropyScore
+
 		if err := graphDB.AddEpisode(episode); err != nil {
 			log.Printf("[ingest] Failed to store episode: %v", err)
+			return
+		}
+
+		// Skip entity extraction for low-entropy content (saves ~6s Ollama call)
+		if !shouldExtract {
+			log.Printf("[ingest] Skipped entity extraction for low-entropy content (score=%.2f): %s",
+				entropyScore, truncate(msg.Content, 60))
 			return
 		}
 
@@ -704,16 +699,6 @@ func main() {
 		}
 
 		log.Printf("[main] Percept %s added to focus queue (priority: %s)", percept.ID, item.Priority)
-
-		// Process immediately if interactive mode
-		if useInteractive {
-			go func() {
-				ctx := context.Background()
-				if _, err := exec.ProcessNext(ctx); err != nil {
-					log.Printf("[main] Executive error: %v", err)
-				}
-			}()
-		}
 	}
 
 	// Capture outgoing response helper
@@ -941,29 +926,27 @@ func main() {
 		}
 	}()
 
-	// Start focus queue processing (if not in interactive mode)
-	if !useInteractive {
-		go func() {
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
+	// Start focus queue processing
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 
-			for {
-				select {
-				case <-stopChan:
-					return
-				case <-ticker.C:
-					ctx := context.Background()
-					processed, err := exec.ProcessNext(ctx)
-					if err != nil {
-						log.Printf("[main] Executive error: %v", err)
-					}
-					if processed {
-						log.Printf("[main] Processed item from focus queue")
-					}
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				ctx := context.Background()
+				processed, err := exec.ProcessNext(ctx)
+				if err != nil {
+					log.Printf("[main] Executive error: %v", err)
+				}
+				if processed {
+					log.Printf("[main] Processed item from focus queue")
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	// Start autonomous wake-up goroutine (periodic self-initiated work)
 	if autonomousEnabled {
@@ -1122,7 +1105,6 @@ func main() {
 
 	// Stop subsystems
 	close(stopChan)
-	cpuWatcher.Stop()
 	exec.Stop()
 	if discordEffector != nil {
 		discordEffector.StopAllTyping()
