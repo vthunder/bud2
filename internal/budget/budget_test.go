@@ -87,30 +87,50 @@ func TestThinkingBudget(t *testing.T) {
 	statePath := t.TempDir()
 
 	tracker := NewSessionTracker(statePath)
-	budget := NewThinkingBudget(tracker)
-	budget.DailyMinutes = 1 // 1 minute for testing
+	b := NewThinkingBudget(tracker)
+	b.DailyOutputTokens = 1000 // 1000 output tokens for testing
 
 	// Should be able to do autonomous work initially
-	ok, reason := budget.CanDoAutonomousWork()
+	ok, reason := b.CanDoAutonomousWork()
 	if !ok {
 		t.Errorf("Expected to be able to do autonomous work, got: %s", reason)
 	}
 
 	// Active sessions should NOT block autonomous work (attention handles priority)
 	tracker.StartSession("session-1", "thread-1")
-	ok, _ = budget.CanDoAutonomousWork()
+	ok, _ = b.CanDoAutonomousWork()
 	if !ok {
 		t.Error("Expected autonomous work allowed even with active session")
 	}
 
-	// Complete the session
+	// Complete session with some token usage (under budget)
 	tracker.CompleteSession("session-1")
+	tracker.SetSessionUsage("session-1", 5000, 500, 3000, 2000, 3)
 
-	// Should still be allowed (budget not exhausted)
-	ok, reason = budget.CanDoAutonomousWork()
+	// Should still be allowed (500 < 1000 budget)
+	ok, reason = b.CanDoAutonomousWork()
 	if !ok {
 		t.Errorf("Expected autonomous work allowed, got: %s", reason)
 	}
 
-	t.Log("Budget test passed")
+	// Add another session that pushes over budget
+	tracker.StartSession("session-2", "thread-2")
+	tracker.CompleteSession("session-2")
+	tracker.SetSessionUsage("session-2", 5000, 600, 3000, 2000, 2)
+
+	// Should be blocked (500 + 600 = 1100 > 1000 budget)
+	ok, reason = b.CanDoAutonomousWork()
+	if ok {
+		t.Error("Expected autonomous work blocked after exceeding token budget")
+	}
+	t.Logf("Budget correctly blocked: %s", reason)
+
+	// Verify token usage aggregation
+	usage := tracker.TodayTokenUsage()
+	if usage.OutputTokens != 1100 {
+		t.Errorf("Expected 1100 output tokens, got %d", usage.OutputTokens)
+	}
+	if usage.SessionCount != 2 {
+		t.Errorf("Expected 2 sessions, got %d", usage.SessionCount)
+	}
 }

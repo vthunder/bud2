@@ -138,7 +138,7 @@ func main() {
 	defer cleanupPidFile()
 	autonomousEnabled := os.Getenv("AUTONOMOUS_ENABLED") == "true"
 	autonomousIntervalStr := os.Getenv("AUTONOMOUS_INTERVAL")
-	dailyBudgetStr := os.Getenv("DAILY_THINKING_BUDGET")
+	dailyTokenBudgetStr := os.Getenv("DAILY_OUTPUT_TOKEN_BUDGET")
 	userTimezoneStr := os.Getenv("USER_TIMEZONE") // e.g., "Europe/Berlin"
 
 	// Parse autonomous interval (default 2 hours)
@@ -149,11 +149,11 @@ func main() {
 		}
 	}
 
-	// Parse daily budget (default 360 minutes = 6 hours)
-	dailyBudgetMinutes := 360.0
-	if dailyBudgetStr != "" {
-		if v, err := strconv.ParseFloat(dailyBudgetStr, 64); err == nil {
-			dailyBudgetMinutes = v
+	// Parse daily output token budget (default 1M tokens)
+	dailyOutputTokenBudget := 1_000_000
+	if dailyTokenBudgetStr != "" {
+		if v, err := strconv.Atoi(dailyTokenBudgetStr); err == nil {
+			dailyOutputTokenBudget = v
 		}
 	}
 
@@ -268,11 +268,11 @@ func main() {
 	// Initialize session tracker and signal processor for thinking time budget
 	sessionTracker := budget.NewSessionTracker(statePath)
 	thinkingBudget := budget.NewThinkingBudget(sessionTracker)
-	thinkingBudget.DailyMinutes = dailyBudgetMinutes
+	thinkingBudget.DailyOutputTokens = dailyOutputTokenBudget
 
-	todayUsed := sessionTracker.TodayThinkingMinutes()
-	log.Printf("[main] Session tracker initialized (used today: %.1f min, budget: %.0f min, remaining: %.1f min)",
-		todayUsed, dailyBudgetMinutes, dailyBudgetMinutes-todayUsed)
+	todayUsage := sessionTracker.TodayTokenUsage()
+	log.Printf("[main] Session tracker initialized (output tokens today: %dk, budget: %dk, sessions: %d)",
+		todayUsage.OutputTokens/1000, dailyOutputTokenBudget/1000, todayUsage.SessionCount)
 
 	// Initialize reflex engine
 	reflexEngine := reflex.NewEngine(statePath)
