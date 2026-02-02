@@ -3,6 +3,7 @@ package extract
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
@@ -185,7 +186,10 @@ func (e *DeepExtractor) ExtractRelationships(text string, entities []ExtractedEn
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
-	return parseRelationshipJSON(response), nil
+	rels := parseRelationshipJSON(response)
+	log.Printf("[extract] Pass 2 (relationships): entities=%v, raw_response=%q, parsed=%d rels",
+		entityList.String(), response, len(rels))
+	return rels, nil
 }
 
 // ExtractAll performs two-pass extraction: entities first, then relationships.
