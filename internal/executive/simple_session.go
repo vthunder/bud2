@@ -149,6 +149,41 @@ func (s *SimpleSession) GetMemoryID(traceID string) int {
 	return s.memoryIDMap[traceID]
 }
 
+// ResolveMemoryEval takes a memory_eval map like {"M1": 5, "M2": 1} and returns
+// a map of trace_id -> rating by reversing the memoryIDMap lookup.
+// Unknown display IDs are skipped.
+func (s *SimpleSession) ResolveMemoryEval(eval map[string]any) map[string]int {
+	// Build reverse map: display_id -> trace_id
+	reverseMap := make(map[int]string, len(s.memoryIDMap))
+	for traceID, displayID := range s.memoryIDMap {
+		reverseMap[displayID] = traceID
+	}
+
+	resolved := make(map[string]int)
+	for key, val := range eval {
+		// Parse "M1" -> 1
+		var displayID int
+		if _, err := fmt.Sscanf(key, "M%d", &displayID); err != nil {
+			continue
+		}
+		// Parse rating value
+		var rating int
+		switch v := val.(type) {
+		case float64:
+			rating = int(v)
+		case int:
+			rating = v
+		default:
+			continue
+		}
+		// Resolve to trace_id
+		if traceID, ok := reverseMap[displayID]; ok {
+			resolved[traceID] = rating
+		}
+	}
+	return resolved
+}
+
 // LastBufferSync returns when the buffer was last synced to this session
 func (s *SimpleSession) LastBufferSync() time.Time {
 	return s.lastBufferSync

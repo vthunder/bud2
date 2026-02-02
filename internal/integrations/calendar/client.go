@@ -416,7 +416,8 @@ func (c *Client) ListEvents(ctx context.Context, params ListEventsParams) ([]Eve
 
 	// Query all calendars and merge results
 	var allEvents []Event
-	seenIDs := make(map[string]bool) // Dedupe events that appear in multiple calendars
+	seenIDs := make(map[string]bool)        // Dedupe by event ID (same calendar)
+	seenEvents := make(map[string]bool)     // Dedupe by title+start (cross-calendar)
 
 	for _, calendarID := range c.calendarIDs {
 		path := fmt.Sprintf("/calendars/%s/events?%s", url.PathEscape(calendarID), queryParams.Encode())
@@ -433,14 +434,21 @@ func (c *Client) ListEvents(ctx context.Context, params ListEventsParams) ([]Eve
 
 		for _, item := range resp.Items {
 			if seenIDs[item.ID] {
-				continue // Skip duplicates
+				continue // Skip same-ID duplicates
 			}
 			event, err := convertEvent(&item)
 			if err != nil {
 				continue
 			}
+			// Cross-calendar dedup: same event shared across calendars has
+			// different IDs but identical title + start time
+			eventKey := event.Summary + "|" + event.Start.Format(time.RFC3339)
+			if seenEvents[eventKey] {
+				continue
+			}
 			event.CalendarID = calendarID
 			seenIDs[item.ID] = true
+			seenEvents[eventKey] = true
 			allEvents = append(allEvents, event)
 		}
 	}

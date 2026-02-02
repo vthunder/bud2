@@ -415,11 +415,19 @@ func main() {
 				}
 			}
 			// Log memory eval separately for easier querying
+			// Resolve M1/M2 display IDs to actual trace IDs for cross-session analysis
 			if memoryEval != nil {
+				evalData := map[string]any{"eval": memoryEval}
+				if session := exec.GetSession(); session != nil {
+					resolved := session.ResolveMemoryEval(memoryEval)
+					if len(resolved) > 0 {
+						evalData["resolved"] = resolved // trace_id -> rating
+					}
+				}
 				activityLog.Log(activity.Entry{
 					Type:    "memory_eval",
 					Summary: "Memory self-evaluation via signal_done",
-					Data:    map[string]any{"eval": memoryEval},
+					Data:    evalData,
 				})
 			}
 
