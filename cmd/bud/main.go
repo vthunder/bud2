@@ -244,6 +244,29 @@ func main() {
 	if err := outbox.Load(); err != nil {
 		log.Printf("Warning: failed to load outbox: %v", err)
 	}
+	// On startup, clean up old completed actions and log any stale pending ones.
+	// Pending actions older than 5 minutes are likely from a previous run that
+	// was killed before Save() could persist their completed status.
+	if cleaned := outbox.CleanupCompleted(0); cleaned > 0 {
+		log.Printf("[main] Cleared %d completed outbox actions", cleaned)
+	}
+	staleCutoff := time.Now().Add(-5 * time.Minute)
+	if pending := outbox.GetPending(); len(pending) > 0 {
+		staleCount := 0
+		for _, action := range pending {
+			if action.Timestamp.Before(staleCutoff) {
+				outbox.MarkComplete(action.ID)
+				staleCount++
+			}
+		}
+		if staleCount > 0 {
+			log.Printf("[main] Marked %d stale pending outbox actions as complete (older than 5min)", staleCount)
+		}
+	}
+	outbox.CleanupCompleted(0)
+	if err := outbox.Save(); err != nil {
+		log.Printf("Warning: failed to save cleaned outbox: %v", err)
+	}
 
 	// Bootstrap core identity traces from seed file
 	seedPath := "seed/core_seed.md"
@@ -1125,6 +1148,26 @@ func main() {
 		}
 	}()
 	log.Printf("[main] Memory consolidation scheduled (interval: %v)", consolidationInterval)
+
+	// Periodic outbox save - persists in-memory status changes (e.g. MarkComplete) to disk
+	// so that restarts don't replay already-sent messages.
+	go func() {
+		outboxSaveTicker := time.NewTicker(30 * time.Second)
+		defer outboxSaveTicker.Stop()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-outboxSaveTicker.C:
+				// Clean up completed actions older than 1 hour before saving
+				outbox.CleanupCompleted(1 * time.Hour)
+				if err := outbox.Save(); err != nil {
+					log.Printf("[outbox] Periodic save error: %v", err)
+				}
+			}
+		}
+	}()
+	log.Println("[main] Outbox periodic save started (interval: 30s)")
 
 	log.Println("[main] All subsystems started. Press Ctrl+C to stop.")
 
