@@ -3,6 +3,7 @@ package effectors
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -445,6 +446,11 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 // StartTyping starts showing the typing indicator in a channel.
 func (e *DiscordEffector) StartTyping(channelID string) {
 	if channelID == "" || e.getSession() == nil {
+		return
+	}
+
+	// Only start typing for valid Discord snowflake IDs (numeric strings)
+	if _, err := strconv.ParseUint(channelID, 10, 64); err != nil {
 		return
 	}
 
