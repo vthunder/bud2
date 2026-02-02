@@ -165,36 +165,6 @@ func (g *DB) FindEntityByName(name string) (*Entity, error) {
 	return g.GetEntity(entityID)
 }
 
-// FindSimilarEntity finds an entity similar to the given embedding
-func (g *DB) FindSimilarEntity(embedding []float64, threshold float64) (*Entity, error) {
-	rows, err := g.db.Query(`
-		SELECT id, name, type, salience, embedding, created_at, updated_at
-		FROM entities WHERE embedding IS NOT NULL
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var bestEntity *Entity
-	bestScore := 0.0
-
-	for rows.Next() {
-		e, err := scanEntityRow(rows)
-		if err != nil {
-			continue
-		}
-
-		sim := cosineSimilarity(embedding, e.Embedding)
-		if sim >= threshold && sim > bestScore {
-			bestScore = sim
-			bestEntity = e
-		}
-	}
-
-	return bestEntity, nil
-}
-
 // AddEntityAlias adds an alias for an entity
 func (g *DB) AddEntityAlias(entityID, alias string) error {
 	_, err := g.db.Exec(`

@@ -29,17 +29,15 @@ func NewResolver(db *graph.DB, embedder Embedder) *Resolver {
 
 // ResolveConfig contains configuration for entity resolution
 type ResolveConfig struct {
-	EmbeddingThreshold float64 // Similarity threshold for fuzzy matching (default 0.85)
-	CreateIfNotFound   bool    // Create new entity if not found
-	IncrementSalience  bool    // Increment salience when entity is found
+	CreateIfNotFound  bool // Create new entity if not found
+	IncrementSalience bool // Increment salience when entity is found
 }
 
 // DefaultResolveConfig returns default resolution configuration
 func DefaultResolveConfig() ResolveConfig {
 	return ResolveConfig{
-		EmbeddingThreshold: 0.85,
-		CreateIfNotFound:   true,
-		IncrementSalience:  true,
+		CreateIfNotFound:  true,
+		IncrementSalience: true,
 	}
 }
 
@@ -79,23 +77,10 @@ func (r *Resolver) Resolve(extracted ExtractedEntity, config ResolveConfig) (*Re
 		}
 	}
 
-	// 3. Try fuzzy match by embedding (if embedder available)
-	if r.embedder != nil && config.EmbeddingThreshold > 0 {
-		embedding, err := r.embedder.Embed(extracted.Name)
-		if err == nil && len(embedding) > 0 {
-			entity, err := r.db.FindSimilarEntity(embedding, config.EmbeddingThreshold)
-			if err == nil && entity != nil {
-				// Note: Don't add alias here - embedding similarity doesn't imply identity
-				// Aliases should only come from name-based matches (e.g., "Sarah" → "Sarah Chen")
-				result.Entity = entity
-				result.MatchedBy = "embedding"
-				if config.IncrementSalience {
-					r.db.IncrementEntitySalience(entity.ID, 0.1)
-				}
-				return result, nil
-			}
-		}
-	}
+	// Embedding-based fuzzy matching removed: nomic-embed-text returns identical vectors
+	// (cosine sim 1.0) for rare/uncommon single words like proper nouns, making embedding
+	// similarity unreliable for entity resolution. Name-based matching (exact + substring)
+	// handles the useful cases (e.g., "Sarah" → "Sarah Chen").
 
 	// 3. Create new entity if configured
 	if config.CreateIfNotFound {
