@@ -58,25 +58,36 @@ func checkPidFile(statePath string) func() {
 					name, _ := proc.Name()
 					cmdline, _ := proc.Cmdline()
 					if strings.Contains(name, "bud") || strings.Contains(cmdline, "bud") {
-						// Another bud is running - ask user what to do
-						fmt.Printf("\n⚠️  Another bud process is running (PID %d)\n", pid)
-						fmt.Printf("   Started: %s\n", getProcessStartTime(proc))
-						fmt.Printf("\nOptions:\n")
-						fmt.Printf("  [k] Kill it and continue\n")
-						fmt.Printf("  [q] Quit (let the other process run)\n")
-						fmt.Printf("\nChoice [k/q]: ")
+						// Check if we're running interactively (TTY on stdin)
+						fi, _ := os.Stdin.Stat()
+						isInteractive := (fi.Mode() & os.ModeCharDevice) != 0
 
-						reader := bufio.NewReader(os.Stdin)
-						choice, _ := reader.ReadString('\n')
-						choice = strings.TrimSpace(strings.ToLower(choice))
+						if isInteractive {
+							// Interactive: ask user what to do
+							fmt.Printf("\n⚠️  Another bud process is running (PID %d)\n", pid)
+							fmt.Printf("   Started: %s\n", getProcessStartTime(proc))
+							fmt.Printf("\nOptions:\n")
+							fmt.Printf("  [k] Kill it and continue\n")
+							fmt.Printf("  [q] Quit (let the other process run)\n")
+							fmt.Printf("\nChoice [k/q]: ")
 
-						if choice == "k" {
-							log.Printf("[main] Killing existing bud process (PID %d)...", pid)
-							proc.Kill()
-							time.Sleep(500 * time.Millisecond) // Give it time to die
+							reader := bufio.NewReader(os.Stdin)
+							choice, _ := reader.ReadString('\n')
+							choice = strings.TrimSpace(strings.ToLower(choice))
+
+							if choice == "k" {
+								log.Printf("[main] Killing existing bud process (PID %d)...", pid)
+								proc.Kill()
+								time.Sleep(500 * time.Millisecond) // Give it time to die
+							} else {
+								log.Println("[main] Exiting to let existing process run")
+								os.Exit(0)
+							}
 						} else {
-							log.Println("[main] Exiting to let existing process run")
-							os.Exit(0)
+							// Non-interactive (launchd/service): auto-kill old process
+							log.Printf("[main] Non-interactive mode: killing existing bud process (PID %d)...", pid)
+							proc.Kill()
+							time.Sleep(1 * time.Second) // Give it time to die
 						}
 					}
 				}
