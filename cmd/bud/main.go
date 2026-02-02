@@ -397,6 +397,9 @@ func main() {
 		}
 	}
 
+	// Track last episode per channel for FOLLOWS edges
+	lastEpisodeByChannel := make(map[string]string) // channel → episode ID
+
 	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
 	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
 		if msg == nil || msg.Content == "" {
@@ -434,6 +437,14 @@ func main() {
 			log.Printf("[ingest] Failed to store episode: %v", err)
 			return
 		}
+
+		// Create FOLLOWS edge from previous episode in same channel
+		if prevID, ok := lastEpisodeByChannel[msg.ChannelID]; ok {
+			if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
+				log.Printf("[ingest] Failed to add FOLLOWS edge: %v", err)
+			}
+		}
+		lastEpisodeByChannel[msg.ChannelID] = episode.ID
 
 		// Skip entity extraction for low-entropy content (saves ~6s Ollama call)
 		if !shouldExtract {
@@ -741,6 +752,13 @@ func main() {
 				log.Printf("Warning: failed to store Bud episode: %v", err)
 			} else {
 				log.Printf("[main] Stored Bud response as episode for consolidation")
+				// Create FOLLOWS edge from previous episode in same channel
+				if prevID, ok := lastEpisodeByChannel[channelID]; ok {
+					if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
+						log.Printf("[main] Failed to add FOLLOWS edge for Bud response: %v", err)
+					}
+				}
+				lastEpisodeByChannel[channelID] = episode.ID
 			}
 		}
 	}
