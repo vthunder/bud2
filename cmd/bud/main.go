@@ -58,11 +58,10 @@ func checkPidFile(statePath string) func() {
 					name, _ := proc.Name()
 					cmdline, _ := proc.Cmdline()
 					if strings.Contains(name, "bud") || strings.Contains(cmdline, "bud") {
-						// Check if we're running interactively (TTY on stdin)
-						fi, _ := os.Stdin.Stat()
-						isInteractive := (fi.Mode() & os.ModeCharDevice) != 0
+						// Check if running as a service (BUD_SERVICE=1)
+						isService := os.Getenv("BUD_SERVICE") == "1"
 
-						if isInteractive {
+						if !isService {
 							// Interactive: ask user what to do
 							fmt.Printf("\n⚠️  Another bud process is running (PID %d)\n", pid)
 							fmt.Printf("   Started: %s\n", getProcessStartTime(proc))
