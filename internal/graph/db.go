@@ -257,6 +257,24 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (3)")
 	}
 
+	// Migration v4: Add trace_type column for operational vs knowledge classification
+	if version < 4 {
+		g.db.Exec("ALTER TABLE traces ADD COLUMN trace_type TEXT DEFAULT 'knowledge'")
+		g.db.Exec("CREATE INDEX IF NOT EXISTS idx_traces_trace_type ON traces(trace_type)")
+		// Backfill: tag existing traces that look operational
+		g.db.Exec(`UPDATE traces SET trace_type = 'operational' WHERE
+			(LOWER(summary) LIKE '%upcoming meeting%' OR
+			 LOWER(summary) LIKE '%sprint planning%starts%' OR
+			 LOWER(summary) LIKE '%heads up%meeting%' OR
+			 LOWER(summary) LIKE '%state sync%' OR
+			 LOWER(summary) LIKE '%synced state%' OR
+			 LOWER(summary) LIKE '%no actionable work%' OR
+			 LOWER(summary) LIKE '%idle wake%' OR
+			 LOWER(summary) LIKE '%rebuilt binaries%')
+			AND is_core = FALSE`)
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (4)")
+	}
+
 	return nil
 }
 

@@ -113,11 +113,20 @@ type Entity struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+// TraceType classifies traces for differentiated decay and retrieval behavior.
+type TraceType string
+
+const (
+	TraceTypeKnowledge   TraceType = "knowledge"   // Default: facts, decisions, preferences
+	TraceTypeOperational TraceType = "operational"  // Meeting reminders, state syncs, deploys, restarts
+)
+
 // Trace represents a consolidated memory (Tier 3)
 type Trace struct {
 	ID           string    `json:"id"`
 	Summary      string    `json:"summary"`
 	Topic        string    `json:"topic,omitempty"`
+	TraceType    TraceType `json:"trace_type,omitempty"`
 	Activation   float64   `json:"activation"`
 	Strength     int       `json:"strength"`
 	IsCore       bool      `json:"is_core"`

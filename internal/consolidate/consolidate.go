@@ -239,11 +239,15 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		embedding = calculateCentroid(group.episodes)
 	}
 
+	// Classify trace type
+	traceType := classifyTraceType(summary, group.episodes)
+
 	// Create trace
 	trace := &graph.Trace{
 		ID:         traceID,
 		Summary:    summary,
 		Topic:      "conversation",
+		TraceType:  traceType,
 		Activation: 0.8,
 		Strength:   len(group.episodes), // Strength based on number of source episodes
 		IsCore:     false,
@@ -269,8 +273,12 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		}
 	}
 
-	log.Printf("[consolidate] Created trace %s from %d episodes: %s",
-		traceID, len(group.episodes), truncate(summary, 80))
+	typeLabel := ""
+	if traceType == graph.TraceTypeOperational {
+		typeLabel = " [operational]"
+	}
+	log.Printf("[consolidate] Created trace %s from %d episodes%s: %s",
+		traceID, len(group.episodes), typeLabel, truncate(summary, 80))
 
 	return nil
 }
@@ -342,6 +350,45 @@ func isAllLowInfo(episodes []*graph.Episode) bool {
 		}
 	}
 	return true
+}
+
+// classifyTraceType determines whether a trace is operational (transient system
+// activity) or knowledge (facts, decisions, preferences worth remembering).
+// Operational traces decay 3x faster during activation decay.
+func classifyTraceType(summary string, episodes []*graph.Episode) graph.TraceType {
+	lower := strings.ToLower(summary)
+
+	// Meeting reminders and calendar notifications
+	if strings.Contains(lower, "upcoming meeting") ||
+		strings.Contains(lower, "sprint planning") && strings.Contains(lower, "starts") ||
+		strings.Contains(lower, "heads up") && strings.Contains(lower, "meeting") ||
+		strings.Contains(lower, "meeting link") && !strings.Contains(lower, "decided") {
+		return graph.TraceTypeOperational
+	}
+
+	// State sync / deployment / restart activity
+	if strings.Contains(lower, "state sync") || strings.Contains(lower, "synced state") ||
+		strings.Contains(lower, "restarted") && !strings.Contains(lower, "because") ||
+		strings.Contains(lower, "launchd service") && strings.Contains(lower, "running") ||
+		strings.Contains(lower, "rebuilt binaries") ||
+		strings.Contains(lower, "deployed") && !strings.Contains(lower, "decision") {
+		return graph.TraceTypeOperational
+	}
+
+	// Autonomous wake confirmations / idle wakes
+	if strings.Contains(lower, "no actionable work") ||
+		strings.Contains(lower, "idle wake") ||
+		strings.Contains(lower, "wellness check") && !strings.Contains(lower, "finding") {
+		return graph.TraceTypeOperational
+	}
+
+	// Pure acknowledgments without substantive content
+	if strings.Contains(lower, "confirmed") && !strings.Contains(lower, "decision") &&
+		!strings.Contains(lower, "preference") && len(summary) < 150 {
+		return graph.TraceTypeOperational
+	}
+
+	return graph.TraceTypeKnowledge
 }
 
 // isEphemeralContent returns true if the summary represents transient content

@@ -27,19 +27,25 @@ func (g *DB) AddTrace(tr *Trace) error {
 		tr.LastAccessed = time.Now()
 	}
 
+	traceType := tr.TraceType
+	if traceType == "" {
+		traceType = TraceTypeKnowledge
+	}
+
 	_, err = g.db.Exec(`
-		INSERT INTO traces (id, summary, topic, activation, strength, is_core,
+		INSERT INTO traces (id, summary, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			summary = excluded.summary,
+			trace_type = excluded.trace_type,
 			activation = excluded.activation,
 			strength = excluded.strength,
 			embedding = excluded.embedding,
 			last_accessed = excluded.last_accessed,
 			labile_until = excluded.labile_until
 	`,
-		tr.ID, tr.Summary, tr.Topic, tr.Activation, tr.Strength, tr.IsCore,
+		tr.ID, tr.Summary, tr.Topic, string(traceType), tr.Activation, tr.Strength, tr.IsCore,
 		embeddingBytes, tr.CreatedAt, tr.LastAccessed, nullableTime(tr.LabileUntil),
 	)
 
@@ -53,7 +59,7 @@ func (g *DB) AddTrace(tr *Trace) error {
 // GetTrace retrieves a trace by ID
 func (g *DB) GetTrace(id string) (*Trace, error) {
 	row := g.db.QueryRow(`
-		SELECT id, summary, topic, activation, strength, is_core,
+		SELECT id, summary, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until
 		FROM traces WHERE id = ?
 	`, id)
@@ -64,7 +70,7 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 // GetCoreTraces retrieves all core identity traces
 func (g *DB) GetCoreTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, activation, strength, is_core,
+		SELECT id, summary, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until
 		FROM traces WHERE is_core = TRUE
 		ORDER BY created_at ASC
@@ -80,7 +86,7 @@ func (g *DB) GetCoreTraces() ([]*Trace, error) {
 // GetActivatedTraces retrieves traces with activation above threshold
 func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, activation, strength, is_core,
+		SELECT id, summary, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until
 		FROM traces
 		WHERE activation >= ? AND is_core = FALSE
@@ -150,11 +156,13 @@ func (g *DB) DecayActivation(factor float64) error {
 // time since last access. Uses exponential decay: activation *= exp(-lambda * hours_since_access)
 // This differentiates traces by recency — recently accessed traces keep high activation,
 // old untouched traces decay toward a floor.
+// Operational traces decay 3x faster than knowledge traces.
 func (g *DB) DecayActivationByAge(lambda float64, floor float64) (int, error) {
 	now := time.Now()
 
 	rows, err := g.db.Query(`
-		SELECT id, activation, last_accessed FROM traces WHERE is_core = FALSE AND activation > ?
+		SELECT id, activation, last_accessed, COALESCE(trace_type, 'knowledge')
+		FROM traces WHERE is_core = FALSE AND activation > ?
 	`, floor)
 	if err != nil {
 		return 0, err
@@ -171,7 +179,8 @@ func (g *DB) DecayActivationByAge(lambda float64, floor float64) (int, error) {
 		var id string
 		var activation float64
 		var lastAccessed time.Time
-		if err := rows.Scan(&id, &activation, &lastAccessed); err != nil {
+		var traceType string
+		if err := rows.Scan(&id, &activation, &lastAccessed, &traceType); err != nil {
 			continue
 		}
 
@@ -180,7 +189,13 @@ func (g *DB) DecayActivationByAge(lambda float64, floor float64) (int, error) {
 			hoursSinceAccess = 0
 		}
 
-		decayFactor := math.Exp(-lambda * hoursSinceAccess)
+		// Operational traces decay 3x faster (~36%/day vs ~12%/day for knowledge)
+		effectiveLambda := lambda
+		if traceType == string(TraceTypeOperational) {
+			effectiveLambda = lambda * 3
+		}
+
+		decayFactor := math.Exp(-effectiveLambda * hoursSinceAccess)
 		newActivation := activation * decayFactor
 		if newActivation < floor {
 			newActivation = floor
@@ -404,7 +419,7 @@ func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 // GetAllTraces retrieves all traces
 func (g *DB) GetAllTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, activation, strength, is_core,
+		SELECT id, summary, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until
 		FROM traces
 		ORDER BY created_at DESC
@@ -500,10 +515,11 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	var tr Trace
 	var embeddingBytes []byte
 	var topic sql.NullString
+	var traceType sql.NullString
 	var labileUntil sql.NullTime
 
 	err := row.Scan(
-		&tr.ID, &tr.Summary, &topic, &tr.Activation, &tr.Strength, &tr.IsCore,
+		&tr.ID, &tr.Summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
 		&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 	)
 	if err != nil {
@@ -514,6 +530,10 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	}
 
 	tr.Topic = topic.String
+	tr.TraceType = TraceType(traceType.String)
+	if tr.TraceType == "" {
+		tr.TraceType = TraceTypeKnowledge
+	}
 	if labileUntil.Valid {
 		tr.LabileUntil = labileUntil.Time
 	}
@@ -532,10 +552,11 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		var tr Trace
 		var embeddingBytes []byte
 		var topic sql.NullString
+		var traceType sql.NullString
 		var labileUntil sql.NullTime
 
 		err := rows.Scan(
-			&tr.ID, &tr.Summary, &topic, &tr.Activation, &tr.Strength, &tr.IsCore,
+			&tr.ID, &tr.Summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
 			&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 		)
 		if err != nil {
@@ -543,6 +564,10 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		}
 
 		tr.Topic = topic.String
+		tr.TraceType = TraceType(traceType.String)
+		if tr.TraceType == "" {
+			tr.TraceType = TraceTypeKnowledge
+		}
 		if labileUntil.Valid {
 			tr.LabileUntil = labileUntil.Time
 		}

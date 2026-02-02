@@ -792,6 +792,27 @@ func main() {
 					}
 				}
 				lastEpisodeByChannel[channelID] = episode.ID
+
+				// Extract entities from Bud's responses (skip entropy filter — responses are always substantive)
+				go func(episodeID, text string) {
+					result, err := entityExtractor.ExtractAll(text)
+					if err != nil {
+						log.Printf("[ingest-bud] Entity extraction failed: %v", err)
+						return
+					}
+					for _, ext := range result.Entities {
+						resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
+						if err != nil || resolveResult == nil || resolveResult.Entity == nil {
+							continue
+						}
+						if err := graphDB.LinkEpisodeToEntity(episodeID, resolveResult.Entity.ID); err != nil {
+							log.Printf("[ingest-bud] Failed to link episode to entity: %v", err)
+						}
+					}
+					if len(result.Entities) > 0 {
+						log.Printf("[ingest-bud] Extracted %d entities from Bud response", len(result.Entities))
+					}
+				}(responseID, content)
 			}
 		}
 	}

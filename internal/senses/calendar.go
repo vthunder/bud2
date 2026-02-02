@@ -240,20 +240,18 @@ func (c *CalendarSense) checkUpcomingMeetings(ctx context.Context) {
 
 		// Check if we already notified for this event
 		notifyKey := fmt.Sprintf("%s-%s", event.ID, event.Start.Format("2006-01-02"))
-		c.mu.RLock()
+		c.mu.Lock()
 		_, alreadyNotified := c.notifiedEvents[notifyKey]
-		c.mu.RUnlock()
-
 		if alreadyNotified {
+			c.mu.Unlock()
 			continue
 		}
-
-		// Create meeting reminder
-		c.sendMeetingReminder(event, timeUntil)
-
-		c.mu.Lock()
 		c.notifiedEvents[notifyKey] = now
 		c.mu.Unlock()
+
+		// Create meeting reminder (inbox dedup by deterministic ID prevents
+		// duplicates across restarts even if notifiedEvents map is lost)
+		c.sendMeetingReminder(event, timeUntil)
 	}
 }
 
@@ -298,7 +296,7 @@ func (c *CalendarSense) sendMeetingReminder(event calendar.Event, timeUntil time
 	}
 
 	msg := &memory.InboxMessage{
-		ID:        fmt.Sprintf("calendar-reminder-%s-%d", event.ID, time.Now().UnixNano()),
+		ID:        fmt.Sprintf("calendar-reminder-%s-%s", event.ID, event.Start.Format("2006-01-02")),
 		Type:      "impulse",
 		Subtype:   "meeting_reminder",
 		Content:   content,
