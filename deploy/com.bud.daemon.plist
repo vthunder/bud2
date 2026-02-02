@@ -32,10 +32,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/dev/null</string>
+    <string>/Users/thunder/Library/Logs/bud.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>/Users/thunder/Library/Logs/bud.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>
