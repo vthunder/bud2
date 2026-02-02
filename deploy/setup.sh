@@ -20,6 +20,7 @@ check_prereqs() {
     command -v go >/dev/null || missing+=("go (brew install go)")
     command -v fswatch >/dev/null || missing+=("fswatch (brew install fswatch)")
     command -v claude >/dev/null || missing+=("claude (npm install -g @anthropic-ai/claude-code)")
+    command -v python3.12 >/dev/null || missing+=("python@3.12 (brew install python@3.12) - for NER sidecar")
 
     if [ ${#missing[@]} -gt 0 ]; then
         echo "Missing prerequisites:"
@@ -45,9 +46,11 @@ generate_deploy() {
 generate_plists() {
     echo "Generating launchd plist files..."
 
-    for plist in com.bud.daemon.plist com.bud.watcher.plist; do
-        sed "s|@BUD_DIR@|$BUD_DIR|g; s|@HOME@|$HOME|g" \
-            "$SCRIPT_DIR/${plist}.example" > "$SCRIPT_DIR/$plist"
+    for plist in com.bud.daemon.plist com.bud.watcher.plist com.bud.ner-sidecar.plist; do
+        if [ -f "$SCRIPT_DIR/${plist}.example" ]; then
+            sed "s|@BUD_DIR@|$BUD_DIR|g; s|@HOME@|$HOME|g" \
+                "$SCRIPT_DIR/${plist}.example" > "$SCRIPT_DIR/$plist"
+        fi
     done
 }
 
@@ -69,8 +72,11 @@ install_services() {
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         mkdir -p ~/Library/LaunchAgents
-        cp "$SCRIPT_DIR/com.bud.daemon.plist" ~/Library/LaunchAgents/
-        cp "$SCRIPT_DIR/com.bud.watcher.plist" ~/Library/LaunchAgents/
+        for plist in com.bud.daemon.plist com.bud.watcher.plist com.bud.ner-sidecar.plist; do
+            if [ -f "$SCRIPT_DIR/$plist" ]; then
+                cp "$SCRIPT_DIR/$plist" ~/Library/LaunchAgents/
+            fi
+        done
         echo "  Copied plists to ~/Library/LaunchAgents/"
 
         echo ""
@@ -79,8 +85,27 @@ install_services() {
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             launchctl load ~/Library/LaunchAgents/com.bud.daemon.plist 2>/dev/null || true
             launchctl load ~/Library/LaunchAgents/com.bud.watcher.plist 2>/dev/null || true
+            launchctl load ~/Library/LaunchAgents/com.bud.ner-sidecar.plist 2>/dev/null || true
             echo "  Services loaded"
         fi
+    fi
+}
+
+# Setup NER sidecar Python environment
+setup_sidecar() {
+    echo "Setting up NER sidecar..."
+    SIDECAR_DIR="$BUD_DIR/sidecar"
+    VENV_DIR="$SIDECAR_DIR/.venv"
+
+    if [ ! -d "$VENV_DIR" ]; then
+        PYTHON_BIN="$(command -v python3.12 || command -v python3)"
+        echo "  Creating venv with $PYTHON_BIN..."
+        "$PYTHON_BIN" -m venv "$VENV_DIR"
+        echo "  Installing dependencies..."
+        "$VENV_DIR/bin/pip" install -q spacy fastapi uvicorn
+        "$VENV_DIR/bin/python" -m spacy download en_core_web_sm
+    else
+        echo "  Sidecar venv already exists"
     fi
 }
 
@@ -99,6 +124,7 @@ check_prereqs
 generate_deploy
 generate_plists
 build_bud
+setup_sidecar
 check_env
 install_services
 
@@ -113,3 +139,4 @@ echo "  touch /tmp/bud-redeploy"
 echo ""
 echo "View logs:"
 echo "  tail -f ~/Library/Logs/bud.log"
+echo "  tail -f ~/Library/Logs/ner-sidecar.log"

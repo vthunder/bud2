@@ -17,7 +17,7 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 1. **Replace thread model** with focus-based single-stream attention
 2. **Replace flat traces** with interconnected memory graph
 3. **Add conversation buffer** for immediate context
-4. **Add entropy filtering** to prevent low-info pollution
+4. **Add NER-based quality filtering** (spaCy sidecar) to gate expensive extraction
 5. **Integrate reflex layer** with metacognitive monitoring
 6. **Single Claude session** with memory-based context switching
 
@@ -226,35 +226,32 @@ This avoids token waste from re-sending the same conversation history every prom
 - `internal/executive/executive_v2.go`: `buildContext()` uses filtered fetch, `processItem()` updates sync time
 - `cmd/bud/main.go`: Sets `BotAuthor: "Bud"` in ExecutiveV2Config
 
-### 2.2 Quality Filter (Entropy-Aware)
+### 2.2 Quality Filter (NER-Based)
 
-**Purpose**: Prevent low-info messages from polluting memory.
+**Purpose**: Gate expensive LLM entity extraction on messages that plausibly contain named entities.
 
-**Implementation** (SimpleMem style):
+**Implementation**: spaCy NER sidecar (replaced heuristic entropy filter in Feb 2026)
 
 ```
-Score = α × EntityNovelty + (1-α) × SemanticDivergence
-
-EntityNovelty = |new_entities| / |words|
-SemanticDivergence = 1 - cos(embedding, recent_history_embedding)
-
-Threshold: 0.35
-
-Below threshold:
-  - Keep in conversation buffer (for context)
-  - Don't create episode node
-  - Don't trigger consolidation
-
-Above threshold:
-  - Full processing
-  - Create episode node
-  - Queue for consolidation
+Flow:
+1. Message arrives → always create episode (decoupled from extraction)
+2. Call spaCy NER sidecar (~10ms) → get entity list
+3. If entities found → run Ollama LLM extraction for full entities + relationships (~6s)
+4. If no entities → skip Ollama (save cost)
+5. If sidecar down → fall back to running Ollama for all messages
 ```
 
-**Dialogue Act Classification** (optional enhancement):
-- Detect backchannels ("yes", "ok", "uh-huh")
-- Attach to previous turn rather than standalone
-- Don't embed in isolation
+The spaCy sidecar (`sidecar/server.py`) runs as a separate process (launchd service
+`com.bud.ner-sidecar`), loaded with `en_core_web_sm`. The Go client (`internal/ner/client.go`)
+calls it via HTTP.
+
+**Previous approach** (deprecated): Heuristic entropy scoring using `EntityNovelty` (capitalized
+word ratio) + `SemanticDivergence` (embedding similarity). This blocked ALL user messages
+because chat text is mostly lowercase. See `state/notes/entropy-filter-research.md` for analysis.
+
+**Dialogue Act Classification** (active):
+- Detect backchannels ("yes", "ok", "uh-huh") at consolidation time
+- Pure backchannel episode groups skip trace creation
 
 ### 2.3 Attention System
 
@@ -560,12 +557,15 @@ Buffer Structure:
 
 ### 5.2 Entity Extraction ✓ RESOLVED
 
-**Decision**: Two-tier extraction
+**Decision**: Two-tier extraction with spaCy pre-filter
 
 | Tier | Method | Speed | When |
 |------|--------|-------|------|
-| Fast | spaCy/small model | <10ms | Every message |
-| Deep | Ollama LLM | ~200ms | Consolidation, ambiguous cases |
+| Fast | spaCy NER sidecar (`en_core_web_sm`) | ~10ms | Every message — detects PERSON, ORG, GPE, DATE, etc. |
+| Deep | Ollama LLM (qwen2.5:7b) | ~6s | Only when spaCy finds entities — extracts relationships + custom types |
+
+**Tested alternatives**: GliNER (medium/large/PII models) performed poorly on conversational
+text — missed obvious entities, hallucinated false positives. spaCy significantly outperformed.
 
 **Entity resolution**: Match against graph via embedding similarity (threshold 0.85)
 **Aliases**: Track multiple names for same entity

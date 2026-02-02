@@ -28,6 +28,7 @@ import (
 	"github.com/vthunder/bud2/internal/extract"
 	"github.com/vthunder/bud2/internal/filter"
 	"github.com/vthunder/bud2/internal/focus"
+	"github.com/vthunder/bud2/internal/ner"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
@@ -225,9 +226,17 @@ func main() {
 	entityResolver := extract.NewResolver(graphDB, ollamaClient)
 	log.Println("[main] Entity extractor initialized (Ollama qwen2.5:7b)")
 
-	// Entropy filter - scores message quality for memory decisions
+	// NER sidecar client - fast entity pre-check (spaCy)
+	nerClient := ner.NewClient("http://127.0.0.1:8099")
+	if nerClient.Healthy() {
+		log.Println("[main] NER sidecar connected (spaCy)")
+	} else {
+		log.Println("[main] NER sidecar not available - entity extraction will fall back to Ollama for all messages")
+	}
+
+	// Entropy filter - kept as fallback when NER sidecar is down
 	entropyFilter := filter.NewEntropyFilter(ollamaClient)
-	log.Println("[main] Entropy filter initialized")
+	_ = entropyFilter // suppress unused warning - available as fallback
 
 	// Memory consolidator - groups related episodes into traces
 	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient)
@@ -448,10 +457,7 @@ func main() {
 			}
 		}
 
-		// Score content entropy for quality filtering
-		shouldExtract, entropyScore, _ := entropyFilter.ShouldCreateEpisode(msg.Content)
-		episode.EntropyScore = entropyScore
-
+		// Always store episodes — episode creation is decoupled from extraction
 		if err := graphDB.AddEpisode(episode); err != nil {
 			log.Printf("[ingest] Failed to store episode: %v", err)
 			return
@@ -465,14 +471,29 @@ func main() {
 		}
 		lastEpisodeByChannel[msg.ChannelID] = episode.ID
 
-		// Skip entity extraction for low-entropy content (saves ~6s Ollama call)
-		if !shouldExtract {
-			log.Printf("[ingest] Skipped entity extraction for low-entropy content (score=%.2f): %s",
-				entropyScore, truncate(msg.Content, 60))
+		// Fast NER pre-check: use spaCy sidecar to detect entities (~10ms)
+		// If no entities found, skip the expensive Ollama extraction (~6s)
+		nerResult, nerErr := nerClient.Extract(msg.Content)
+		if nerErr != nil {
+			// NER sidecar down — fall back to always running Ollama extraction
+			log.Printf("[ingest] NER sidecar unavailable (%v), falling back to Ollama", nerErr)
+		} else if !nerResult.HasEntities {
+			log.Printf("[ingest] No entities detected by NER (%.0fms): %s",
+				nerResult.DurationMs, truncate(msg.Content, 60))
 			return
+		} else {
+			log.Printf("[ingest] NER found %d entities (%.0fms): %v",
+				len(nerResult.Entities), nerResult.DurationMs,
+				func() []string {
+					names := make([]string, len(nerResult.Entities))
+					for i, e := range nerResult.Entities {
+						names[i] = e.Text + ":" + e.Label
+					}
+					return names
+				}())
 		}
 
-		// Extract entities and relationships (Tier 2)
+		// Extract entities and relationships via Ollama (Tier 2 — full LLM extraction)
 		result, err := entityExtractor.ExtractAll(msg.Content)
 		if err != nil {
 			log.Printf("[ingest] Entity extraction failed: %v", err)

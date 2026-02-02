@@ -12,7 +12,8 @@ All major components from the architecture have code:
 | Package | Status | Key Files |
 |---------|--------|-----------|
 | `buffer` | ✅ Implemented | buffer.go, types.go, summarizer.go |
-| `filter` | ✅ Implemented | entropy.go, dialogueact.go |
+| `filter` | ✅ Implemented (entropy filter replaced by NER sidecar) | entropy.go (legacy), dialogueact.go |
+| `ner` | ✅ Implemented | client.go (spaCy sidecar client) |
 | `graph` | ✅ Implemented | db.go, activation.go, episodes.go, traces.go, entities.go |
 | `focus` | ✅ Implemented | attention.go, queue.go, types.go |
 | `extract` | ✅ Implemented | fast.go, deep.go, resolve.go |

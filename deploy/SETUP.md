@@ -11,6 +11,9 @@ On the Mac Mini, install:
 # Go
 brew install go
 
+# Python 3.12 (for NER sidecar)
+brew install python@3.12
+
 # Claude CLI
 npm install -g @anthropic-ai/claude-code
 claude  # Run once to authenticate
@@ -34,7 +37,8 @@ nano .env  # Add Discord token, channel ID, etc.
 The setup script will:
 1. Generate `deploy.sh` and launchd plists with correct paths
 2. Build the bud binaries
-3. Optionally install and load launchd services
+3. Set up the NER sidecar Python venv (spaCy + FastAPI)
+4. Optionally install and load launchd services (including NER sidecar)
 
 ## Manual Setup
 
@@ -108,9 +112,13 @@ launchctl list | grep bud
 
 # View logs
 tail -f ~/Library/Logs/bud.log
+tail -f ~/Library/Logs/ner-sidecar.log
 
 # Manual restart
 launchctl kickstart -k gui/$(id -u)/com.bud.daemon
+
+# Restart NER sidecar
+launchctl kickstart -k gui/$(id -u)/com.bud.ner-sidecar
 
 # Stop bud
 launchctl stop com.bud.daemon
