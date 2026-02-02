@@ -29,21 +29,22 @@ type PendingInteraction struct {
 
 // DiscordEffector sends messages to Discord
 type DiscordEffector struct {
-	getSession       func() *discordgo.Session // getter to always use current session
+	getSession       func() *discordgo.Session
 	pollInterval     time.Duration
-	maxRetryDuration time.Duration // how long to retry before giving up (default 5 min)
-	pollFile         func() (int, error)
-	getActions       func() []*types.Action
-	markComplete     func(id string)
-	markFailed       func(id string)
+	maxRetryDuration time.Duration
+	pollFile         func() ([]*types.Action, error)
 	onSend           func(channelID, content string)
 	onAction         func(actionType, channelID, content, source string)
-	onError          func(actionID, actionType, errMsg string)           // permanent failure
-	onRetry          func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration) // transient failure, will retry
+	onError          func(actionID, actionType, errMsg string)
+	onRetry          func(actionID, actionType, errMsg string, attempt int, nextRetry time.Duration)
 	stopChan         chan struct{}
 
-	// Pending interaction callback (for slash command followups)
+	// Pending slash command interaction callback
 	getPendingInteraction func(channelID string) *PendingInteraction
+
+	// Pending actions (from poll or direct submit) awaiting execution
+	pendingMu sync.Mutex
+	pending   []*types.Action
 
 	// Retry state tracking
 	retryMu     sync.Mutex
@@ -57,27 +58,28 @@ type DiscordEffector struct {
 // DefaultMaxRetryDuration is how long to retry transient failures before giving up
 const DefaultMaxRetryDuration = 5 * time.Minute
 
-// NewDiscordEffector creates a Discord effector
-// getSession is a getter that returns the current session (supports reconnection/hard reset)
+// NewDiscordEffector creates a Discord effector.
+// pollFile is called each tick to get new actions from the outbox file.
 func NewDiscordEffector(
 	getSession func() *discordgo.Session,
-	pollFile func() (int, error),
-	getActions func() []*types.Action,
-	markComplete func(id string),
-	markFailed func(id string),
+	pollFile func() ([]*types.Action, error),
 ) *DiscordEffector {
 	return &DiscordEffector{
 		getSession:       getSession,
 		pollInterval:     100 * time.Millisecond,
 		maxRetryDuration: DefaultMaxRetryDuration,
 		pollFile:         pollFile,
-		getActions:       getActions,
-		markComplete:     markComplete,
-		markFailed:       markFailed,
 		stopChan:         make(chan struct{}),
 		retryStates:      make(map[string]*retryState),
 		typingChans:      make(map[string]chan struct{}),
 	}
+}
+
+// Submit adds an action directly (for in-process callers like reflexes).
+func (e *DiscordEffector) Submit(action *types.Action) {
+	e.pendingMu.Lock()
+	e.pending = append(e.pending, action)
+	e.pendingMu.Unlock()
 }
 
 // SetMaxRetryDuration configures how long to retry transient failures
@@ -138,39 +140,60 @@ func (e *DiscordEffector) pollLoop() {
 func (e *DiscordEffector) processActions() {
 	// Poll file for new actions (written by MCP server)
 	if e.pollFile != nil {
-		newCount, err := e.pollFile()
+		actions, err := e.pollFile()
 		if err != nil {
 			log.Printf("[discord-effector] Poll error: %v", err)
-		} else if newCount > 0 {
-			log.Printf("[discord-effector] Found %d new actions from file", newCount)
+		} else if len(actions) > 0 {
+			log.Printf("[discord-effector] Found %d new actions from file", len(actions))
+			e.pendingMu.Lock()
+			e.pending = append(e.pending, actions...)
+			e.pendingMu.Unlock()
 		}
 	}
 
+	// Take a snapshot of pending actions to process
+	e.pendingMu.Lock()
+	toProcess := e.pending
+	e.pending = nil
+	e.pendingMu.Unlock()
+
+	if len(toProcess) == 0 {
+		return
+	}
+
 	now := time.Now()
-	actions := e.getActions()
-	for _, action := range actions {
+	var stillPending []*types.Action
+
+	for _, action := range toProcess {
 		if action.Effector != "discord" {
-			continue
-		}
-		if action.Status != "pending" {
 			continue
 		}
 
 		// Check if we should retry yet (exponential backoff)
 		if !e.shouldRetryNow(action.ID, now) {
+			stillPending = append(stillPending, action)
 			continue
 		}
 
 		err := e.executeAction(action)
 		if err != nil {
-			e.handleActionError(action, err, now)
+			if e.handleActionError(action, err, now) {
+				// Action will be retried — keep it pending
+				stillPending = append(stillPending, action)
+			}
 			continue
 		}
 
-		// Success - clean up retry state and mark complete
+		// Success
 		e.clearRetryState(action.ID)
-		e.markComplete(action.ID)
 		log.Printf("[discord-effector] Completed action %s (%s)", action.ID, action.Type)
+	}
+
+	// Put back actions that need retry
+	if len(stillPending) > 0 {
+		e.pendingMu.Lock()
+		e.pending = append(stillPending, e.pending...)
+		e.pendingMu.Unlock()
 	}
 }
 
@@ -186,22 +209,19 @@ func (e *DiscordEffector) shouldRetryNow(actionID string, now time.Time) bool {
 	return now.After(state.nextRetry)
 }
 
-// handleActionError processes an error, implementing exponential backoff for retryable errors
-func (e *DiscordEffector) handleActionError(action *types.Action, err error, now time.Time) {
-	// Check if this is a non-retryable error (4xx client errors)
+// handleActionError processes an error. Returns true if the action should be retried.
+func (e *DiscordEffector) handleActionError(action *types.Action, err error, now time.Time) bool {
+	// Non-retryable (4xx client errors) — drop it
 	if isNonRetryableError(err) {
 		log.Printf("[discord-effector] Action %s failed permanently (non-retryable): %v", action.ID, err)
 		e.clearRetryState(action.ID)
-		if e.markFailed != nil {
-			e.markFailed(action.ID)
-		}
 		if e.onError != nil {
 			e.onError(action.ID, action.Type, err.Error())
 		}
-		return
+		return false
 	}
 
-	// Retryable error - update retry state
+	// Retryable — update retry state
 	e.retryMu.Lock()
 	state, exists := e.retryStates[action.ID]
 	if !exists {
@@ -213,22 +233,19 @@ func (e *DiscordEffector) handleActionError(action *types.Action, err error, now
 	}
 	state.attempts++
 
-	// Check if we've exceeded max retry duration
+	// Exceeded max retry duration — give up
 	elapsed := now.Sub(state.firstFailure)
 	if elapsed >= e.maxRetryDuration {
 		e.retryMu.Unlock()
 		log.Printf("[discord-effector] Action %s failed permanently (max retry duration %v exceeded): %v", action.ID, e.maxRetryDuration, err)
 		e.clearRetryState(action.ID)
-		if e.markFailed != nil {
-			e.markFailed(action.ID)
-		}
 		if e.onError != nil {
 			e.onError(action.ID, action.Type, fmt.Sprintf("gave up after %v: %s", elapsed.Round(time.Second), err.Error()))
 		}
-		return
+		return false
 	}
 
-	// Calculate next retry with exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, max 60s
+	// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, max 60s
 	backoff := time.Duration(1<<uint(state.attempts-1)) * time.Second
 	if backoff > 60*time.Second {
 		backoff = 60 * time.Second
@@ -241,6 +258,7 @@ func (e *DiscordEffector) handleActionError(action *types.Action, err error, now
 	if e.onRetry != nil {
 		e.onRetry(action.ID, action.Type, err.Error(), attempt, backoff)
 	}
+	return true
 }
 
 // clearRetryState removes retry tracking for an action
@@ -253,7 +271,6 @@ func (e *DiscordEffector) clearRetryState(actionID string) {
 // isNonRetryableError checks if an error is a client error (4xx) that shouldn't be retried
 func isNonRetryableError(err error) bool {
 	if restErr, ok := err.(*discordgo.RESTError); ok {
-		// 4xx errors are client errors - don't retry
 		if restErr.Response != nil && restErr.Response.StatusCode >= 400 && restErr.Response.StatusCode < 500 {
 			return true
 		}
@@ -320,7 +337,6 @@ func (e *DiscordEffector) sendMessage(action *types.Action) error {
 func (e *DiscordEffector) sendInteractionFollowup(interaction *PendingInteraction, content string) error {
 	session := e.getSession()
 
-	// Chunk message if too long (Discord interaction responses also have 2000 char limit)
 	chunks := chunkMessage(content, MaxDiscordMessageLength)
 
 	// First chunk edits the original deferred response
@@ -350,7 +366,7 @@ func (e *DiscordEffector) sendInteractionFollowup(interaction *PendingInteractio
 	}
 
 	if e.onSend != nil {
-		e.onSend("", content) // No channel ID for interaction responses
+		e.onSend("", content)
 	}
 	if e.onAction != nil {
 		e.onAction("interaction_followup", "", content, "")
@@ -374,7 +390,6 @@ func chunkMessage(content string, maxLen int) []string {
 			break
 		}
 
-		// Find a good split point
 		splitAt := findSplitPoint(remaining, maxLen)
 		chunks = append(chunks, strings.TrimRight(remaining[:splitAt], " \n"))
 		remaining = strings.TrimLeft(remaining[splitAt:], " \n")
@@ -384,7 +399,6 @@ func chunkMessage(content string, maxLen int) []string {
 }
 
 // findSplitPoint finds the best place to split content within maxLen.
-// Priority: paragraph break > line break > word break > hard cut
 func findSplitPoint(content string, maxLen int) int {
 	if len(content) <= maxLen {
 		return len(content)
@@ -392,22 +406,15 @@ func findSplitPoint(content string, maxLen int) int {
 
 	searchArea := content[:maxLen]
 
-	// Try to find paragraph break (double newline)
 	if idx := strings.LastIndex(searchArea, "\n\n"); idx > maxLen/2 {
 		return idx + 2
 	}
-
-	// Try to find line break
 	if idx := strings.LastIndex(searchArea, "\n"); idx > maxLen/2 {
 		return idx + 1
 	}
-
-	// Try to find word break (space)
 	if idx := strings.LastIndex(searchArea, " "); idx > maxLen/2 {
 		return idx + 1
 	}
-
-	// Hard cut at maxLen
 	return maxLen
 }
 
@@ -436,7 +443,6 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 }
 
 // StartTyping starts showing the typing indicator in a channel.
-// The indicator is maintained until StopTyping is called.
 func (e *DiscordEffector) StartTyping(channelID string) {
 	if channelID == "" || e.getSession() == nil {
 		return
@@ -445,7 +451,6 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
 
-	// Already typing in this channel
 	if _, exists := e.typingChans[channelID]; exists {
 		return
 	}
@@ -453,16 +458,13 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 	stopChan := make(chan struct{})
 	e.typingChans[channelID] = stopChan
 
-	// Start typing indicator goroutine
 	go func() {
-		// Send initial typing indicator
 		if err := e.getSession().ChannelTyping(channelID); err != nil {
 			log.Printf("[discord-effector] Failed to start typing: %v", err)
 			return
 		}
 		log.Printf("[discord-effector] Started typing in channel %s", channelID)
 
-		// Discord typing indicators expire after ~10 seconds, so refresh every 8 seconds
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
 

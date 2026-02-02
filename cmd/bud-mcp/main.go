@@ -101,7 +101,7 @@ func main() {
 
 		log.Printf("talk_to_user: channel=%s message=%s", channelID, truncate(message, 50))
 
-		// Write action to outbox
+		// Write action to outbox (append-only, no status tracking)
 		action := map[string]any{
 			"id":       fmt.Sprintf("action-%d", time.Now().UnixNano()),
 			"effector": "discord",
@@ -110,8 +110,6 @@ func main() {
 				"channel_id": channelID,
 				"content":    message,
 			},
-			"status":     "pending",
-			"created_at": time.Now().Format(time.RFC3339),
 		}
 
 		// Append to outbox file
@@ -128,6 +126,9 @@ func main() {
 
 		if _, err := f.WriteString(string(data) + "\n"); err != nil {
 			return "", fmt.Errorf("failed to write to outbox: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return "", fmt.Errorf("failed to sync outbox: %w", err)
 		}
 
 		log.Printf("Action queued: %s", action["id"])
