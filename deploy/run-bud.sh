@@ -11,6 +11,9 @@ BUD_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$BUD_DIR"
 
+# Ensure ~/.local/bin is in PATH (for Claude CLI, etc.)
+export PATH="$HOME/.local/bin:$PATH"
+
 # Source .env file for environment variables (NOTION_API_KEY, etc.)
 if [ -f "$BUD_DIR/.env" ]; then
     set -a  # auto-export all variables
