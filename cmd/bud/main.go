@@ -944,9 +944,15 @@ func main() {
 	var calendarSense *senses.CalendarSense
 	if calendarClient != nil {
 		calendarSense = senses.NewCalendarSense(senses.CalendarConfig{
-			Client:   calendarClient,
-			Timezone: userTimezone,
+			Client:    calendarClient,
+			Timezone:  userTimezone,
+			StatePath: filepath.Join(statePath, "calendar_state.json"),
 		}, inbox)
+
+		// Load persisted state (prevents duplicate notifications across restarts)
+		if err := calendarSense.Load(); err != nil {
+			log.Printf("Warning: failed to load calendar state: %v", err)
+		}
 
 		if err := calendarSense.Start(); err != nil {
 			log.Printf("Warning: failed to start calendar sense: %v", err)

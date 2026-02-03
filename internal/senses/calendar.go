@@ -2,8 +2,10 @@ package senses
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -24,6 +26,7 @@ type CalendarSense struct {
 	pollInterval   time.Duration
 	reminderBefore time.Duration
 	timezone       *time.Location // User's timezone for daily agenda timing
+	statePath      string         // Path to persist state (survives restarts)
 
 	// State tracking
 	mu              sync.RWMutex
@@ -39,12 +42,19 @@ type CalendarSense struct {
 	onError func(err error)
 }
 
+// calendarState is the persisted state structure
+type calendarState struct {
+	NotifiedEvents  map[string]time.Time `json:"notified_events"`
+	LastDailyAgenda time.Time            `json:"last_daily_agenda"`
+}
+
 // CalendarConfig holds configuration for the calendar sense
 type CalendarConfig struct {
 	Client         *calendar.Client
 	PollInterval   time.Duration
 	ReminderBefore time.Duration
 	Timezone       *time.Location // User's timezone for daily agenda timing
+	StatePath      string         // Path to persist notification state (prevents duplicates across restarts)
 }
 
 // NewCalendarSense creates a new calendar sense
@@ -65,6 +75,7 @@ func NewCalendarSense(cfg CalendarConfig, inbox *memory.Inbox) *CalendarSense {
 		pollInterval:   cfg.PollInterval,
 		reminderBefore: cfg.ReminderBefore,
 		timezone:       cfg.Timezone,
+		statePath:      cfg.StatePath,
 		notifiedEvents: make(map[string]time.Time),
 		stopChan:       make(chan struct{}),
 	}
@@ -178,6 +189,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 		c.mu.Lock()
 		c.lastDailyAgenda = nowUTC
 		c.mu.Unlock()
+		c.Save() // Persist to survive restarts
 		return
 	}
 
@@ -204,6 +216,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 	c.mu.Lock()
 	c.lastDailyAgenda = nowUTC
 	c.mu.Unlock()
+	c.Save() // Persist to survive restarts
 
 	log.Printf("[calendar-sense] Sent daily agenda with %d events", len(relevantEvents))
 }
@@ -248,6 +261,7 @@ func (c *CalendarSense) checkUpcomingMeetings(ctx context.Context) {
 		}
 		c.notifiedEvents[notifyKey] = now
 		c.mu.Unlock()
+		c.Save() // Persist to survive restarts
 
 		// Create meeting reminder (inbox dedup by deterministic ID prevents
 		// duplicates across restarts even if notifiedEvents map is lost)
@@ -351,13 +365,19 @@ func (c *CalendarSense) formatDailyAgenda(events []calendar.Event) string {
 
 func (c *CalendarSense) cleanupNotifications() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	initialCount := len(c.notifiedEvents)
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for key, notifiedAt := range c.notifiedEvents {
 		if notifiedAt.Before(cutoff) {
 			delete(c.notifiedEvents, key)
 		}
+	}
+	cleaned := initialCount - len(c.notifiedEvents)
+	c.mu.Unlock()
+
+	// Persist if we actually cleaned anything
+	if cleaned > 0 {
+		c.Save()
 	}
 }
 
@@ -422,4 +442,61 @@ func joinStrings(items []string) string {
 		}
 	}
 	return result
+}
+
+// Load reads persisted state from disk (call before Start)
+func (c *CalendarSense) Load() error {
+	if c.statePath == "" {
+		return nil // no persistence configured
+	}
+
+	data, err := os.ReadFile(c.statePath)
+	if os.IsNotExist(err) {
+		return nil // no state yet, will be created on first save
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read calendar state: %w", err)
+	}
+
+	var state calendarState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("failed to parse calendar state: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if state.NotifiedEvents != nil {
+		c.notifiedEvents = state.NotifiedEvents
+	}
+	c.lastDailyAgenda = state.LastDailyAgenda
+
+	log.Printf("[calendar-sense] Loaded state: %d notified events, last agenda %v",
+		len(c.notifiedEvents), c.lastDailyAgenda)
+	return nil
+}
+
+// Save persists state to disk
+func (c *CalendarSense) Save() error {
+	if c.statePath == "" {
+		return nil // no persistence configured
+	}
+
+	c.mu.RLock()
+	state := calendarState{
+		NotifiedEvents:  c.notifiedEvents,
+		LastDailyAgenda: c.lastDailyAgenda,
+	}
+	c.mu.RUnlock()
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal calendar state: %w", err)
+	}
+
+	if err := os.WriteFile(c.statePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write calendar state: %w", err)
+	}
+
+	return nil
 }
