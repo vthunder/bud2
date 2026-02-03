@@ -338,10 +338,12 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 	// Retrieve relevant memories from graph using dual-trigger (embedding + lexical)
 	// Filter out memories already sent in this session to avoid repetition
-	// For autonomous wakes, limit to fewer memories since they're rarely useful (avg 1.61/5)
+	// For autonomous wakes, skip memory retrieval entirely - analysis shows 48% of wake
+	// memories rated 1/5, dragging precision down to 29.6%. Wakes use generic prompts
+	// that pull irrelevant memories. Better to skip than pollute context.
 	memoryLimit := 10
 	if item.Type == "wake" {
-		memoryLimit = 3
+		memoryLimit = 0
 	}
 
 	if e.graph != nil && e.embedder != nil && item.Content != "" {
