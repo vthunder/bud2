@@ -16,12 +16,11 @@ import (
 )
 
 const (
-	// MaxSessionContentSize is the threshold for actual content size before auto-reset.
-	// This measures only the message/content fields from user and assistant entries
-	// since the last compaction boundary - a much better proxy for context usage than
-	// raw file size. Based on analysis, ~250KB content correlates to ~155K tokens
-	// which is near Claude's compaction threshold. We use 300KB to give some headroom.
-	MaxSessionContentSize = 300 * 1024 // 300KB of actual content
+	// MaxContextTokens is the threshold for context tokens before auto-reset.
+	// Uses cache_read_input_tokens from the API which tells us how much session
+	// history is being read from cache. With a 200K context window, we reset
+	// at 150K to leave headroom for the current prompt + response.
+	MaxContextTokens = 150000
 )
 
 // SimpleSession manages a single persistent Claude session via `claude -p`
@@ -40,6 +39,9 @@ type SimpleSession struct {
 	// Track conversation buffer sync to avoid re-sending already-seen context
 	// Only buffer entries after this time need to be sent
 	lastBufferSync time.Time
+
+	// Track number of user messages for reset threshold
+	userMessageCount int
 
 	// Usage from last completed prompt
 	lastUsage *SessionUsage
@@ -193,6 +195,17 @@ func (s *SimpleSession) LastBufferSync() time.Time {
 // Call this after sending a prompt that included buffer content
 func (s *SimpleSession) UpdateBufferSync(t time.Time) {
 	s.lastBufferSync = t
+}
+
+// IncrementUserMessages increments the user message counter
+// Call this when processing a user message (not autonomous wakes)
+func (s *SimpleSession) IncrementUserMessages() {
+	s.userMessageCount++
+}
+
+// UserMessageCount returns the number of user messages in this session
+func (s *SimpleSession) UserMessageCount() int {
+	return s.userMessageCount
 }
 
 // IsFirstPrompt returns true if no prompts have been sent to this session
@@ -466,6 +479,8 @@ func (s *SimpleSession) Reset() {
 	s.memoryIDMap = make(map[string]int)
 	s.nextMemoryID = 1
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
+	s.userMessageCount = 0         // Reset message counter
+	s.lastUsage = nil              // Clear usage data
 	s.clearResetPending()          // Clear the pending flag so new sessions can start
 	log.Printf("[simple-session] Session reset complete, new session ID: %s", s.sessionID)
 }
@@ -591,16 +606,21 @@ func extractContentSize(line string) int64 {
 	return 0
 }
 
-// ShouldReset returns true if the session content has grown too large and
-// should be reset before sending the next prompt. This prevents Claude Code's
-// auto-compaction from triggering and keeps context management predictable.
+// ShouldReset returns true if the session should be reset before sending
+// the next prompt. Uses context token count from the API response.
 func (s *SimpleSession) ShouldReset() bool {
-	size := s.SessionContentSize()
-	if size > MaxSessionContentSize {
-		log.Printf("[simple-session] Session content size %d bytes exceeds threshold %d, should reset",
-			size, MaxSessionContentSize)
+	if s.lastUsage == nil {
+		return false
+	}
+
+	// Total context = cached history + new input tokens
+	totalContext := s.lastUsage.CacheReadInputTokens + s.lastUsage.InputTokens
+	if totalContext > MaxContextTokens {
+		log.Printf("[simple-session] Context tokens %d exceeds threshold %d, should reset",
+			totalContext, MaxContextTokens)
 		return true
 	}
+
 	return false
 }
 

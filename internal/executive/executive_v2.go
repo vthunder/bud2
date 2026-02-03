@@ -181,7 +181,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	// This must happen BEFORE buildContext so that IsFirstPrompt() returns true
 	// and core identity gets included in the fresh session
 	if e.session.ShouldReset() {
-		log.Printf("[executive-v2] Session context too large, resetting for fresh start")
+		log.Printf("[executive-v2] Session threshold reached, resetting for fresh start")
 		e.session.Reset()
 	}
 
@@ -414,6 +414,10 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			prompt.WriteString(fmt.Sprintf("- %s\n", identity))
 		}
 		prompt.WriteString("\n")
+	} else if bundle.CurrentFocus != nil && bundle.CurrentFocus.Type == "message" {
+		// For user messages after first prompt, remind about communication protocol
+		// This ensures the talk_to_user rule stays prominent as context grows
+		prompt.WriteString("- CRITICAL: I can ONLY communicate with users by calling the talk_to_user tool. Text I write without this tool is invisible to users. Every response, answer, or acknowledgment MUST use talk_to_user. Always omit the channel_id parameter to let the system use the default Discord channel - do not guess or hallucinate channel IDs. No tool call = no communication. After completing a task or responding to a message, I call signal_done to track thinking time and enable autonomous scheduling.\n\n")
 	}
 
 	// Recent reflex activity
