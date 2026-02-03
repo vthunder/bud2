@@ -17,10 +17,15 @@ var (
 
 	// Noise entities to filter out (system artifacts, pronouns, conversational fragments)
 	noiseEntities = map[string]bool{
-		// Pronouns
+		// Pronouns (subject + object forms)
 		"i": true, "me": true, "my": true, "you": true, "your": true,
-		"he": true, "she": true, "it": true, "they": true, "we": true,
-		"this": true, "that": true, "speaker": true, "user": true,
+		"he": true, "him": true, "his": true,
+		"she": true, "her": true,
+		"it": true, "its": true,
+		"they": true, "them": true, "their": true,
+		"we": true, "us": true, "our": true,
+		"this": true, "that": true, "these": true, "those": true,
+		"speaker": true, "user": true,
 		// System/meta terms
 		"memory_reset": true, "memory": true, "your memory": true,
 		// Conversational fragments (often misclassified as PRODUCT)
@@ -423,6 +428,8 @@ func isGenericProductName(name string) bool {
 		"memory", "wake", "wake-up", "prompt", "repo", "subscription",
 		"reflex", "improvement", "evaluation", "check", "page", "doc",
 		"interactive", "autonomous", "converter", "notes", "guild",
+		"feature", "platform", "dashboard", "pipeline", "workflow",
+		"integration", "module", "component", "endpoint", "interface",
 	}
 	for _, term := range genericTerms {
 		if strings.Contains(lower, term) {

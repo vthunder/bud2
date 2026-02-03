@@ -308,7 +308,7 @@ func (c *CalendarSense) sendMeetingReminder(event calendar.Event, timeUntil time
 			"event_title":  event.Summary,
 			"event_start":  event.Start.Format(time.RFC3339),
 			"event_end":    event.End.Format(time.RFC3339),
-			"time_until":   timeUntil.String(),
+			"time_until":   formatDuration(timeUntil),
 			"has_meet":     event.MeetLink != "",
 			"attendees":    len(event.Attendees),
 			"intensity":    intensity,
