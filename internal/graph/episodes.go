@@ -291,7 +291,7 @@ func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
 // GetEpisodeEntities returns the entity IDs mentioned in an episode
 func (g *DB) GetEpisodeEntities(episodeID string) ([]string, error) {
 	rows, err := g.db.Query(`
-		SELECT entity_id FROM episode_entities WHERE episode_id = ?
+		SELECT entity_id FROM episode_mentions WHERE episode_id = ?
 	`, episodeID)
 	if err != nil {
 		return nil, err
