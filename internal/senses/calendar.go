@@ -245,6 +245,13 @@ func (c *CalendarSense) checkUpcomingMeetings(ctx context.Context) {
 			continue
 		}
 
+		// Skip events user hasn't accepted (filters out spam and pending invites)
+		// Only notify for accepted, tentative, or self-organized events
+		responseStatus := event.SelfResponseStatus()
+		if responseStatus == "needsAction" || responseStatus == "declined" {
+			continue
+		}
+
 		// Check if event starts within reminder window
 		timeUntil := time.Until(event.Start)
 		if timeUntil > c.reminderBefore || timeUntil < 0 {

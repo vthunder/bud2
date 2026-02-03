@@ -332,6 +332,21 @@ type Attendee struct {
 	Organizer      bool   `json:"organizer,omitempty"`
 }
 
+// SelfResponseStatus returns the user's response status for the event.
+// Returns "accepted" if the user is the organizer or no attendees exist
+// (single-person events or events the user created).
+// Returns empty string if the user is not found in attendees.
+func (e *Event) SelfResponseStatus() string {
+	for _, a := range e.Attendees {
+		if a.Self {
+			return a.ResponseStatus
+		}
+	}
+	// If no attendees or self not found, user is likely the organizer
+	// (single-person events or events the user created)
+	return "accepted"
+}
+
 // googleEvent represents the Google Calendar API event format
 type googleEvent struct {
 	ID           string           `json:"id"`
