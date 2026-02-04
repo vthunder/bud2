@@ -518,10 +518,15 @@ func (c *Client) GetUpcomingEvents(ctx context.Context, duration time.Duration, 
 	})
 }
 
-// GetTodayEvents retrieves all events for today
-func (c *Client) GetTodayEvents(ctx context.Context) ([]Event, error) {
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+// GetTodayEvents retrieves all events for today in the specified timezone.
+// If timezone is nil, uses system local time.
+func (c *Client) GetTodayEvents(ctx context.Context, timezone ...*time.Location) ([]Event, error) {
+	loc := time.Local
+	if len(timezone) > 0 && timezone[0] != nil {
+		loc = timezone[0]
+	}
+	now := time.Now().In(loc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
 	return c.ListEvents(ctx, ListEventsParams{

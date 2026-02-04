@@ -168,8 +168,8 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 		return
 	}
 
-	// Get today's events
-	events, err := c.client.GetTodayEvents(ctx)
+	// Get today's events in user's timezone
+	events, err := c.client.GetTodayEvents(ctx, c.timezone)
 	if err != nil {
 		log.Printf("[calendar-sense] Failed to get today's events: %v", err)
 		c.handleError(err)
@@ -194,7 +194,7 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 	}
 
 	// Create daily agenda message
-	agenda := c.formatDailyAgenda(relevantEvents)
+	agenda := c.formatDailyAgenda(relevantEvents, nowLocal)
 
 	msg := &memory.InboxMessage{
 		ID:        fmt.Sprintf("calendar-agenda-%s", today.Format("2006-01-02")),
@@ -343,8 +343,8 @@ func (c *CalendarSense) sendMeetingReminder(event calendar.Event, timeUntil time
 	log.Printf("[calendar-sense] Sent meeting reminder: %s (in %s)", event.Summary, formatDuration(timeUntil))
 }
 
-func (c *CalendarSense) formatDailyAgenda(events []calendar.Event) string {
-	agenda := fmt.Sprintf("Daily agenda for %s:\n\n", time.Now().Format("Monday, January 2"))
+func (c *CalendarSense) formatDailyAgenda(events []calendar.Event, date time.Time) string {
+	agenda := fmt.Sprintf("Daily agenda for %s:\n\n", date.Format("Monday, January 2"))
 
 	for i, event := range events {
 		agenda += fmt.Sprintf("%d. %s\n", i+1, event.FormatEventSummary())
