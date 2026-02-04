@@ -179,8 +179,6 @@ func (s *Server) Run() error {
 			continue
 		}
 
-		log.Printf("[mcp] Received: %s (id=%v)", req.Method, req.ID)
-
 		resp := s.handleRequest(req)
 		if resp != nil {
 			s.sendResponse(resp)
@@ -192,8 +190,10 @@ func (s *Server) handleRequest(req jsonRPCRequest) *jsonRPCResponse {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req)
-	case "initialized":
+	case "initialized", "notifications/initialized":
 		// Notification, no response needed
+		// Both forms are valid - "initialized" per original spec,
+		// "notifications/initialized" per newer MCP implementations
 		log.Println("[mcp] Client initialized")
 		return nil
 	case "tools/list":
@@ -280,7 +280,7 @@ func (s *Server) handleToolsCall(req jsonRPCRequest) *jsonRPCResponse {
 		}
 	}
 
-	log.Printf("[mcp] Tool call: %s with args %v", params.Name, params.Arguments)
+	log.Printf("[mcp] %s", params.Name)
 
 	handler, ok := s.handlers[params.Name]
 	if !ok {
@@ -321,8 +321,6 @@ func (s *Server) sendResponse(resp *jsonRPCResponse) {
 		log.Printf("[mcp] Failed to marshal response: %v", err)
 		return
 	}
-
-	log.Printf("[mcp] Sending response for id=%v", resp.ID)
 	fmt.Fprintln(s.writer, string(data))
 }
 
@@ -361,8 +359,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[mcp-http] Received: %s (id=%v)", req.Method, req.ID)
-
 	// Handle the request
 	resp := s.handleRequest(req)
 
@@ -383,6 +379,5 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[mcp-http] Sending response for id=%v", resp.ID)
 	w.Write(data)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/reflex"
+	"github.com/vthunder/bud2/internal/types"
 )
 
 // RegisterAll registers all MCP tools with the given server and dependencies.
@@ -855,6 +857,280 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		log.Printf("Memory flush: triggered consolidation")
 		return "Memory flushed. Consolidation triggered.", nil
 	})
+
+	// memory_reset - full session reset with coordination
+	server.RegisterTool("memory_reset", mcp.ToolDef{
+		Description: "Reset memory completely. Clears conversation buffer AND signals the session to end. Use for clean slate testing.",
+		Properties:  map[string]mcp.PropDef{},
+	}, func(ctx any, args map[string]any) (string, error) {
+		// Write reset pending flag to prevent race conditions
+		resetPendingPath := filepath.Join(deps.StatePath, "reset.pending")
+		if err := os.WriteFile(resetPendingPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write reset pending flag: %v", err)
+		}
+		log.Printf("Memory reset: set reset.pending flag to block new sessions")
+
+		// Trigger consolidation
+		triggerPath := filepath.Join(deps.StatePath, "consolidate.trigger")
+		if err := os.WriteFile(triggerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write consolidation trigger: %v", err)
+		}
+
+		// Signal main process to clear in-memory buffer
+		bufferClearPath := filepath.Join(deps.StatePath, "buffer.clear")
+		if err := os.WriteFile(bufferClearPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+			log.Printf("Warning: failed to write buffer clear trigger: %v", err)
+		}
+
+		// Give consolidation and buffer clear a moment to process
+		time.Sleep(3 * time.Second)
+
+		// Clear conversation buffer on disk
+		bufferPath := filepath.Join(deps.SystemPath, "buffers.json")
+		if err := os.WriteFile(bufferPath, []byte("{}"), 0644); err != nil {
+			return "", fmt.Errorf("failed to clear buffer: %w", err)
+		}
+
+		// Signal session reset via inbox
+		msg := map[string]any{
+			"id":        fmt.Sprintf("reset-%d", time.Now().UnixNano()),
+			"type":      "signal",
+			"subtype":   "reset_session",
+			"content":   "Memory reset requested",
+			"timestamp": time.Now().Format(time.RFC3339),
+			"status":    "pending",
+		}
+
+		inboxPath := filepath.Join(deps.QueuesPath, "inbox.jsonl")
+		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open inbox: %w", err)
+		}
+		defer f.Close()
+
+		data, _ := json.Marshal(msg)
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return "", fmt.Errorf("failed to write reset signal: %w", err)
+		}
+
+		log.Printf("Memory reset: buffer cleared, reset signal sent")
+		return "Memory reset complete. Session will end.", nil
+	})
+
+	// trigger_redeploy - allows bud to request redeployment
+	server.RegisterTool("trigger_redeploy", mcp.ToolDef{
+		Description: "Trigger a redeployment of the bud service. Use this after code changes have been pushed.",
+		Properties: map[string]mcp.PropDef{
+			"reason": {Type: "string", Description: "Reason for redeployment (optional)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		reason, _ := args["reason"].(string)
+		if reason == "" {
+			reason = "Redeploy requested"
+		}
+
+		// Find deploy script relative to state path
+		budDir := filepath.Dir(deps.StatePath)
+		if budDir == "." {
+			budDir = "."
+		}
+		deployScript := filepath.Join(budDir, "deploy", "deploy.sh")
+		if _, err := os.Stat(deployScript); os.IsNotExist(err) {
+			return "", fmt.Errorf("deploy script not found: %s", deployScript)
+		}
+
+		// Run deploy.sh in background so we can return before being killed
+		cmd := exec.Command("bash", "-c", fmt.Sprintf("nohup %s > /dev/null 2>&1 &", deployScript))
+		if err := cmd.Start(); err != nil {
+			return "", fmt.Errorf("failed to start deploy: %w", err)
+		}
+
+		log.Printf("Redeploy triggered: %s", reason)
+		return "Redeploy started. Service will restart momentarily.", nil
+	})
+
+	// state_percepts - manage percepts
+	server.RegisterTool("state_percepts", mcp.ToolDef{
+		Description: "Manage percepts (short-term memory). Actions: list, count, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action":     {Type: "string", Description: "Action: list (default), count, clear"},
+			"older_than": {Type: "string", Description: "Duration for clear (e.g., '1h', '30m'). If omitted, clears all."},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			percepts, err := deps.StateInspector.ListPercepts()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(percepts, "", "  ")
+			return string(data), nil
+
+		case "count":
+			percepts, err := deps.StateInspector.ListPercepts()
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%d", len(percepts)), nil
+
+		case "clear":
+			olderThan, _ := args["older_than"].(string)
+			var dur time.Duration
+			if olderThan != "" {
+				var err error
+				dur, err = time.ParseDuration(olderThan)
+				if err != nil {
+					return "", fmt.Errorf("invalid duration: %w", err)
+				}
+			}
+			count, err := deps.StateInspector.ClearPercepts(dur)
+			if err != nil {
+				return "", err
+			}
+			if olderThan != "" {
+				return fmt.Sprintf("Cleared %d percepts older than %s", count, olderThan), nil
+			}
+			return "Cleared all percepts", nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	// state_threads - manage threads
+	server.RegisterTool("state_threads", mcp.ToolDef{
+		Description: "Manage threads (working memory). Actions: list, show, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: list (default), show, clear"},
+			"id":     {Type: "string", Description: "Thread ID (for show)"},
+			"status": {Type: "string", Description: "Filter for clear (active, paused, frozen, complete)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			threads, err := deps.StateInspector.ListThreads()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(threads, "", "  ")
+			return string(data), nil
+
+		case "show":
+			id, ok := args["id"].(string)
+			if !ok {
+				return "", fmt.Errorf("id required for show action")
+			}
+			thread, err := deps.StateInspector.GetThread(id)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(thread, "", "  ")
+			return string(data), nil
+
+		case "clear":
+			statusStr, _ := args["status"].(string)
+			var statusPtr *types.ThreadStatus
+			if statusStr != "" {
+				s := types.ThreadStatus(statusStr)
+				statusPtr = &s
+			}
+			count, err := deps.StateInspector.ClearThreads(statusPtr)
+			if err != nil {
+				return "", err
+			}
+			if statusStr != "" {
+				return fmt.Sprintf("Cleared %d threads with status %s", count, statusStr), nil
+			}
+			return "Cleared all threads", nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	// state_logs - manage logs
+	server.RegisterTool("state_logs", mcp.ToolDef{
+		Description: "Manage journal and activity logs. Actions: tail, truncate.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: tail (default), truncate"},
+			"count":  {Type: "number", Description: "Number of entries for tail (default 20)"},
+			"keep":   {Type: "number", Description: "Entries to keep for truncate (default 100)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "tail"
+		}
+
+		switch action {
+		case "tail":
+			count := 20
+			if c, ok := args["count"].(float64); ok {
+				count = int(c)
+			}
+			entries, err := deps.StateInspector.TailLogs(count)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(entries, "", "  ")
+			return string(data), nil
+
+		case "truncate":
+			keep := 100
+			if k, ok := args["keep"].(float64); ok {
+				keep = int(k)
+			}
+			if err := deps.StateInspector.TruncateLogs(keep); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Truncated logs to %d entries", keep), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	// state_queues - manage queues
+	server.RegisterTool("state_queues", mcp.ToolDef{
+		Description: "Manage message queues (inbox, outbox, signals). Actions: list, clear.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action: list (default), clear"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			action = "list"
+		}
+
+		switch action {
+		case "list":
+			queues, err := deps.StateInspector.ListQueues()
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.MarshalIndent(queues, "", "  ")
+			return string(data), nil
+
+		case "clear":
+			if err := deps.StateInspector.ClearQueues(); err != nil {
+				return "", err
+			}
+			return "Cleared all queues", nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
 }
 
 func registerGTDTools(server *mcp.Server, deps *Dependencies) {
@@ -955,6 +1231,294 @@ func registerGTDTools(server *mcp.Server, deps *Dependencies) {
 
 		log.Printf("GTD task completed: %s", id)
 		return fmt.Sprintf("Task completed: %s", id), nil
+	})
+
+	// gtd_update
+	server.RegisterTool("gtd_update", mcp.ToolDef{
+		Description: "Update a task in the user's GTD system. Only provided fields are updated.",
+		Properties: map[string]mcp.PropDef{
+			"id":        {Type: "string", Description: "Task ID to update (required)"},
+			"title":     {Type: "string", Description: "New title for the task"},
+			"notes":     {Type: "string", Description: "New notes for the task"},
+			"when":      {Type: "string", Description: "When to do it: inbox, today, anytime, someday, or YYYY-MM-DD date"},
+			"project":   {Type: "string", Description: "Project ID to move task to (empty string to remove from project)"},
+			"heading":   {Type: "string", Description: "Heading name within the project"},
+			"area":      {Type: "string", Description: "Area ID for the task (empty string to remove area)"},
+			"checklist": {Type: "array", Description: "Checklist items as array of {text, done} objects"},
+		},
+		Required: []string{"id"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		id, ok := args["id"].(string)
+		if !ok || id == "" {
+			return "", fmt.Errorf("id is required")
+		}
+
+		task := deps.GTDStore.GetTask(id)
+		if task == nil {
+			return "", fmt.Errorf("task not found: %s", id)
+		}
+
+		var updates []string
+
+		if title, ok := args["title"].(string); ok {
+			task.Title = title
+			updates = append(updates, "title")
+		}
+		if notes, ok := args["notes"].(string); ok {
+			task.Notes = notes
+			updates = append(updates, "notes")
+		}
+		if when, ok := args["when"].(string); ok {
+			task.When = when
+			updates = append(updates, "when")
+		}
+		if project, ok := args["project"].(string); ok {
+			task.Project = project
+			updates = append(updates, "project")
+		}
+		if heading, ok := args["heading"].(string); ok {
+			task.Heading = heading
+			updates = append(updates, "heading")
+		}
+		if area, ok := args["area"].(string); ok {
+			task.Area = area
+			updates = append(updates, "area")
+		}
+		if checklist, ok := args["checklist"].([]any); ok {
+			var items []gtd.ChecklistItem
+			for _, item := range checklist {
+				if itemMap, ok := item.(map[string]any); ok {
+					ci := gtd.ChecklistItem{}
+					if text, ok := itemMap["text"].(string); ok {
+						ci.Text = text
+					}
+					if done, ok := itemMap["done"].(bool); ok {
+						ci.Done = done
+					}
+					items = append(items, ci)
+				}
+			}
+			task.Checklist = items
+			updates = append(updates, "checklist")
+		}
+
+		if err := deps.GTDStore.UpdateTask(task); err != nil {
+			return "", fmt.Errorf("failed to update task: %w", err)
+		}
+		if err := deps.GTDStore.Save(); err != nil {
+			return "", fmt.Errorf("failed to save: %w", err)
+		}
+
+		log.Printf("GTD task updated: %s (%v)", id, updates)
+		return fmt.Sprintf("Task updated: %s (fields: %s)", task.Title, strings.Join(updates, ", ")), nil
+	})
+
+	// gtd_areas
+	server.RegisterTool("gtd_areas", mcp.ToolDef{
+		Description: "Manage areas of responsibility in the user's GTD system. Areas are high-level categories like Work, Home, Health.",
+		Properties: map[string]mcp.PropDef{
+			"action": {Type: "string", Description: "Action to perform: list, add, or update"},
+			"id":     {Type: "string", Description: "Area ID (required for update)"},
+			"title":  {Type: "string", Description: "Area title (required for add, optional for update)"},
+		},
+		Required: []string{"action"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			return "", fmt.Errorf("action is required (list, add, or update)")
+		}
+
+		switch action {
+		case "list":
+			areas := deps.GTDStore.GetAreas()
+			if len(areas) == 0 {
+				return "No areas defined.", nil
+			}
+			data, _ := json.MarshalIndent(areas, "", "  ")
+			return string(data), nil
+
+		case "add":
+			title, ok := args["title"].(string)
+			if !ok || title == "" {
+				return "", fmt.Errorf("title is required for add")
+			}
+
+			area := &gtd.Area{
+				Title: title,
+			}
+			deps.GTDStore.AddArea(area)
+			if err := deps.GTDStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("GTD area added: %s", title)
+			return fmt.Sprintf("Area added: %s (ID: %s)", title, area.ID), nil
+
+		case "update":
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required for update")
+			}
+
+			area := deps.GTDStore.GetArea(id)
+			if area == nil {
+				return "", fmt.Errorf("area not found: %s", id)
+			}
+
+			if title, ok := args["title"].(string); ok {
+				area.Title = title
+			}
+
+			if err := deps.GTDStore.UpdateArea(area); err != nil {
+				return "", fmt.Errorf("failed to update area: %w", err)
+			}
+			if err := deps.GTDStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("GTD area updated: %s", id)
+			return fmt.Sprintf("Area updated: %s", area.Title), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
+	})
+
+	// gtd_projects
+	server.RegisterTool("gtd_projects", mcp.ToolDef{
+		Description: "Manage projects in the user's GTD system. Projects are multi-step outcomes with tasks.",
+		Properties: map[string]mcp.PropDef{
+			"action":   {Type: "string", Description: "Action to perform: list, add, or update"},
+			"id":       {Type: "string", Description: "Project ID (required for update)"},
+			"title":    {Type: "string", Description: "Project title (required for add, optional for update)"},
+			"notes":    {Type: "string", Description: "Project notes (optional)"},
+			"when":     {Type: "string", Description: "When: anytime, someday, or YYYY-MM-DD date (optional)"},
+			"area":     {Type: "string", Description: "Area ID for filtering (list) or assignment (add/update)"},
+			"status":   {Type: "string", Description: "Filter by status (list only): open (default), completed, canceled, or all"},
+			"headings": {Type: "array", Description: "Ordered list of heading names for organizing tasks (optional)"},
+		},
+		Required: []string{"action"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		action, _ := args["action"].(string)
+		if action == "" {
+			return "", fmt.Errorf("action is required (list, add, or update)")
+		}
+
+		switch action {
+		case "list":
+			when, _ := args["when"].(string)
+			area, _ := args["area"].(string)
+			status, _ := args["status"].(string)
+			if status == "" {
+				status = "open"
+			}
+
+			projects := deps.GTDStore.GetProjects(when, area)
+
+			// Filter by status
+			if status != "all" {
+				var filtered []gtd.Project
+				for _, p := range projects {
+					if p.Status == status {
+						filtered = append(filtered, p)
+					}
+				}
+				projects = filtered
+			}
+
+			if len(projects) == 0 {
+				return "No projects found.", nil
+			}
+			data, _ := json.MarshalIndent(projects, "", "  ")
+			return string(data), nil
+
+		case "add":
+			title, ok := args["title"].(string)
+			if !ok || title == "" {
+				return "", fmt.Errorf("title is required for add")
+			}
+
+			project := &gtd.Project{
+				Title:  title,
+				Status: "open",
+			}
+
+			if notes, ok := args["notes"].(string); ok {
+				project.Notes = notes
+			}
+			if when, ok := args["when"].(string); ok {
+				project.When = when
+			}
+			if area, ok := args["area"].(string); ok {
+				project.Area = area
+			}
+			if headings, ok := args["headings"].([]any); ok {
+				for _, h := range headings {
+					if s, ok := h.(string); ok {
+						project.Headings = append(project.Headings, s)
+					}
+				}
+			}
+
+			deps.GTDStore.AddProject(project)
+			if err := deps.GTDStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("GTD project added: %s", title)
+			return fmt.Sprintf("Project added: %s (ID: %s)", title, project.ID), nil
+
+		case "update":
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required for update")
+			}
+
+			project := deps.GTDStore.GetProject(id)
+			if project == nil {
+				return "", fmt.Errorf("project not found: %s", id)
+			}
+
+			var updates []string
+			if title, ok := args["title"].(string); ok {
+				project.Title = title
+				updates = append(updates, "title")
+			}
+			if notes, ok := args["notes"].(string); ok {
+				project.Notes = notes
+				updates = append(updates, "notes")
+			}
+			if when, ok := args["when"].(string); ok {
+				project.When = when
+				updates = append(updates, "when")
+			}
+			if area, ok := args["area"].(string); ok {
+				project.Area = area
+				updates = append(updates, "area")
+			}
+			if headings, ok := args["headings"].([]any); ok {
+				project.Headings = nil
+				for _, h := range headings {
+					if s, ok := h.(string); ok {
+						project.Headings = append(project.Headings, s)
+					}
+				}
+				updates = append(updates, "headings")
+			}
+
+			if err := deps.GTDStore.UpdateProject(project); err != nil {
+				return "", fmt.Errorf("failed to update project: %w", err)
+			}
+			if err := deps.GTDStore.Save(); err != nil {
+				return "", fmt.Errorf("failed to save: %w", err)
+			}
+
+			log.Printf("GTD project updated: %s (%v)", id, updates)
+			return fmt.Sprintf("Project updated: %s (fields: %s)", project.Title, strings.Join(updates, ", ")), nil
+
+		default:
+			return "", fmt.Errorf("unknown action: %s", action)
+		}
 	})
 }
 
@@ -1126,6 +1690,243 @@ func registerCalendarTools(server *mcp.Server, deps *Dependencies) {
 
 		return formatEventsCompact(events), nil
 	})
+
+	// calendar_list_events - query events in a date range
+	server.RegisterTool("calendar_list_events", mcp.ToolDef{
+		Description: "Query calendar events in a specific date range. Returns compact format by default.",
+		Properties: map[string]mcp.PropDef{
+			"time_min":    {Type: "string", Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now"},
+			"time_max":    {Type: "string", Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 1 week from time_min"},
+			"max_results": {Type: "number", Description: "Maximum number of events to return. Default: 50"},
+			"query":       {Type: "string", Description: "Text to search for in event titles/descriptions (optional)"},
+			"verbose":     {Type: "boolean", Description: "If true, return full JSON with all event details. Default: false (compact format)"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		timeMinStr, _ := args["time_min"].(string)
+		timeMaxStr, _ := args["time_max"].(string)
+
+		var timeMin, timeMax time.Time
+		var err error
+
+		if timeMinStr == "" {
+			timeMin = time.Now()
+		} else {
+			timeMin, err = time.Parse(time.RFC3339, timeMinStr)
+			if err != nil {
+				timeMin, err = time.Parse("2006-01-02", timeMinStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid time_min format (use RFC3339 or YYYY-MM-DD): %w", err)
+				}
+			}
+		}
+
+		if timeMaxStr == "" {
+			timeMax = timeMin.Add(7 * 24 * time.Hour)
+		} else {
+			timeMax, err = time.Parse(time.RFC3339, timeMaxStr)
+			if err != nil {
+				timeMax, err = time.Parse("2006-01-02", timeMaxStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid time_max format (use RFC3339 or YYYY-MM-DD): %w", err)
+				}
+				timeMax = timeMax.Add(24 * time.Hour)
+			}
+		}
+
+		params := calendar.ListEventsParams{
+			TimeMin:    timeMin,
+			TimeMax:    timeMax,
+			MaxResults: 50,
+		}
+
+		if n, ok := args["max_results"].(float64); ok && n > 0 {
+			params.MaxResults = int(n)
+		}
+		if query, ok := args["query"].(string); ok {
+			params.Query = query
+		}
+
+		events, err := deps.CalendarClient.ListEvents(context.Background(), params)
+		if err != nil {
+			return "", fmt.Errorf("failed to list events: %w", err)
+		}
+
+		if len(events) == 0 {
+			return "No events found in the specified time range.", nil
+		}
+
+		if verbose, _ := args["verbose"].(bool); verbose {
+			data, _ := json.MarshalIndent(events, "", "  ")
+			return string(data), nil
+		}
+
+		return formatEventsCompact(events), nil
+	})
+
+	// calendar_free_busy - check availability
+	server.RegisterTool("calendar_free_busy", mcp.ToolDef{
+		Description: "Check calendar availability/free-busy status for a time range.",
+		Properties: map[string]mcp.PropDef{
+			"time_min": {Type: "string", Description: "Start of time range (RFC3339 or YYYY-MM-DD). Default: now"},
+			"time_max": {Type: "string", Description: "End of time range (RFC3339 or YYYY-MM-DD). Default: 24h from time_min"},
+		},
+	}, func(ctx any, args map[string]any) (string, error) {
+		timeMinStr, _ := args["time_min"].(string)
+		timeMaxStr, _ := args["time_max"].(string)
+
+		var timeMin, timeMax time.Time
+		var err error
+
+		if timeMinStr == "" {
+			timeMin = time.Now()
+		} else {
+			timeMin, err = time.Parse(time.RFC3339, timeMinStr)
+			if err != nil {
+				timeMin, err = time.Parse("2006-01-02", timeMinStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid time_min format: %w", err)
+				}
+			}
+		}
+
+		if timeMaxStr == "" {
+			timeMax = timeMin.Add(24 * time.Hour)
+		} else {
+			timeMax, err = time.Parse(time.RFC3339, timeMaxStr)
+			if err != nil {
+				timeMax, err = time.Parse("2006-01-02", timeMaxStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid time_max format: %w", err)
+				}
+				timeMax = timeMax.Add(24 * time.Hour)
+			}
+		}
+
+		busy, err := deps.CalendarClient.FreeBusy(context.Background(), calendar.FreeBusyParams{
+			TimeMin: timeMin,
+			TimeMax: timeMax,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to get free/busy: %w", err)
+		}
+
+		if len(busy) == 0 {
+			return fmt.Sprintf("Free from %s to %s", timeMin.Format("Jan 2 15:04"), timeMax.Format("Jan 2 15:04")), nil
+		}
+
+		var lines []string
+		lines = append(lines, fmt.Sprintf("Busy periods from %s to %s:", timeMin.Format("Jan 2 15:04"), timeMax.Format("Jan 2 15:04")))
+		for _, b := range busy {
+			lines = append(lines, fmt.Sprintf("  %s - %s", b.Start.Format("Jan 2 15:04"), b.End.Format("15:04")))
+		}
+		return strings.Join(lines, "\n"), nil
+	})
+
+	// calendar_get_event - get a specific event by ID
+	server.RegisterTool("calendar_get_event", mcp.ToolDef{
+		Description: "Get details of a specific calendar event by ID.",
+		Properties: map[string]mcp.PropDef{
+			"event_id": {Type: "string", Description: "The event ID to retrieve"},
+		},
+		Required: []string{"event_id"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		eventID, _ := args["event_id"].(string)
+		if eventID == "" {
+			return "", fmt.Errorf("event_id is required")
+		}
+
+		event, err := deps.CalendarClient.GetEvent(context.Background(), eventID)
+		if err != nil {
+			return "", fmt.Errorf("failed to get event: %w", err)
+		}
+
+		data, _ := json.MarshalIndent(event, "", "  ")
+		return string(data), nil
+	})
+
+	// calendar_create_event - create a new event
+	server.RegisterTool("calendar_create_event", mcp.ToolDef{
+		Description: "Create a new calendar event.",
+		Properties: map[string]mcp.PropDef{
+			"summary":     {Type: "string", Description: "Event title/summary"},
+			"start":       {Type: "string", Description: "Start time (RFC3339 or YYYY-MM-DD for all-day events)"},
+			"end":         {Type: "string", Description: "End time (RFC3339 or YYYY-MM-DD). Default: 1 hour after start"},
+			"description": {Type: "string", Description: "Event description (optional)"},
+			"location":    {Type: "string", Description: "Event location (optional)"},
+			"attendees":   {Type: "array", Description: "List of attendee email addresses (optional)"},
+		},
+		Required: []string{"summary", "start"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		summary, _ := args["summary"].(string)
+		if summary == "" {
+			return "", fmt.Errorf("summary is required")
+		}
+
+		startStr, _ := args["start"].(string)
+		endStr, _ := args["end"].(string)
+		if startStr == "" {
+			return "", fmt.Errorf("start time is required")
+		}
+
+		var start, end time.Time
+		var err error
+		var allDay bool
+
+		start, err = time.Parse(time.RFC3339, startStr)
+		if err != nil {
+			start, err = time.Parse("2006-01-02", startStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid start format (use RFC3339 or YYYY-MM-DD): %w", err)
+			}
+			allDay = true
+		}
+
+		if endStr == "" {
+			if allDay {
+				end = start.Add(24 * time.Hour)
+			} else {
+				end = start.Add(time.Hour)
+			}
+		} else {
+			end, err = time.Parse(time.RFC3339, endStr)
+			if err != nil {
+				end, err = time.Parse("2006-01-02", endStr)
+				if err != nil {
+					return "", fmt.Errorf("invalid end format: %w", err)
+				}
+			}
+		}
+
+		params := calendar.CreateEventParams{
+			Summary: summary,
+			Start:   start,
+			End:     end,
+			AllDay:  allDay,
+		}
+
+		if desc, ok := args["description"].(string); ok {
+			params.Description = desc
+		}
+		if loc, ok := args["location"].(string); ok {
+			params.Location = loc
+		}
+		if attendees, ok := args["attendees"].([]any); ok {
+			for _, a := range attendees {
+				if email, ok := a.(string); ok {
+					params.Attendees = append(params.Attendees, email)
+				}
+			}
+		}
+
+		event, err := deps.CalendarClient.CreateEvent(context.Background(), params)
+		if err != nil {
+			return "", fmt.Errorf("failed to create event: %w", err)
+		}
+
+		log.Printf("Created calendar event: %s", summary)
+		data, _ := json.MarshalIndent(event, "", "  ")
+		return string(data), nil
+	})
 }
 
 func registerGitHubTools(server *mcp.Server, deps *Dependencies) {
@@ -1140,6 +1941,41 @@ func registerGitHubTools(server *mcp.Server, deps *Dependencies) {
 		}
 
 		data, _ := json.MarshalIndent(projects, "", "  ")
+		return string(data), nil
+	})
+
+	// github_get_project
+	server.RegisterTool("github_get_project", mcp.ToolDef{
+		Description: "Get a GitHub Project by number. Returns project details and field schema.",
+		Properties: map[string]mcp.PropDef{
+			"number": {Type: "number", Description: "The project number (visible in project URL)"},
+		},
+		Required: []string{"number"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		number, ok := args["number"].(float64)
+		if !ok || number == 0 {
+			return "", fmt.Errorf("number is required")
+		}
+
+		project, err := deps.GitHubClient.GetProject(int(number))
+		if err != nil {
+			return "", fmt.Errorf("failed to get project: %w", err)
+		}
+
+		fields, err := deps.GitHubClient.GetProjectFields(int(number))
+		if err != nil {
+			return "", fmt.Errorf("failed to get project fields: %w", err)
+		}
+
+		result := map[string]any{
+			"number": project.Number,
+			"title":  project.Title,
+			"url":    project.URL,
+			"closed": project.Closed,
+			"fields": fields,
+		}
+
+		data, _ := json.MarshalIndent(result, "", "  ")
 		return string(data), nil
 	})
 

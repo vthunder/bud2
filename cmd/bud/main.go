@@ -19,6 +19,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
+	"github.com/vthunder/bud2/internal/authorize"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/buffer"
 	"github.com/vthunder/bud2/internal/consolidate"
@@ -235,6 +236,10 @@ func main() {
 	entityResolver := extract.NewResolver(graphDB, ollamaClient)
 	log.Println("[main] Entity extractor initialized (Ollama qwen2.5:7b)")
 
+	// Authorization classifier - detects stale authorizations on session reset
+	authClassifier := authorize.NewClassifier(ollamaClient)
+	log.Println("[main] Authorization classifier initialized")
+
 	// NER sidecar client - fast entity pre-check (spaCy)
 	nerClient := ner.NewClient("http://127.0.0.1:8099")
 	if nerClient.Healthy() {
@@ -411,7 +416,8 @@ func main() {
 		graphDB,
 		conversationBuffer,
 		reflexLog,
-		ollamaClient, // for query-based memory retrieval
+		ollamaClient,     // for query-based memory retrieval
+		authClassifier,   // for detecting stale authorizations on session reset
 		systemPath,
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,

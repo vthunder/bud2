@@ -27,8 +27,9 @@ const (
 type SimpleSession struct {
 	mu sync.Mutex
 
-	sessionID string
-	statePath string // Path to state directory for reset coordination
+	sessionID        string
+	sessionStartTime time.Time // When this session started (for guardrails)
+	statePath        string    // Path to state directory for reset coordination
 
 	// Track what's been sent to this session
 	seenItemIDs   map[string]bool
@@ -54,12 +55,13 @@ type SimpleSession struct {
 // NewSimpleSession creates a new simple session manager
 func NewSimpleSession(statePath string) *SimpleSession {
 	return &SimpleSession{
-		sessionID:     generateSessionUUID(),
-		seenItemIDs:   make(map[string]bool),
-		seenMemoryIDs: make(map[string]bool),
-		memoryIDMap:   make(map[string]int),
-		nextMemoryID:  1,
-		statePath:     statePath,
+		sessionID:        generateSessionUUID(),
+		sessionStartTime: time.Now(),
+		seenItemIDs:      make(map[string]bool),
+		seenMemoryIDs:    make(map[string]bool),
+		memoryIDMap:      make(map[string]int),
+		nextMemoryID:     1,
+		statePath:        statePath,
 	}
 }
 
@@ -103,6 +105,11 @@ func (s *SimpleSession) clearResetPending() {
 // SessionID returns the current session ID
 func (s *SimpleSession) SessionID() string {
 	return s.sessionID
+}
+
+// SessionStartTime returns when this session was created (for guardrails)
+func (s *SimpleSession) SessionStartTime() time.Time {
+	return s.sessionStartTime
 }
 
 // HasSeenItem returns true if an item has been sent to this session
@@ -474,6 +481,7 @@ func (s *SimpleSession) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionID = generateSessionUUID()
+	s.sessionStartTime = time.Now()
 	s.seenItemIDs = make(map[string]bool)
 	s.seenMemoryIDs = make(map[string]bool)
 	s.memoryIDMap = make(map[string]int)
