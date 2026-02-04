@@ -43,4 +43,6 @@ type Dependencies struct {
 	// Callbacks for direct effector access (instead of file-based)
 	// If set, talk_to_user will use this instead of writing to outbox
 	SendMessage func(channelID, message string) error
+	// If set, save_thought will use this instead of writing to file
+	AddThought func(content string) error
 }

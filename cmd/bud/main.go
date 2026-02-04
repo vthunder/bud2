@@ -252,13 +252,9 @@ func main() {
 	log.Println("[main] Memory consolidator initialized")
 
 	// Keep inbox/outbox for message queue (still useful)
-	inbox := memory.NewInbox(filepath.Join(queuesPath, "inbox.jsonl"))
+	inbox := memory.NewInbox() // in-memory only, no persistence
 	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
 
-	// Load persisted state
-	if err := inbox.Load(); err != nil {
-		log.Printf("Warning: failed to load inbox: %v", err)
-	}
 	// Outbox is append-only — just seek to end so we only process new entries
 	if err := outbox.Init(); err != nil {
 		log.Printf("Warning: failed to init outbox: %v", err)
@@ -375,6 +371,17 @@ func main() {
 				return mcpSendMessage(channelID, message)
 			}
 			return fmt.Errorf("Discord effector not yet initialized")
+		},
+		AddThought: func(content string) error {
+			msg := &memory.InboxMessage{
+				ID:        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
+				Subtype:   "thought",
+				Content:   content,
+				Timestamp: time.Now(),
+				Status:    "pending",
+			}
+			inbox.Add(msg)
+			return nil
 		},
 	}
 
@@ -1055,7 +1062,7 @@ func main() {
 		}
 	}()
 
-	// Start inbox polling (unified queue: messages, signals, impulses)
+	// Start inbox processing (unified queue: messages, signals, impulses)
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -1065,17 +1072,7 @@ func main() {
 			case <-stopChan:
 				return
 			case <-ticker.C:
-				// Poll inbox file for external writes (synthetic mode, MCP tools)
-				newMsgs, err := inbox.Poll()
-				if err != nil {
-					log.Printf("[main] Inbox poll error: %v", err)
-					continue
-				}
-				if len(newMsgs) > 0 {
-					log.Printf("[main] Found %d new items in inbox", len(newMsgs))
-				}
-
-				// Process all pending items
+				// Process all pending items (in-memory only, no file polling)
 				pending := inbox.GetPending()
 				for _, msg := range pending {
 					inbox.MarkProcessed(msg.ID) // Mark BEFORE processing to prevent race
@@ -1308,9 +1305,6 @@ func main() {
 	}
 
 	// Persist state
-	if err := inbox.Save(); err != nil {
-		log.Printf("Warning: failed to save inbox: %v", err)
-	}
 	if err := conversationBuffer.Save(); err != nil {
 		log.Printf("Warning: failed to save conversation buffer: %v", err)
 	}

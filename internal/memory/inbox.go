@@ -1,11 +1,7 @@
 package memory
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -26,8 +22,8 @@ type InboxMessage struct {
 	AuthorID  string         `json:"author_id,omitempty"`
 	Author    string         `json:"author,omitempty"`
 	Timestamp time.Time      `json:"timestamp,omitempty"`
-	Status    string         `json:"status"`              // pending, processed
-	Priority  int            `json:"priority,omitempty"`  // for impulses (1=highest)
+	Status    string         `json:"status"`             // pending, processed
+	Priority  int            `json:"priority,omitempty"` // for impulses (1=highest)
 	Extra     map[string]any `json:"extra,omitempty"`
 }
 
@@ -55,19 +51,16 @@ func NewInboxMessageFromImpulse(impulse *types.Impulse) *InboxMessage {
 	}
 }
 
-// Inbox manages incoming messages from senses
+// Inbox manages incoming messages from senses (in-memory only)
 type Inbox struct {
-	mu         sync.RWMutex
-	messages   map[string]*InboxMessage
-	path       string
-	lastOffset int64 // Track file position for incremental reads
+	mu       sync.RWMutex
+	messages map[string]*InboxMessage
 }
 
 // NewInbox creates a new inbox
-func NewInbox(path string) *Inbox {
+func NewInbox() *Inbox {
 	return &Inbox{
 		messages: make(map[string]*InboxMessage),
-		path:     path,
 	}
 }
 
@@ -225,133 +218,6 @@ func (msg *InboxMessage) impulseToPercept() *types.Percept {
 		Tags:      []string{"internal", msg.Subtype},
 		Data:      data,
 	}
-}
-
-// Load reads inbox from JSONL file
-func (i *Inbox) Load() error {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	file, err := os.Open(i.path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	i.messages = make(map[string]*InboxMessage)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var msg InboxMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue // skip malformed lines
-		}
-		i.messages[msg.ID] = &msg
-	}
-
-	// Track file position for incremental polling
-	i.lastOffset, _ = file.Seek(0, io.SeekEnd)
-
-	return scanner.Err()
-}
-
-// Save writes inbox to JSONL file
-func (i *Inbox) Save() error {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
-	file, err := os.Create(i.path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	for _, msg := range i.messages {
-		data, err := json.Marshal(msg)
-		if err != nil {
-			continue
-		}
-		file.Write(data)
-		file.WriteString("\n")
-	}
-
-	return nil
-}
-
-// Append adds a message and appends to file
-func (i *Inbox) Append(msg *InboxMessage) error {
-	i.Add(msg)
-
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
-	file, err := os.OpenFile(i.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	file.Write(data)
-	file.WriteString("\n")
-
-	return nil
-}
-
-// Poll checks for new entries in the file (written by external processes)
-// Returns the new messages found
-func (i *Inbox) Poll() ([]*InboxMessage, error) {
-	file, err := os.Open(i.path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	// Seek to where we left off
-	i.mu.RLock()
-	offset := i.lastOffset
-	i.mu.RUnlock()
-
-	if offset > 0 {
-		_, err = file.Seek(offset, io.SeekStart)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Read new entries
-	scanner := bufio.NewScanner(file)
-	var newMessages []*InboxMessage
-
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	for scanner.Scan() {
-		var msg InboxMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue // skip malformed lines
-		}
-		// Only add if not already present (avoid duplicates)
-		if _, exists := i.messages[msg.ID]; !exists {
-			msg.Status = "pending"
-			i.messages[msg.ID] = &msg
-			newMessages = append(newMessages, &msg)
-		}
-	}
-
-	// Update offset to current position
-	newOffset, _ := file.Seek(0, io.SeekCurrent)
-	i.lastOffset = newOffset
-
-	return newMessages, scanner.Err()
 }
 
 // CleanupProcessed removes processed messages older than maxAge
