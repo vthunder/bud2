@@ -418,6 +418,112 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 	return result, nil
 }
 
+// RetrieveWithContext performs memory retrieval that factors in current context.
+// contextTraceIDs are traces that are already "activated" (e.g., from current working memory).
+// These get added as additional seeds for spreading activation, biasing retrieval toward
+// memories connected to the current context.
+func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTraceIDs []string, limit int) (*RetrievalResult, error) {
+	result := &RetrievalResult{}
+
+	// Build seed set from all triggers
+	seedSet := make(map[string]bool)
+
+	// Trigger 1: Semantic similarity (embedding-based)
+	semanticSeeds, err := g.FindSimilarTraces(queryEmb, 20)
+	if err == nil {
+		for _, id := range semanticSeeds {
+			seedSet[id] = true
+		}
+	}
+
+	// Trigger 2: Lexical matching
+	if queryText != "" {
+		lexicalSeeds, err := g.FindTracesWithKeywords(queryText, 20)
+		if err == nil {
+			for _, id := range lexicalSeeds {
+				seedSet[id] = true
+			}
+		}
+	}
+
+	// Trigger 3: Entity-based seeding
+	if queryText != "" {
+		matchedEntities, err := g.FindEntitiesByText(queryText, 5)
+		if err == nil {
+			for _, entity := range matchedEntities {
+				traceIDs, err := g.GetTracesForEntity(entity.ID)
+				if err != nil {
+					continue
+				}
+				cap := 5
+				if len(traceIDs) < cap {
+					cap = len(traceIDs)
+				}
+				for _, id := range traceIDs[:cap] {
+					seedSet[id] = true
+				}
+			}
+		}
+	}
+
+	// Trigger 4: Context traces (current working memory/activated traces)
+	for _, id := range contextTraceIDs {
+		seedSet[id] = true
+	}
+
+	// Convert set to slice
+	seedIDs := make([]string, 0, len(seedSet))
+	for id := range seedSet {
+		seedIDs = append(seedIDs, id)
+	}
+
+	if len(seedIDs) == 0 {
+		return result, nil
+	}
+
+	// Spread activation from all seeds
+	activation, err := g.SpreadActivation(seedIDs, DefaultIters)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check FoK threshold
+	maxActivation := 0.0
+	for _, a := range activation {
+		if a > maxActivation {
+			maxActivation = a
+		}
+	}
+
+	if maxActivation < FoKThreshold {
+		return result, nil
+	}
+
+	// Sort by activation and get top traces
+	type scored struct {
+		id         string
+		activation float64
+	}
+	var candidates []scored
+	for id, a := range activation {
+		candidates = append(candidates, scored{id: id, activation: a})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].activation > candidates[j].activation
+	})
+
+	// Fetch top traces
+	for i := 0; i < len(candidates) && i < limit; i++ {
+		trace, err := g.GetTrace(candidates[i].id)
+		if err == nil && trace != nil {
+			trace.Activation = candidates[i].activation
+			result.Traces = append(result.Traces, trace)
+		}
+	}
+
+	return result, nil
+}
+
 // applyLateralInhibition applies Synapse-style lateral inhibition
 // Top M winners suppress competitors: û_i = max(0, u_i - β * Σ(u_k - u_i) for u_k > u_i)
 func applyLateralInhibition(activation map[string]float64) map[string]float64 {

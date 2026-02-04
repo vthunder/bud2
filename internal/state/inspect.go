@@ -13,15 +13,26 @@ import (
 	"github.com/vthunder/bud2/internal/types"
 )
 
+// Embedder generates embeddings for text
+type Embedder interface {
+	Embed(text string) ([]float64, error)
+}
+
 // Inspector provides state introspection capabilities
 type Inspector struct {
 	statePath string
 	graphDB   *graph.DB
+	embedder  Embedder
 }
 
 // NewInspector creates a new state inspector
 func NewInspector(statePath string, graphDB *graph.DB) *Inspector {
 	return &Inspector{statePath: statePath, graphDB: graphDB}
+}
+
+// SetEmbedder sets the embedder for memory search (optional)
+func (i *Inspector) SetEmbedder(e Embedder) {
+	i.embedder = e
 }
 
 // ComponentSummary holds summary for one state component
@@ -787,6 +798,205 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 	}
 
 	return count, nil
+}
+
+// SearchResult represents a memory search result
+type SearchResult struct {
+	ID         string    `json:"id"`
+	Summary    string    `json:"summary"`
+	Activation float64   `json:"activation"`
+	CreatedAt  time.Time `json:"created_at"`
+	IsCore     bool      `json:"is_core,omitempty"`
+}
+
+// SearchMemory searches long-term memory for traces matching the query.
+// If useContext is true, also considers currently-activated traces as additional seeds,
+// biasing results toward memories connected to the current working context.
+func (i *Inspector) SearchMemory(query string, limit int) ([]SearchResult, error) {
+	return i.SearchMemoryWithContext(query, limit, true)
+}
+
+// SearchMemoryWithContext searches memory with optional context awareness.
+func (i *Inspector) SearchMemoryWithContext(query string, limit int, useContext bool) ([]SearchResult, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+	if i.embedder == nil {
+		return nil, fmt.Errorf("embedder not configured - cannot search memory")
+	}
+
+	// Default limit
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	// Generate embedding for query
+	queryEmb, err := i.embedder.Embed(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to embed query: %w", err)
+	}
+
+	var result *graph.RetrievalResult
+
+	if useContext {
+		// Get currently-activated traces to use as additional context
+		activatedTraces, err := i.graphDB.GetActivatedTraces(0.3, 10)
+		if err != nil {
+			// Fall back to regular retrieval if we can't get activated traces
+			result, err = i.graphDB.Retrieve(queryEmb, query, limit)
+			if err != nil {
+				return nil, fmt.Errorf("retrieval failed: %w", err)
+			}
+		} else {
+			// Extract IDs from activated traces
+			contextIDs := make([]string, 0, len(activatedTraces))
+			for _, t := range activatedTraces {
+				contextIDs = append(contextIDs, t.ID)
+			}
+			// Use context-aware retrieval
+			result, err = i.graphDB.RetrieveWithContext(queryEmb, query, contextIDs, limit)
+			if err != nil {
+				return nil, fmt.Errorf("context retrieval failed: %w", err)
+			}
+		}
+	} else {
+		// Use standard retrieval without context
+		result, err = i.graphDB.Retrieve(queryEmb, query, limit)
+		if err != nil {
+			return nil, fmt.Errorf("retrieval failed: %w", err)
+		}
+	}
+
+	// Convert to SearchResult
+	var results []SearchResult
+	for _, t := range result.Traces {
+		results = append(results, SearchResult{
+			ID:         t.ID,
+			Summary:    t.Summary,
+			Activation: t.Activation,
+			CreatedAt:  t.CreatedAt,
+			IsCore:     t.IsCore,
+		})
+	}
+
+	return results, nil
+}
+
+// TraceContext provides detailed context for a trace including source episodes and linked entities
+type TraceContext struct {
+	Trace    TraceSummary     `json:"trace"`
+	Episodes []EpisodeSummary `json:"source_episodes"`
+	Entities []EntitySummary  `json:"linked_entities"`
+}
+
+// GetTraceContext retrieves detailed context for a trace
+func (i *Inspector) GetTraceContext(traceID string) (*TraceContext, error) {
+	if i.graphDB == nil {
+		return nil, fmt.Errorf("graph database not initialized")
+	}
+
+	// Get the trace
+	trace, err := i.graphDB.GetTrace(traceID)
+	if err != nil {
+		return nil, err
+	}
+	if trace == nil {
+		return nil, fmt.Errorf("trace not found: %s", traceID)
+	}
+
+	ctx := &TraceContext{
+		Trace: TraceSummary{
+			ID:        trace.ID,
+			Content:   trace.Summary,
+			IsCore:    trace.IsCore,
+			Strength:  trace.Strength,
+			CreatedAt: trace.CreatedAt,
+		},
+	}
+
+	// Get source episodes
+	episodeIDs, err := i.graphDB.GetTraceSources(traceID)
+	if err == nil {
+		for _, epID := range episodeIDs {
+			ep, err := i.graphDB.GetEpisode(epID)
+			if err != nil || ep == nil {
+				continue
+			}
+			content := ep.Content
+			if len(content) > 200 {
+				content = content[:200] + "..."
+			}
+			ctx.Episodes = append(ctx.Episodes, EpisodeSummary{
+				ID:        ep.ID,
+				Content:   content,
+				Source:    ep.Source,
+				Author:    ep.Author,
+				Channel:   ep.Channel,
+				Timestamp: ep.TimestampEvent,
+			})
+		}
+	}
+
+	// Get linked entities
+	entityIDs, err := i.graphDB.GetTraceEntities(traceID)
+	if err == nil {
+		for _, entID := range entityIDs {
+			ent, err := i.graphDB.GetEntity(entID)
+			if err != nil || ent == nil {
+				continue
+			}
+			ctx.Entities = append(ctx.Entities, EntitySummary{
+				ID:       ent.ID,
+				Name:     ent.Name,
+				Type:     string(ent.Type),
+				Salience: ent.Salience,
+				Aliases:  ent.Aliases,
+			})
+		}
+	}
+
+	return ctx, nil
+}
+
+// QueryTrace runs a question against the source episodes of a trace using the LLM
+func (i *Inspector) QueryTrace(traceID, question string) (string, error) {
+	if i.graphDB == nil {
+		return "", fmt.Errorf("graph database not initialized")
+	}
+	if i.embedder == nil {
+		return "", fmt.Errorf("embedder not configured")
+	}
+
+	// Get source episodes for context
+	episodeIDs, err := i.graphDB.GetTraceSources(traceID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get trace sources: %w", err)
+	}
+
+	if len(episodeIDs) == 0 {
+		return "", fmt.Errorf("trace has no source episodes")
+	}
+
+	// Gather episode content
+	var context strings.Builder
+	for _, epID := range episodeIDs {
+		ep, err := i.graphDB.GetEpisode(epID)
+		if err != nil || ep == nil {
+			continue
+		}
+		context.WriteString(fmt.Sprintf("[%s] %s: %s\n", ep.TimestampEvent.Format("2006-01-02 15:04"), ep.Author, ep.Content))
+	}
+
+	if context.Len() == 0 {
+		return "", fmt.Errorf("no episode content available")
+	}
+
+	// Build prompt for the LLM - we'll need an LLM interface
+	// For now, return the context with a note that LLM query is not yet implemented
+	return fmt.Sprintf("Context from %d source episodes:\n\n%s\n\n(LLM query not yet implemented - add Generator interface to Inspector)", len(episodeIDs), context.String()), nil
 }
 
 // Helper methods
