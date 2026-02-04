@@ -359,10 +359,16 @@ func classifyTraceType(summary string, episodes []*graph.Episode) graph.TraceTyp
 	lower := strings.ToLower(summary)
 
 	// Meeting reminders and calendar notifications
-	if strings.Contains(lower, "upcoming meeting") ||
-		strings.Contains(lower, "sprint planning") && strings.Contains(lower, "starts") ||
-		strings.Contains(lower, "heads up") && strings.Contains(lower, "meeting") ||
-		strings.Contains(lower, "meeting link") && !strings.Contains(lower, "decided") {
+	// Check for calendar notification patterns (starts soon/in, Google Meet links)
+	isMeetingReminder := strings.Contains(lower, "upcoming meeting") ||
+		strings.Contains(lower, "starts soon") ||
+		strings.Contains(lower, "starts in") && (strings.Contains(lower, "m") || strings.Contains(lower, "minute")) ||
+		strings.Contains(lower, "meeting starts") ||
+		strings.Contains(lower, "heads up") && (strings.Contains(lower, "meeting") || strings.Contains(lower, "sprint") || strings.Contains(lower, "planning")) ||
+		strings.Contains(lower, "meet.google.com") ||
+		// Sprint planning notifications (even without "meeting" word)
+		strings.Contains(lower, "sprint planning") && (strings.Contains(lower, "starts") || strings.Contains(lower, "soon") || strings.Contains(lower, "in "))
+	if isMeetingReminder && !strings.Contains(lower, "discussed") && !strings.Contains(lower, "decided") {
 		return graph.TraceTypeOperational
 	}
 

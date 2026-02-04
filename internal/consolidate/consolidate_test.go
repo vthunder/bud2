@@ -494,6 +494,26 @@ func TestClassifyTraceType(t *testing.T) {
 			expected: graph.TraceTypeOperational,
 		},
 		{
+			name:     "meeting reminder - starts soon",
+			summary:  "[Past] Bud: Sprint Planning for Nightshade starts soon",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "meeting reminder - starts in with time",
+			summary:  "[Past] Bud: Heads up - DevOps Sprint Planning starts in 13m37s.",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "meeting reminder - Google Meet link",
+			summary:  "[Past] Bud: Upcoming DevOps Sprint Planning meeting starting soon https://meet.google.com/abc-defg-hij",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "meeting reminder - meeting starts",
+			summary:  "[Past] Bud: DA Sprint Planning meeting starts in 10 minutes",
+			expected: graph.TraceTypeOperational,
+		},
+		{
 			name:     "state sync",
 			summary:  "[Past] Bud: State sync completed, pushed changes",
 			expected: graph.TraceTypeOperational,
@@ -516,6 +536,11 @@ func TestClassifyTraceType(t *testing.T) {
 		{
 			name:     "knowledge - fact",
 			summary:  "[Past] Sarah is the new PM for Project Alpha",
+			expected: graph.TraceTypeKnowledge,
+		},
+		{
+			name:     "knowledge - meeting discussion",
+			summary:  "[Past] We discussed the sprint planning process and decided to move it to Mondays",
 			expected: graph.TraceTypeKnowledge,
 		},
 	}
