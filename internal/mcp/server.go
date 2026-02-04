@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 )
 
@@ -61,6 +62,11 @@ func (s *Server) RegisterTool(name string, def ToolDef, handler ToolHandler) {
 	s.handlers[name] = handler
 	def.Name = name // Ensure name matches
 	s.definitions = append(s.definitions, def)
+}
+
+// ToolCount returns the number of registered tools
+func (s *Server) ToolCount() int {
+	return len(s.definitions)
 }
 
 // JSON-RPC types
@@ -318,4 +324,65 @@ func (s *Server) sendResponse(resp *jsonRPCResponse) {
 
 	log.Printf("[mcp] Sending response for id=%v", resp.ID)
 	fmt.Fprintln(s.writer, string(data))
+}
+
+// RunHTTP starts the MCP server as an HTTP server (blocking)
+// The server handles JSON-RPC requests via POST to the root path
+func (s *Server) RunHTTP(addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleHTTP)
+	mux.HandleFunc("/mcp", s.handleHTTP)
+
+	log.Printf("[mcp] HTTP server starting on %s", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+// handleHTTP handles HTTP requests for the MCP protocol
+func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only accept POST
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse JSON-RPC request
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("[mcp-http] Failed to parse request: %v", err)
+		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[mcp-http] Received: %s (id=%v)", req.Method, req.ID)
+
+	// Handle the request
+	resp := s.handleRequest(req)
+
+	// Set headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// For notifications (no response needed), return 204
+	if resp == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Marshal and send response
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("[mcp-http] Failed to marshal response: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[mcp-http] Sending response for id=%v", resp.ID)
+	w.Write(data)
 }

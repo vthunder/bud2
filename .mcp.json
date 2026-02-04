@@ -1,12 +1,8 @@
 {
   "mcpServers": {
     "bud2": {
-      "args": [],
-      "command": "/Users/thunder/src/bud2/bin/bud-mcp",
-      "env": {
-        "BUD_STATE_PATH": "/Users/thunder/src/bud2/state"
-      },
-      "type": "stdio"
+      "type": "http",
+      "url": "http://127.0.0.1:8066/mcp"
     },
     "notion": {
       "args": [],
