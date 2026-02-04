@@ -514,6 +514,11 @@ func TestClassifyTraceType(t *testing.T) {
 			expected: graph.TraceTypeOperational,
 		},
 		{
+			name:     "meeting reminder - scheduled to start soon",
+			summary:  "[Past] An unblock light node development meeting is scheduled to start soon; the link is provided.",
+			expected: graph.TraceTypeOperational,
+		},
+		{
 			name:     "state sync",
 			summary:  "[Past] Bud: State sync completed, pushed changes",
 			expected: graph.TraceTypeOperational,
@@ -541,6 +546,68 @@ func TestClassifyTraceType(t *testing.T) {
 		{
 			name:     "knowledge - meeting discussion",
 			summary:  "[Past] We discussed the sprint planning process and decided to move it to Mondays",
+			expected: graph.TraceTypeKnowledge,
+		},
+		// Dev work patterns - operational (no decision rationale)
+		{
+			name:     "dev work - updated",
+			summary:  "[Past] Updated Budget to use output tokens",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - implemented",
+			summary:  "[Past] Implemented FOLLOWS edges between episodes",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - fixed",
+			summary:  "[Past] Fixed token metrics display",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - added",
+			summary:  "[Past] Added entity extraction to Bud responses",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - explored",
+			summary:  "[Past] Explored WNUT 2017 NER benchmark for entity extraction",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - researched",
+			summary:  "[Past] Researched spreading activation parameters",
+			expected: graph.TraceTypeOperational,
+		},
+		{
+			name:     "dev work - pruned",
+			summary:  "[Past] Pruned 32 bad PRODUCT entities from the database",
+			expected: graph.TraceTypeOperational,
+		},
+		// Dev work with knowledge indicators - should stay knowledge
+		{
+			name:     "dev work - with decision",
+			summary:  "[Past] Updated caching layer because Redis was causing latency issues",
+			expected: graph.TraceTypeKnowledge,
+		},
+		{
+			name:     "dev work - with finding",
+			summary:  "[Past] Explored entropy filter and finding was that it blocks all user messages",
+			expected: graph.TraceTypeKnowledge,
+		},
+		{
+			name:     "dev work - with root cause",
+			summary:  "[Past] Fixed entity extraction bug, root cause was missing null check",
+			expected: graph.TraceTypeKnowledge,
+		},
+		{
+			name:     "dev work - with approach",
+			summary:  "[Past] Implemented two-pass extraction approach for better precision",
+			expected: graph.TraceTypeKnowledge,
+		},
+		{
+			name:     "dev work - with chose",
+			summary:  "[Past] Refactored auth module, chose JWT over sessions for scalability",
 			expected: graph.TraceTypeKnowledge,
 		},
 	}

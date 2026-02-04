@@ -359,9 +359,9 @@ func classifyTraceType(summary string, episodes []*graph.Episode) graph.TraceTyp
 	lower := strings.ToLower(summary)
 
 	// Meeting reminders and calendar notifications
-	// Check for calendar notification patterns (starts soon/in, Google Meet links)
+	// Check for calendar notification patterns (starts/starting soon/in, Google Meet links)
 	isMeetingReminder := strings.Contains(lower, "upcoming meeting") ||
-		strings.Contains(lower, "starts soon") ||
+		strings.Contains(lower, "start soon") || // Covers "starts soon", "start soon", "starting soon"
 		strings.Contains(lower, "starts in") && (strings.Contains(lower, "m") || strings.Contains(lower, "minute")) ||
 		strings.Contains(lower, "meeting starts") ||
 		strings.Contains(lower, "heads up") && (strings.Contains(lower, "meeting") || strings.Contains(lower, "sprint") || strings.Contains(lower, "planning")) ||
@@ -394,7 +394,46 @@ func classifyTraceType(summary string, episodes []*graph.Episode) graph.TraceTyp
 		return graph.TraceTypeOperational
 	}
 
+	// Dev work implementation notes without decision rationale
+	// These are status updates about work done, not learnings or decisions
+	if isDevWorkNote(lower) && !hasKnowledgeIndicator(lower) {
+		return graph.TraceTypeOperational
+	}
+
 	return graph.TraceTypeKnowledge
+}
+
+// isDevWorkNote checks if the summary appears to be a dev work status update
+func isDevWorkNote(lower string) bool {
+	// Past-tense implementation verbs
+	devVerbs := []string{
+		"updated ", "implemented ", "fixed ", "added ", "created ",
+		"refactored ", "removed ", "deleted ", "modified ", "changed ",
+		"wrote ", "built ", "expanded ", "pruned ", "wired ",
+		"researched ", "explored ", "investigated ", "analyzed ",
+	}
+	for _, verb := range devVerbs {
+		if strings.Contains(lower, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasKnowledgeIndicator checks if the summary contains decision rationale or learnings
+func hasKnowledgeIndicator(lower string) bool {
+	indicators := []string{
+		"decided", "because", "reason", "chose", "choice",
+		"approach", "prefer", "finding", "learned", "discovered",
+		"root cause", "conclusion", "insight", "realized",
+		"will use", "should use", "plan to", "strategy",
+	}
+	for _, indicator := range indicators {
+		if strings.Contains(lower, indicator) {
+			return true
+		}
+	}
+	return false
 }
 
 // isEphemeralContent returns true if the summary represents transient content

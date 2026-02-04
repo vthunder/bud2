@@ -275,6 +275,41 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (4)")
 	}
 
+	// Migration v5: Expanded operational classification for meeting reminders and dev work notes
+	if version < 5 {
+		// Meeting reminders: "starts soon", "meeting starts", "meet.google.com"
+		g.db.Exec(`UPDATE traces SET trace_type = 'operational' WHERE
+			trace_type = 'knowledge' AND
+			is_core = FALSE AND
+			(LOWER(summary) LIKE '%starts soon%' OR
+			 LOWER(summary) LIKE '%meeting starts%' OR
+			 LOWER(summary) LIKE '%meet.google.com%' OR
+			 LOWER(summary) LIKE '%starts in%' AND LOWER(summary) LIKE '%minute%')
+			AND LOWER(summary) NOT LIKE '%discussed%'
+			AND LOWER(summary) NOT LIKE '%decided%'`)
+
+		// Dev work notes: past-tense implementation verbs without knowledge indicators
+		// This is a simplified version - catches obvious cases
+		g.db.Exec(`UPDATE traces SET trace_type = 'operational' WHERE
+			trace_type = 'knowledge' AND
+			is_core = FALSE AND
+			(LOWER(summary) LIKE '%i updated %' OR
+			 LOWER(summary) LIKE '%i implemented %' OR
+			 LOWER(summary) LIKE '%i made%commit%' OR
+			 LOWER(summary) LIKE '%i prepared%change%' OR
+			 LOWER(summary) LIKE '%i proposed%' OR
+			 LOWER(summary) LIKE 'explored %' OR
+			 LOWER(summary) LIKE 'researched %')
+			AND LOWER(summary) NOT LIKE '%because%'
+			AND LOWER(summary) NOT LIKE '%decided%'
+			AND LOWER(summary) NOT LIKE '%root cause%'
+			AND LOWER(summary) NOT LIKE '%finding%'
+			AND LOWER(summary) NOT LIKE '%learned%'
+			AND LOWER(summary) NOT LIKE '%conclusion%'`)
+
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (5)")
+	}
+
 	return nil
 }
 
