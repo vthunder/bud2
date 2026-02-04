@@ -2,6 +2,7 @@ package graph
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -390,6 +391,8 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 
 	if maxActivation < FoKThreshold {
 		// Low confidence - return empty or minimal result
+		log.Printf("[retrieval] FoK rejection: max_activation=%.4f < threshold=%.2f, seeds=%d",
+			maxActivation, FoKThreshold, len(activation))
 		return result, nil
 	}
 
@@ -414,6 +417,9 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 			result.Traces = append(result.Traces, trace)
 		}
 	}
+
+	log.Printf("[retrieval] returned %d traces (limit=%d, candidates=%d, max_activation=%.4f)",
+		len(result.Traces), limit, len(candidates), maxActivation)
 
 	return result, nil
 }
@@ -496,6 +502,8 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 	}
 
 	if maxActivation < FoKThreshold {
+		log.Printf("[retrieval] FoK rejection (with context): max_activation=%.4f < threshold=%.2f, seeds=%d, context_traces=%d",
+			maxActivation, FoKThreshold, len(seedIDs), len(contextTraceIDs))
 		return result, nil
 	}
 
@@ -520,6 +528,9 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 			result.Traces = append(result.Traces, trace)
 		}
 	}
+
+	log.Printf("[retrieval] (with context) returned %d traces (limit=%d, candidates=%d, max_activation=%.4f, context_traces=%d)",
+		len(result.Traces), limit, len(candidates), maxActivation, len(contextTraceIDs))
 
 	return result, nil
 }
@@ -588,6 +599,34 @@ func applySigmoid(activation map[string]float64) map[string]float64 {
 		firing := 1.0 / (1.0 + math.Exp(-SigmoidGamma*(act-SigmoidTheta)))
 		result[id] = firing
 	}
+
+	// Log distribution stats for analysis
+	if len(result) > 0 {
+		var sum, max float64
+		buckets := make(map[string]int) // "<0.1", "0.1-0.3", "0.3-0.5", "0.5-0.7", ">0.7"
+		for _, v := range result {
+			sum += v
+			if v > max {
+				max = v
+			}
+			switch {
+			case v < 0.1:
+				buckets["<0.1"]++
+			case v < 0.3:
+				buckets["0.1-0.3"]++
+			case v < 0.5:
+				buckets["0.3-0.5"]++
+			case v < 0.7:
+				buckets["0.5-0.7"]++
+			default:
+				buckets[">0.7"]++
+			}
+		}
+		log.Printf("[retrieval] post-sigmoid: n=%d max=%.4f avg=%.4f dist=[<0.1:%d, 0.1-0.3:%d, 0.3-0.5:%d, 0.5-0.7:%d, >0.7:%d]",
+			len(result), max, sum/float64(len(result)),
+			buckets["<0.1"], buckets["0.1-0.3"], buckets["0.3-0.5"], buckets["0.5-0.7"], buckets[">0.7"])
+	}
+
 	return result
 }
 
