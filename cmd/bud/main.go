@@ -1011,7 +1011,6 @@ func main() {
 				Timestamp: time.Now(),
 			}
 			discordEffector.Submit(action)
-			captureResponse(channelID, message) // Also capture Bud's response to memory
 			return nil
 		}
 
