@@ -162,7 +162,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		return "Done signal recorded. Ready for new prompts.", nil
 	})
 
-	// save_thought - writes directly to memory graph (not inbox queue)
+	// save_thought - writes to inbox as a percept (gets stored to memory graph via normal processing)
 	server.RegisterTool("save_thought", mcp.ToolDef{
 		Description: "Save a thought or observation to memory. Use this to remember decisions, observations, or anything worth recalling later. These get consolidated with other memories over time.",
 		Properties: map[string]mcp.PropDef{
@@ -175,22 +175,33 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("content is required")
 		}
 
-		// Write directly to memory graph instead of inbox queue
-		trace := &graph.Trace{
-			ID:           fmt.Sprintf("thought-%d", time.Now().UnixNano()),
-			Summary:      content,
-			Activation:   0.5, // Medium activation - available for retrieval but not always surfaced
-			Strength:     10,  // Low initial strength, will grow if accessed
-			IsCore:       false,
-			CreatedAt:    time.Now(),
-			LastAccessed: time.Now(),
+		// Write thought to inbox as a special message type (subtype: "thought")
+		// This flows through: inbox -> percept -> episode -> memory graph
+		thought := map[string]any{
+			"id":        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
+			"subtype":   "thought",
+			"content":   content,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"status":    "pending",
 		}
 
-		if err := deps.GraphDB.AddTrace(trace); err != nil {
-			return "", fmt.Errorf("failed to save thought to memory: %w", err)
+		// Append to inbox file
+		f, err := os.OpenFile(filepath.Join(deps.QueuesPath, "inbox.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open inbox: %w", err)
+		}
+		defer f.Close()
+
+		data, err := json.Marshal(thought)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal thought: %w", err)
 		}
 
-		log.Printf("Saved thought to memory: %s", truncate(content, 50))
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return "", fmt.Errorf("failed to write thought to inbox: %w", err)
+		}
+
+		log.Printf("Saved thought to inbox: %s", truncate(content, 50))
 		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
 	})
 }

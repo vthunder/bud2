@@ -24,18 +24,23 @@ import (
 	"github.com/vthunder/bud2/internal/consolidate"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/embedding"
+	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/extract"
 	"github.com/vthunder/bud2/internal/filter"
 	"github.com/vthunder/bud2/internal/focus"
-	"github.com/vthunder/bud2/internal/ner"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
+	"github.com/vthunder/bud2/internal/integrations/github"
+	"github.com/vthunder/bud2/internal/mcp"
+	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/motivation"
+	"github.com/vthunder/bud2/internal/ner"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
+	"github.com/vthunder/bud2/internal/state"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -142,6 +147,10 @@ func main() {
 	}
 	claudeModel := os.Getenv("CLAUDE_MODEL")
 	syntheticMode := os.Getenv("SYNTHETIC_MODE") == "true"
+	mcpHTTPPort := os.Getenv("MCP_HTTP_PORT")
+	if mcpHTTPPort == "" {
+		mcpHTTPPort = "8066" // Default MCP HTTP port
+	}
 
 	// Check for existing bud process (before creating state directory)
 	os.MkdirAll(statePath, 0755) // Ensure state dir exists for pid file
@@ -192,8 +201,8 @@ func main() {
 	// Seed guides (how-to docs) from defaults if missing
 	seedGuides(statePath)
 
-	// Generate .mcp.json with correct state path for MCP server
-	if err := writeMCPConfig(statePath); err != nil {
+	// Generate .mcp.json with HTTP MCP server configuration
+	if err := writeMCPConfig(statePath, mcpHTTPPort); err != nil {
 		log.Printf("Warning: failed to write .mcp.json: %v", err)
 	}
 
@@ -319,6 +328,64 @@ func main() {
 	} else {
 		log.Println("[main] Google Calendar integration disabled (credentials not configured)")
 	}
+
+	// Initialize GitHub client (optional)
+	var githubClient *github.Client
+	if os.Getenv("GITHUB_TOKEN") != "" && os.Getenv("GITHUB_ORG") != "" {
+		var err error
+		githubClient, err = github.NewClient()
+		if err != nil {
+			log.Printf("Warning: failed to create GitHub client: %v", err)
+		} else {
+			log.Printf("[main] GitHub integration enabled (org: %s)", githubClient.Org())
+		}
+	} else {
+		log.Println("[main] GitHub integration disabled (GITHUB_TOKEN or GITHUB_ORG not set)")
+	}
+
+	// Initialize state inspector for MCP tools
+	stateInspector := state.NewInspector(statePath, graphDB)
+	stateInspector.SetEmbedder(ollamaClient)
+
+	// Initialize memory judge for MCP eval tools
+	memoryJudge := eval.NewJudge(ollamaClient, graphDB)
+
+	// Initialize MCP HTTP server (for Claude Code integration)
+	mcpServer := mcp.NewServer()
+	var mcpSendMessage func(channelID, message string) error // Will be wired to Discord effector
+
+	mcpDeps := &tools.Dependencies{
+		GraphDB:        graphDB,
+		ActivityLog:    activityLog,
+		StateInspector: stateInspector,
+		Embedder:       ollamaClient,
+		StatePath:      statePath,
+		SystemPath:     systemPath,
+		QueuesPath:     queuesPath,
+		DefaultChannel: discordChannel,
+		TaskStore:      taskStore,
+		IdeaStore:      motivation.NewIdeaStore(statePath),
+		ReflexEngine:   reflexEngine,
+		GTDStore:       gtdStore,
+		MemoryJudge:    memoryJudge,
+		CalendarClient: calendarClient,
+		GitHubClient:   githubClient,
+		SendMessage: func(channelID, message string) error {
+			if mcpSendMessage != nil {
+				return mcpSendMessage(channelID, message)
+			}
+			return fmt.Errorf("Discord effector not yet initialized")
+		},
+	}
+
+	// Load idea store
+	if err := mcpDeps.IdeaStore.Load(); err != nil {
+		log.Printf("Warning: failed to load idea store: %v", err)
+	}
+
+	// Register all MCP tools
+	tools.RegisterAll(mcpServer, mcpDeps)
+	log.Printf("[main] MCP server initialized with %d tools", mcpServer.ToolCount())
 
 	// Initialize reflex log for short-term context
 	reflexLog := reflex.NewLog(20)
@@ -730,8 +797,8 @@ func main() {
 				priority = focus.P3ActiveWork
 			}
 		case "bud":
-			// Bud's own thoughts - lower priority than user input
-			priority = focus.P3ActiveWork
+			// Bud's thoughts are stored in memory but don't queue for focus
+			return
 		case "system":
 			priority = focus.P3ActiveWork
 		}
@@ -917,6 +984,24 @@ func main() {
 			return nil
 		}
 
+		// Wire MCP talk_to_user to effector directly (bypasses outbox file)
+		mcpSendMessage = func(channelID, message string) error {
+			log.Printf("[mcp] Sending message to channel %s: %s", channelID, truncate(message, 50))
+			action := &types.Action{
+				ID:       fmt.Sprintf("mcp-reply-%d", time.Now().UnixNano()),
+				Type:     "send_message",
+				Effector: "discord",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"content":    message,
+				},
+				Timestamp: time.Now(),
+			}
+			discordEffector.Submit(action)
+			captureResponse(channelID, message) // Also capture Bud's response to memory
+			return nil
+		}
+
 		// Wire interaction reply callback for slash commands (edits deferred response)
 		reflexEngine.SetInteractionReplyCallback(func(token, appID, message string) error {
 			log.Printf("[reflex] Editing interaction response: %s", truncate(message, 50))
@@ -960,6 +1045,15 @@ func main() {
 			log.Println("[main] Calendar sense started")
 		}
 	}
+
+	// Start MCP HTTP server (for Claude Code integration)
+	go func() {
+		addr := "127.0.0.1:" + mcpHTTPPort
+		log.Printf("[main] Starting MCP HTTP server on %s", addr)
+		if err := mcpServer.RunHTTP(addr); err != nil {
+			log.Printf("[main] MCP HTTP server error: %v", err)
+		}
+	}()
 
 	// Start inbox polling (unified queue: messages, signals, impulses)
 	go func() {
@@ -1347,18 +1441,8 @@ func seedGuides(statePath string) {
 }
 
 // writeMCPConfig ensures .mcp.json has the bud2 server configured, preserving other servers
-func writeMCPConfig(statePath string) error {
-	absStatePath, err := filepath.Abs(statePath)
-	if err != nil {
-		return err
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	budMCPPath := filepath.Join(filepath.Dir(exe), "bud-mcp")
-
+// Uses HTTP transport pointing to the embedded MCP server
+func writeMCPConfig(statePath, httpPort string) error {
 	// Read existing config if present
 	config := map[string]any{}
 	if data, err := os.ReadFile(".mcp.json"); err == nil {
@@ -1375,14 +1459,11 @@ func writeMCPConfig(statePath string) error {
 		config["mcpServers"] = servers
 	}
 
-	// Add/update bud2 server
+	// Add/update bud2 server with HTTP transport
+	// HTTP transport connects to the embedded MCP server in the main bud process
 	servers["bud2"] = map[string]any{
-		"type":    "stdio",
-		"command": budMCPPath,
-		"args":    []string{},
-		"env": map[string]string{
-			"BUD_STATE_PATH": absStatePath,
-		},
+		"type": "http",
+		"url":  fmt.Sprintf("http://127.0.0.1:%s/mcp", httpPort),
 	}
 
 	// Use encoder with SetEscapeHTML(false) to preserve characters like > in paths
@@ -1398,6 +1479,6 @@ func writeMCPConfig(statePath string) error {
 		return err
 	}
 
-	log.Printf("[main] Updated .mcp.json with BUD_STATE_PATH=%s (preserved %d other servers)", absStatePath, len(servers)-1)
+	log.Printf("[main] Updated .mcp.json with HTTP MCP server at port %s (preserved %d other servers)", httpPort, len(servers)-1)
 	return nil
 }
