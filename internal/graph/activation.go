@@ -434,6 +434,9 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 		return result, nil
 	}
 
+	// Detect if query is about recent work/status (where operational traces ARE relevant)
+	isStatusQuery := isStatusQuery(queryText)
+
 	// Sort by activation and get top traces
 	type scored struct {
 		id         string
@@ -447,17 +450,31 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 		return candidates[i].activation > candidates[j].activation
 	})
 
-	// Fetch top traces
+	// Fetch top traces and apply operational bias
+	operationalPenaltyCount := 0
 	for i := 0; i < len(candidates) && i < limit; i++ {
 		trace, err := g.GetTrace(candidates[i].id)
 		if err == nil && trace != nil {
-			trace.Activation = candidates[i].activation
+			activation := candidates[i].activation
+
+			// Apply penalty to operational traces unless query is about recent work/status
+			if !isStatusQuery && trace.TraceType == TraceTypeOperational {
+				activation *= 0.5
+				operationalPenaltyCount++
+			}
+
+			trace.Activation = activation
 			result.Traces = append(result.Traces, trace)
 		}
 	}
 
-	log.Printf("[retrieval] returned %d traces (limit=%d, candidates=%d, max_activation=%.4f)",
-		len(result.Traces), limit, len(candidates), maxActivation)
+	// Re-sort after applying operational bias (may reorder results)
+	sort.Slice(result.Traces, func(i, j int) bool {
+		return result.Traces[i].Activation > result.Traces[j].Activation
+	})
+
+	log.Printf("[retrieval] returned %d traces (limit=%d, candidates=%d, max_activation=%.4f, operational_penalty=%d, status_query=%v)",
+		len(result.Traces), limit, len(candidates), maxActivation, operationalPenaltyCount, isStatusQuery)
 
 	return result, nil
 }
@@ -545,6 +562,9 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 		return result, nil
 	}
 
+	// Detect if query is about recent work/status (where operational traces ARE relevant)
+	isStatusQuery := isStatusQuery(queryText)
+
 	// Sort by activation and get top traces
 	type scored struct {
 		id         string
@@ -558,17 +578,31 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 		return candidates[i].activation > candidates[j].activation
 	})
 
-	// Fetch top traces
+	// Fetch top traces and apply operational bias
+	operationalPenaltyCount := 0
 	for i := 0; i < len(candidates) && i < limit; i++ {
 		trace, err := g.GetTrace(candidates[i].id)
 		if err == nil && trace != nil {
-			trace.Activation = candidates[i].activation
+			activation := candidates[i].activation
+
+			// Apply penalty to operational traces unless query is about recent work/status
+			if !isStatusQuery && trace.TraceType == TraceTypeOperational {
+				activation *= 0.5
+				operationalPenaltyCount++
+			}
+
+			trace.Activation = activation
 			result.Traces = append(result.Traces, trace)
 		}
 	}
 
-	log.Printf("[retrieval] (with context) returned %d traces (limit=%d, candidates=%d, max_activation=%.4f, context_traces=%d)",
-		len(result.Traces), limit, len(candidates), maxActivation, len(contextTraceIDs))
+	// Re-sort after applying operational bias (may reorder results)
+	sort.Slice(result.Traces, func(i, j int) bool {
+		return result.Traces[i].Activation > result.Traces[j].Activation
+	})
+
+	log.Printf("[retrieval] (with context) returned %d traces (limit=%d, candidates=%d, max_activation=%.4f, context_traces=%d, operational_penalty=%d, status_query=%v)",
+		len(result.Traces), limit, len(candidates), maxActivation, len(contextTraceIDs), operationalPenaltyCount, isStatusQuery)
 
 	return result, nil
 }
@@ -706,4 +740,32 @@ func cosineSimilarity(a, b []float64) float64 {
 	}
 
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// isStatusQuery detects if the query is asking about recent work, status, or "what did I do"
+// For these queries, operational traces (deploy logs, meeting reminders, etc.) ARE relevant
+func isStatusQuery(queryText string) bool {
+	if queryText == "" {
+		return false
+	}
+
+	queryLower := strings.ToLower(queryText)
+
+	// Keywords indicating status/recent work queries
+	statusKeywords := []string{
+		"what did", "what have", "what was",
+		"recent", "recently", "today", "yesterday", "this week",
+		"status", "progress", "working on", "worked on",
+		"last", "latest", "current",
+		"deployed", "restarted", "synced", "pushed", "committed",
+		"meeting", "calendar", "scheduled",
+	}
+
+	for _, keyword := range statusKeywords {
+		if strings.Contains(queryLower, keyword) {
+			return true
+		}
+	}
+
+	return false
 }
