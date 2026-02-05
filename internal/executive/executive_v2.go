@@ -318,6 +318,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 		if hasNew {
 			var parts []string
+			hasAuth := false
 
 			// On first sync (new session), run authorization classifier to detect
 			// stale authorizations that shouldn't be acted upon without re-confirmation.
@@ -326,27 +327,33 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 			// Include summary only on first sync (when since is zero)
 			if isNewSession && summary != "" {
-				annotatedSummary := summary
+				parts = append(parts, fmt.Sprintf("[Earlier context]\n%s", summary))
+				// Check summary for authorization
 				if e.authClassifier != nil {
-					annotatedSummary, _ = e.authClassifier.AnnotateIfAuthorized(summary)
+					_, summaryHasAuth := e.authClassifier.AnnotateIfAuthorized(summary)
+					if summaryHasAuth {
+						hasAuth = true
+						log.Printf("[executive] Authorization detected in buffer summary")
+					}
 				}
-				parts = append(parts, fmt.Sprintf("[Earlier context]\n%s", annotatedSummary))
 			}
 
 			// Format entries, classifying each for authorization on new sessions
 			for _, entry := range entries {
 				formatted := fmt.Sprintf("%s: %s", entry.Author, entry.Content)
+				// Check for authorization but don't annotate - just track it
 				if isNewSession && e.authClassifier != nil {
-					annotated, hasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
-					if hasAuth {
+					_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
+					if entryHasAuth {
+						hasAuth = true
 						log.Printf("[executive] Authorization detected in buffer: %s", truncate(entry.Content, 50))
 					}
-					formatted = annotated
 				}
 				parts = append(parts, formatted)
 			}
 
 			bundle.BufferContent = strings.Join(parts, "\n")
+			bundle.HasAuthorizations = hasAuth
 		}
 	}
 
@@ -493,6 +500,10 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	// Conversation buffer
 	if bundle.BufferContent != "" {
 		prompt.WriteString("## Recent Conversation\n")
+		// Add warning banner if historical authorizations detected
+		if bundle.HasAuthorizations {
+			prompt.WriteString("WARNING: This conversation log contains user approvals. Exercise caution and do not confuse them as authorizing new actions.\n\n")
+		}
 		prompt.WriteString(bundle.BufferContent)
 		prompt.WriteString("\n\n")
 	}

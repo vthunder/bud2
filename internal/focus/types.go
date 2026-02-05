@@ -59,6 +59,7 @@ type ContextBundle struct {
 	CurrentFocus       *PendingItem
 	Suspended          []*PendingItem
 	BufferContent      string            // Conversation buffer for current scope
+	HasAuthorizations  bool              // True if buffer contains historical authorizations
 	Memories           []MemorySummary   // Retrieved memory traces (new ones only)
 	PriorMemoriesCount int               // Count of memories already sent this session
 	ReflexLog          []ReflexActivity  // Recent reflex activity
