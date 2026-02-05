@@ -610,7 +610,11 @@ func main() {
 		}
 
 		// Store relationships with temporal invalidation detection
+		log.Printf("[ingest] Processing %d extracted relationships", len(result.Relationships))
 		for _, rel := range result.Relationships {
+			log.Printf("[ingest] Relationship: %s -[%s]-> %s (confidence: %.2f)",
+				rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+
 			subjectID := entityIDMap[strings.ToLower(rel.Subject)]
 			objectID := entityIDMap[strings.ToLower(rel.Object)]
 
@@ -637,6 +641,15 @@ func main() {
 
 			// Skip if we still don't have both entities
 			if subjectID == "" || objectID == "" {
+				log.Printf("[ingest] ⚠️  Skipping relationship: cannot resolve entities (subject='%s'->%s, object='%s'->%s)",
+					rel.Subject, subjectID, rel.Object, objectID)
+				log.Printf("[ingest]   Available entities in map: %v", func() []string {
+					keys := make([]string, 0, len(entityIDMap))
+					for k := range entityIDMap {
+						keys = append(keys, k)
+					}
+					return keys
+				}())
 				continue
 			}
 

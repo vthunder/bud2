@@ -213,7 +213,14 @@ func (e *DeepExtractor) ExtractAll(text string) (*ExtractionResult, error) {
 		rels, err := e.ExtractRelationships(text, entities)
 		if err != nil {
 			// Non-fatal: return entities without relationships
+			log.Printf("[extract] ⚠️  Relationship extraction failed: %v", err)
 			return result, nil
+		}
+		log.Printf("[extract] Extracted %d relationships from LLM", len(rels))
+		if len(rels) > 0 {
+			for _, rel := range rels {
+				log.Printf("[extract]   %s -[%s]-> %s (%.2f)", rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+			}
 		}
 		result.Relationships = rels
 	}
