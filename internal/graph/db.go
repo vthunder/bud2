@@ -2,7 +2,9 @@ package graph
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -310,6 +312,15 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (5)")
 	}
 
+	// Migration v6: Populate trace_relations with similarity-based edges
+	if version < 6 {
+		if err := g.populateTraceRelations(0.85); err != nil {
+			// Log but don't fail - migration is a best-effort optimization
+			fmt.Printf("[migration v6] warning: failed to populate trace_relations: %v\n", err)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (6)")
+	}
+
 	return nil
 }
 
@@ -345,4 +356,77 @@ func (g *DB) Clear() error {
 	}
 
 	return nil
+}
+
+// populateTraceRelations computes pairwise similarity for all traces and creates
+// SIMILAR_TO edges for pairs above the given threshold. Called during migration v6.
+func (g *DB) populateTraceRelations(threshold float64) error {
+	// Load all traces with embeddings
+	rows, err := g.db.Query(`SELECT id, embedding FROM traces WHERE embedding IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("failed to query traces: %w", err)
+	}
+	defer rows.Close()
+
+	type traceEmb struct {
+		id        string
+		embedding []float64
+	}
+	var traces []traceEmb
+
+	for rows.Next() {
+		var id string
+		var embBytes []byte
+		if err := rows.Scan(&id, &embBytes); err != nil {
+			continue
+		}
+		var embedding []float64
+		if err := json.Unmarshal(embBytes, &embedding); err != nil {
+			continue
+		}
+		traces = append(traces, traceEmb{id: id, embedding: embedding})
+	}
+
+	if len(traces) < 2 {
+		return nil // Nothing to link
+	}
+
+	// Compute pairwise similarities and insert edges above threshold
+	var edgesAdded int
+	for i := 0; i < len(traces); i++ {
+		for j := i + 1; j < len(traces); j++ {
+			sim := cosineSim(traces[i].embedding, traces[j].embedding)
+			if sim >= threshold {
+				// Add bidirectional edge (stored once, queried both ways)
+				err := g.AddTraceRelation(traces[i].id, traces[j].id, EdgeSimilarTo, sim)
+				if err == nil {
+					edgesAdded++
+				}
+			}
+		}
+	}
+
+	fmt.Printf("[migration v6] Populated trace_relations: %d SIMILAR_TO edges (threshold %.2f, %d traces)\n",
+		edgesAdded, threshold, len(traces))
+	return nil
+}
+
+// cosineSim computes cosine similarity between two embeddings
+func cosineSim(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var dotProduct, normA, normB float64
+	for i := range a {
+		dotProduct += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
 }

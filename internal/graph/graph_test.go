@@ -331,6 +331,88 @@ func TestTraceRelations(t *testing.T) {
 	}
 }
 
+// TestFindSimilarTracesAboveThreshold tests finding traces by similarity
+func TestFindSimilarTracesAboveThreshold(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create traces with embeddings
+	// Trace A and B have similar embeddings, C is different
+	db.AddTrace(&Trace{ID: "trace-A", Summary: "About work projects", Embedding: []float64{0.9, 0.1, 0.1}})
+	db.AddTrace(&Trace{ID: "trace-B", Summary: "Work related", Embedding: []float64{0.85, 0.15, 0.1}})
+	db.AddTrace(&Trace{ID: "trace-C", Summary: "Completely different", Embedding: []float64{0.1, 0.9, 0.1}})
+
+	// Find traces similar to A with high threshold
+	similar, err := db.FindSimilarTracesAboveThreshold([]float64{0.9, 0.1, 0.1}, 0.9, "trace-A")
+	if err != nil {
+		t.Fatalf("FindSimilarTracesAboveThreshold failed: %v", err)
+	}
+
+	// B should be found (similarity ~0.98), C should not (similarity ~0.3)
+	if len(similar) != 1 {
+		t.Fatalf("Expected 1 similar trace, got %d", len(similar))
+	}
+	if similar[0].ID != "trace-B" {
+		t.Errorf("Expected trace-B, got %s", similar[0].ID)
+	}
+	if similar[0].Similarity < 0.9 {
+		t.Errorf("Expected similarity >= 0.9, got %f", similar[0].Similarity)
+	}
+
+	// Lower threshold should find more
+	similar2, _ := db.FindSimilarTracesAboveThreshold([]float64{0.9, 0.1, 0.1}, 0.2, "trace-A")
+	if len(similar2) != 2 {
+		t.Errorf("Expected 2 similar traces at threshold 0.2, got %d", len(similar2))
+	}
+}
+
+// TestSimilarToEdgeInSpreadingActivation tests that SIMILAR_TO edges are used in spreading activation
+func TestSimilarToEdgeInSpreadingActivation(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create traces with embeddings (A similar to B, C different)
+	db.AddTrace(&Trace{ID: "trace-A", Summary: "Topic one", Embedding: []float64{0.9, 0.1, 0.0}, Activation: 0.5})
+	db.AddTrace(&Trace{ID: "trace-B", Summary: "Topic one related", Embedding: []float64{0.85, 0.15, 0.0}, Activation: 0.5})
+	db.AddTrace(&Trace{ID: "trace-C", Summary: "Different topic", Embedding: []float64{0.0, 0.1, 0.9}, Activation: 0.5})
+
+	// Add SIMILAR_TO edge between A and B
+	err := db.AddTraceRelation("trace-A", "trace-B", EdgeSimilarTo, 0.95)
+	if err != nil {
+		t.Fatalf("AddTraceRelation failed: %v", err)
+	}
+
+	// Verify neighbors work
+	neighbors, _ := db.GetTraceNeighbors("trace-A")
+	hasB := false
+	for _, n := range neighbors {
+		if n.ID == "trace-B" && n.Type == EdgeSimilarTo {
+			hasB = true
+			break
+		}
+	}
+	if !hasB {
+		t.Error("Expected trace-B as SIMILAR_TO neighbor of trace-A")
+	}
+
+	// Do spreading activation from query similar to A
+	// B should receive activation through SIMILAR_TO edge
+	activations, err := db.SpreadActivationFromEmbedding([]float64{0.9, 0.1, 0.0}, "", 5, 2)
+	if err != nil {
+		t.Fatalf("SpreadActivation failed: %v", err)
+	}
+
+	t.Logf("Activations: A=%.4f, B=%.4f, C=%.4f", activations["trace-A"], activations["trace-B"], activations["trace-C"])
+
+	// Both A and B should have activation (B via spreading through SIMILAR_TO edge)
+	if activations["trace-A"] == 0 {
+		t.Error("Expected trace-A to have activation")
+	}
+	if activations["trace-B"] == 0 {
+		t.Error("Expected trace-B to have activation (via SIMILAR_TO edge)")
+	}
+}
+
 // TestStats tests database statistics
 func TestStats(t *testing.T) {
 	db, cleanup := setupTestDB(t)

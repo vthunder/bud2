@@ -48,6 +48,7 @@ const (
 	EdgeInvolves      EdgeType = "INVOLVES"
 	EdgeInvalidatedBy EdgeType = "INVALIDATED_BY"
 	EdgeSharedEntity  EdgeType = "SHARED_ENTITY"
+	EdgeSimilarTo     EdgeType = "SIMILAR_TO" // Semantic similarity above threshold (0.85+)
 )
 
 // EntityType defines categories of entities (OntoNotes-compatible schema)

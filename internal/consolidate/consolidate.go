@@ -273,6 +273,13 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		}
 	}
 
+	// Link to similar traces (>0.85 similarity)
+	if len(embedding) > 0 {
+		if linked := c.linkToSimilarTraces(traceID, embedding, 0.85); linked > 0 {
+			log.Printf("[consolidate] Linked trace %s to %d similar traces", traceID, linked)
+		}
+	}
+
 	typeLabel := ""
 	if traceType == graph.TraceTypeOperational {
 		typeLabel = " [operational]"
@@ -459,4 +466,23 @@ func isEphemeralContent(summary string) bool {
 	}
 
 	return false
+}
+
+// linkToSimilarTraces finds existing traces with high similarity and creates SIMILAR_TO edges.
+// Returns the number of edges created.
+func (c *Consolidator) linkToSimilarTraces(traceID string, embedding []float64, threshold float64) int {
+	similar, err := c.graph.FindSimilarTracesAboveThreshold(embedding, threshold, traceID)
+	if err != nil {
+		log.Printf("[consolidate] Failed to find similar traces: %v", err)
+		return 0
+	}
+
+	linked := 0
+	for _, s := range similar {
+		err := c.graph.AddTraceRelation(traceID, s.ID, graph.EdgeSimilarTo, s.Similarity)
+		if err == nil {
+			linked++
+		}
+	}
+	return linked
 }

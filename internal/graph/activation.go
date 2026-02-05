@@ -370,6 +370,44 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 	return result, nil
 }
 
+// SimilarTrace represents a trace ID with its similarity score
+type SimilarTrace struct {
+	ID         string
+	Similarity float64
+}
+
+// FindSimilarTracesAboveThreshold finds all traces with cosine similarity above the given threshold.
+// Returns trace IDs with their raw similarity scores (not blended with activation).
+// Used for creating SIMILAR_TO edges during consolidation.
+func (g *DB) FindSimilarTracesAboveThreshold(queryEmb []float64, threshold float64, excludeID string) ([]SimilarTrace, error) {
+	rows, err := g.db.Query(`SELECT id, embedding FROM traces WHERE embedding IS NOT NULL AND id != ?`, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []SimilarTrace
+	for rows.Next() {
+		var id string
+		var embBytes []byte
+		if err := rows.Scan(&id, &embBytes); err != nil {
+			continue
+		}
+
+		var embedding []float64
+		if err := json.Unmarshal(embBytes, &embedding); err != nil {
+			continue
+		}
+
+		sim := cosineSimilarity(queryEmb, embedding)
+		if sim >= threshold {
+			result = append(result, SimilarTrace{ID: id, Similarity: sim})
+		}
+	}
+
+	return result, nil
+}
+
 // Retrieve performs full memory retrieval with dual-trigger spreading activation
 // Uses both embedding similarity AND lexical matching for seeding
 func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*RetrievalResult, error) {
