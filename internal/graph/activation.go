@@ -23,7 +23,7 @@ const (
 
 	// Sigmoid transform parameters
 	SigmoidGamma = 5.0 // γ - steepness of sigmoid
-	SigmoidTheta = 0.5 // θ - firing threshold
+	SigmoidTheta = 0.3 // θ - firing threshold (lowered from 0.5 for better dynamic range)
 
 	// Temporal decay for edge weights
 	TemporalDecayRho = 0.01 // ρ - temporal decay coefficient
