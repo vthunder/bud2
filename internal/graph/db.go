@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -57,6 +58,24 @@ func Open(statePath string) (*DB, error) {
 // Close closes the database connection
 func (g *DB) Close() error {
 	return g.db.Close()
+}
+
+// TestSetTraceTimestamp updates the last_accessed timestamp for a trace (for testing only)
+func (g *DB) TestSetTraceTimestamp(traceID string, lastAccessed time.Time) error {
+	_, err := g.db.Exec(`UPDATE traces SET last_accessed = ? WHERE id = ?`, lastAccessed, traceID)
+	return err
+}
+
+// SetTraceType sets the trace type for a given trace (for testing and classification)
+func (g *DB) SetTraceType(traceID string, traceType TraceType) error {
+	_, err := g.db.Exec(`UPDATE traces SET trace_type = ? WHERE id = ?`, string(traceType), traceID)
+	return err
+}
+
+// SetTraceActivation sets the activation level for a trace (for testing only)
+func (g *DB) SetTraceActivation(traceID string, activation float64) error {
+	_, err := g.db.Exec(`UPDATE traces SET activation = ? WHERE id = ?`, activation, traceID)
+	return err
 }
 
 // migrate runs database migrations
