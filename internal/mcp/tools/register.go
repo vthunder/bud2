@@ -72,46 +72,16 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 
 		log.Printf("talk_to_user: channel=%s message=%s", channelID, truncate(message, 50))
 
-		// Use direct effector if available
-		if deps.SendMessage != nil {
-			if err := deps.SendMessage(channelID, message); err != nil {
-				return "", fmt.Errorf("failed to send message: %w", err)
-			}
-			return "Message sent to Discord", nil
+		// Direct effector required
+		if deps.SendMessage == nil {
+			return "", fmt.Errorf("SendMessage callback not configured")
 		}
 
-		// Fallback to outbox file
-		action := map[string]any{
-			"id":       fmt.Sprintf("action-%d", time.Now().UnixNano()),
-			"effector": "discord",
-			"type":     "send_message",
-			"payload": map[string]any{
-				"channel_id": channelID,
-				"content":    message,
-			},
+		if err := deps.SendMessage(channelID, message); err != nil {
+			return "", fmt.Errorf("failed to send message: %w", err)
 		}
 
-		outboxPath := filepath.Join(deps.QueuesPath, "outbox.jsonl")
-		f, err := os.OpenFile(outboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to open outbox: %w", err)
-		}
-		defer f.Close()
-
-		data, err := json.Marshal(action)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal action: %w", err)
-		}
-
-		if _, err := f.WriteString(string(data) + "\n"); err != nil {
-			return "", fmt.Errorf("failed to write to outbox: %w", err)
-		}
-		if err := f.Sync(); err != nil {
-			return "", fmt.Errorf("failed to sync outbox: %w", err)
-		}
-
-		log.Printf("Action queued: %s", action["id"])
-		return "Message queued for sending to Discord", nil
+		return "Message sent to Discord", nil
 	})
 
 	// discord_react - add emoji reaction to a Discord message
@@ -143,39 +113,16 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 
 		log.Printf("discord_react: channel=%s message=%s emoji=%s", channelID, discordMsgID, emoji)
 
-		// Queue reaction action via outbox
-		action := map[string]any{
-			"id":       fmt.Sprintf("action-%d", time.Now().UnixNano()),
-			"effector": "discord",
-			"type":     "add_reaction",
-			"payload": map[string]any{
-				"channel_id": channelID,
-				"message_id": discordMsgID,
-				"emoji":      emoji,
-			},
+		// Direct effector required
+		if deps.AddReaction == nil {
+			return "", fmt.Errorf("AddReaction callback not configured")
 		}
 
-		outboxPath := filepath.Join(deps.QueuesPath, "outbox.jsonl")
-		f, err := os.OpenFile(outboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to open outbox: %w", err)
-		}
-		defer f.Close()
-
-		data, err := json.Marshal(action)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal action: %w", err)
+		if err := deps.AddReaction(channelID, discordMsgID, emoji); err != nil {
+			return "", fmt.Errorf("failed to add reaction: %w", err)
 		}
 
-		if _, err := f.WriteString(string(data) + "\n"); err != nil {
-			return "", fmt.Errorf("failed to write to outbox: %w", err)
-		}
-		if err := f.Sync(); err != nil {
-			return "", fmt.Errorf("failed to sync outbox: %w", err)
-		}
-
-		log.Printf("Reaction queued: %s", action["id"])
-		return fmt.Sprintf("Reaction %s queued for message", emoji), nil
+		return fmt.Sprintf("Reaction %s added to message", emoji), nil
 	})
 
 	// signal_done

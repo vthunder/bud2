@@ -363,11 +363,11 @@ func sendMessage(content string) {
 }
 
 func waitForResponse(timeout time.Duration) string {
-	outboxPath := filepath.Join(statePath, "system", "queues", "outbox.jsonl")
+	testOutputPath := filepath.Join(statePath, "system", "test_output.jsonl")
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		f, err := os.Open(outboxPath)
+		f, err := os.Open(testOutputPath)
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)
 			continue

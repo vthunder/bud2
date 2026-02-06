@@ -256,14 +256,8 @@ func main() {
 	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient)
 	log.Println("[main] Memory consolidator initialized")
 
-	// Keep inbox/outbox for message queue (still useful)
+	// Keep inbox for message queue
 	inbox := memory.NewInbox() // in-memory only, no persistence
-	outbox := memory.NewOutbox(filepath.Join(queuesPath, "outbox.jsonl"))
-
-	// Outbox is append-only — just seek to end so we only process new entries
-	if err := outbox.Init(); err != nil {
-		log.Printf("Warning: failed to init outbox: %v", err)
-	}
 
 	// Bootstrap core identity traces from seed file
 	seedPath := "seed/core_seed.md"
@@ -353,7 +347,8 @@ func main() {
 
 	// Initialize MCP HTTP server (for Claude Code integration)
 	mcpServer := mcp.NewServer()
-	var mcpSendMessage func(channelID, message string) error // Will be wired to Discord effector
+	var mcpSendMessage func(channelID, message string) error      // Will be wired to Discord effector
+	var mcpAddReaction func(channelID, messageID, emoji string) error // Will be wired to Discord effector
 
 	mcpDeps := &tools.Dependencies{
 		GraphDB:        graphDB,
@@ -374,6 +369,12 @@ func main() {
 		SendMessage: func(channelID, message string) error {
 			if mcpSendMessage != nil {
 				return mcpSendMessage(channelID, message)
+			}
+			return fmt.Errorf("Discord effector not yet initialized")
+		},
+		AddReaction: func(channelID, messageID, emoji string) error {
+			if mcpAddReaction != nil {
+				return mcpAddReaction(channelID, messageID, emoji)
 			}
 			return fmt.Errorf("Discord effector not yet initialized")
 		},
@@ -1030,7 +1031,7 @@ func main() {
 
 		discordEffector = effectors.NewDiscordEffector(
 			discordSense.Session,
-			outbox.Poll,
+			nil, // No outbox polling - using direct Submit() only
 		)
 		discordEffector.SetOnSend(captureResponse)
 		discordEffector.SetOnAction(func(actionType, channelID, content, source string) {
@@ -1116,6 +1117,24 @@ func main() {
 			return nil
 		}
 
+		// Wire MCP discord_react to effector directly (bypasses outbox file)
+		mcpAddReaction = func(channelID, messageID, emoji string) error {
+			log.Printf("[mcp] Adding reaction to message %s: %s", messageID, emoji)
+			action := &types.Action{
+				ID:       fmt.Sprintf("mcp-react-%d", time.Now().UnixNano()),
+				Type:     "add_reaction",
+				Effector: "discord",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"message_id": messageID,
+					"emoji":      emoji,
+				},
+				Timestamp: time.Now(),
+			}
+			discordEffector.Submit(action)
+			return nil
+		}
+
 		// Wire interaction reply callback for slash commands (edits deferred response)
 		reflexEngine.SetInteractionReplyCallback(func(token, appID, message string) error {
 			log.Printf("[reflex] Editing interaction response: %s", truncate(message, 50))
@@ -1135,8 +1154,46 @@ func main() {
 
 		log.Println("[main] Discord sense and effector started")
 	} else {
-		log.Println("[main] SYNTHETIC_MODE enabled - Discord disabled")
-		log.Println("[main] Write to inbox.jsonl, read from outbox.jsonl")
+		// SYNTHETIC_MODE: Create test effector that captures to file
+		testEffector := effectors.NewTestEffector(statePath)
+		testEffector.Start()
+
+		// Wire MCP callbacks to test effector
+		mcpSendMessage = func(channelID, message string) error {
+			log.Printf("[mcp-test] Sending message to channel %s: %s", channelID, truncate(message, 50))
+			action := &types.Action{
+				ID:       fmt.Sprintf("mcp-reply-%d", time.Now().UnixNano()),
+				Type:     "send_message",
+				Effector: "test",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"content":    message,
+				},
+				Timestamp: time.Now(),
+			}
+			testEffector.Submit(action)
+			return nil
+		}
+
+		mcpAddReaction = func(channelID, messageID, emoji string) error {
+			log.Printf("[mcp-test] Adding reaction to message %s: %s", messageID, emoji)
+			action := &types.Action{
+				ID:       fmt.Sprintf("mcp-react-%d", time.Now().UnixNano()),
+				Type:     "add_reaction",
+				Effector: "test",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"message_id": messageID,
+					"emoji":      emoji,
+				},
+				Timestamp: time.Now(),
+			}
+			testEffector.Submit(action)
+			return nil
+		}
+
+		log.Println("[main] SYNTHETIC_MODE enabled - using test effector")
+		log.Println("[main] Write to inbox.jsonl, read from test_output.jsonl")
 	}
 
 	// Start calendar sense (optional, independent of Discord)
