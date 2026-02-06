@@ -11,6 +11,7 @@ state/
 # Environment
 .env
 .env.local
+.env~
 
 # IDE
 .idea/
