@@ -114,6 +114,70 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		return "Message queued for sending to Discord", nil
 	})
 
+	// discord_react - add emoji reaction to a Discord message
+	server.RegisterTool("discord_react", mcp.ToolDef{
+		Description: "Add an emoji reaction to a Discord message. Use this for lightweight acknowledgments like 👍 or ✅ instead of sending text messages.",
+		Properties: map[string]mcp.PropDef{
+			"message_id": {Type: "string", Description: "The Discord message ID to react to (format: discord-{channelID}-{messageID})"},
+			"emoji":      {Type: "string", Description: "The emoji to react with (Unicode emoji like 👍 or custom format like :name:)"},
+		},
+		Required: []string{"message_id", "emoji"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		messageID, ok := args["message_id"].(string)
+		if !ok || messageID == "" {
+			return "", fmt.Errorf("message_id is required")
+		}
+
+		emoji, ok := args["emoji"].(string)
+		if !ok || emoji == "" {
+			return "", fmt.Errorf("emoji is required")
+		}
+
+		// Parse message ID format: discord-{channelID}-{messageID}
+		parts := strings.Split(messageID, "-")
+		if len(parts) != 3 || parts[0] != "discord" {
+			return "", fmt.Errorf("invalid message_id format (expected discord-{channelID}-{messageID})")
+		}
+		channelID := parts[1]
+		discordMsgID := parts[2]
+
+		log.Printf("discord_react: channel=%s message=%s emoji=%s", channelID, discordMsgID, emoji)
+
+		// Queue reaction action via outbox
+		action := map[string]any{
+			"id":       fmt.Sprintf("action-%d", time.Now().UnixNano()),
+			"effector": "discord",
+			"type":     "add_reaction",
+			"payload": map[string]any{
+				"channel_id": channelID,
+				"message_id": discordMsgID,
+				"emoji":      emoji,
+			},
+		}
+
+		outboxPath := filepath.Join(deps.QueuesPath, "outbox.jsonl")
+		f, err := os.OpenFile(outboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", fmt.Errorf("failed to open outbox: %w", err)
+		}
+		defer f.Close()
+
+		data, err := json.Marshal(action)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal action: %w", err)
+		}
+
+		if _, err := f.WriteString(string(data) + "\n"); err != nil {
+			return "", fmt.Errorf("failed to write to outbox: %w", err)
+		}
+		if err := f.Sync(); err != nil {
+			return "", fmt.Errorf("failed to sync outbox: %w", err)
+		}
+
+		log.Printf("Reaction queued: %s", action["id"])
+		return fmt.Sprintf("Reaction %s queued for message", emoji), nil
+	})
+
 	// signal_done
 	server.RegisterTool("signal_done", mcp.ToolDef{
 		Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",

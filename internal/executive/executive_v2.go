@@ -526,6 +526,27 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			prompt.WriteString(fmt.Sprintf("Source: %s\n", bundle.CurrentFocus.Source))
 		}
 		prompt.WriteString(fmt.Sprintf("Content: %s\n", bundle.CurrentFocus.Content))
+
+		// Add metadata section if we have relevant data
+		if len(bundle.CurrentFocus.Data) > 0 {
+			// Extract common metadata fields
+			var metadata []string
+			if msgID, ok := bundle.CurrentFocus.Data["message_id"].(string); ok && msgID != "" {
+				metadata = append(metadata, fmt.Sprintf("  message_id: %s", msgID))
+			}
+			if chanID := bundle.CurrentFocus.ChannelID; chanID != "" {
+				metadata = append(metadata, fmt.Sprintf("  channel_id: %s", chanID))
+			}
+			if !bundle.CurrentFocus.Timestamp.IsZero() {
+				metadata = append(metadata, fmt.Sprintf("  timestamp: %s", bundle.CurrentFocus.Timestamp.Format(time.RFC3339)))
+			}
+
+			if len(metadata) > 0 {
+				prompt.WriteString("Metadata:\n")
+				prompt.WriteString(strings.Join(metadata, "\n"))
+				prompt.WriteString("\n")
+			}
+		}
 		prompt.WriteString("\n")
 
 		// For autonomous wake impulses, inject the wakeup checklist
