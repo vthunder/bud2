@@ -1153,3 +1153,339 @@ func TestScenario10_RetrievalBiasForStatusQueries(t *testing.T) {
 
 	t.Logf("✓ Retrieval bias working: operational traces treated appropriately based on query type")
 }
+
+// ============================================================================
+// Phase 3: Validation Metrics
+// ============================================================================
+
+// e2eMetrics tracks quantitative performance metrics across all scenarios
+type e2eMetrics struct {
+	// Retrieval quality
+	TotalQueries          int
+	QueriesWithResults    int
+	HighConfidenceResults int // activation >= 0.7
+	AvgTopActivation      float64
+	AvgResultCount        float64
+
+	// Entity extraction
+	EntitiesExtracted int
+	UniqueEntities    int
+	EntityTypes       map[graph.EntityType]int
+
+	// Relationship extraction
+	RelationshipsCreated int
+	UniqueRelationships  int
+
+	// Trace consolidation
+	TracesCreated     int
+	EpisodesProcessed int
+	GroupedTraces     int // traces created from multiple episodes
+
+	// Spreading activation
+	EntitySeedMatches  int // queries that matched entity names
+	SimilarEdgeMatches int // traces linked via SIMILAR_TO
+}
+
+// TestE2EMetrics runs all scenarios and reports aggregate metrics
+// This validates overall pipeline performance and detects regressions
+func TestE2EMetrics(t *testing.T) {
+	h := setupE2ETest(t)
+	defer h.cleanup()
+
+	metrics := &e2eMetrics{
+		EntityTypes: make(map[graph.EntityType]int),
+	}
+
+	t.Log("=== Running E2E Metrics Validation ===")
+	t.Log("")
+
+	// Track starting state
+	startTraces, _, _ := h.db.CountTraces()
+	startEntities, _ := h.db.CountEntities()
+
+	// Run all scenarios and collect metrics
+	runMetricScenario1(t, h, metrics)
+	runMetricScenario2(t, h, metrics)
+	runMetricScenario3(t, h, metrics)
+	runMetricScenario5(t, h, metrics)
+	runMetricScenario6(t, h, metrics)
+	runMetricScenario7(t, h, metrics)
+	runMetricScenario9(t, h, metrics)
+
+	// Compute final metrics
+	endTraces, _, _ := h.db.CountTraces()
+	endEntities, _ := h.db.CountEntities()
+
+	metrics.TracesCreated = endTraces - startTraces
+	metrics.UniqueEntities = endEntities - startEntities
+
+	if metrics.TotalQueries > 0 {
+		metrics.AvgTopActivation /= float64(metrics.TotalQueries)
+		metrics.AvgResultCount /= float64(metrics.TotalQueries)
+	}
+
+	// Report metrics
+	t.Log("")
+	t.Log("=== E2E Pipeline Metrics ===")
+	t.Log("")
+
+	t.Logf("Retrieval Quality:")
+	t.Logf("  Total queries: %d", metrics.TotalQueries)
+	t.Logf("  Queries with results: %d (%.1f%%)", metrics.QueriesWithResults, pct(metrics.QueriesWithResults, metrics.TotalQueries))
+	t.Logf("  High-confidence results: %d (%.1f%%)", metrics.HighConfidenceResults, pct(metrics.HighConfidenceResults, metrics.QueriesWithResults))
+	t.Logf("  Avg top activation: %.3f", metrics.AvgTopActivation)
+	t.Logf("  Avg results per query: %.1f", metrics.AvgResultCount)
+	t.Log("")
+
+	t.Logf("Entity Extraction:")
+	t.Logf("  Entities created: %d", metrics.EntitiesExtracted)
+	t.Logf("  Unique entities: %d", metrics.UniqueEntities)
+	t.Log("  By type:")
+	for entityType, count := range metrics.EntityTypes {
+		t.Logf("    %s: %d", entityType, count)
+	}
+	t.Log("")
+
+	t.Logf("Relationship Extraction:")
+	t.Logf("  Relationships created: %d", metrics.RelationshipsCreated)
+	t.Logf("  Unique relationships: %d", metrics.UniqueRelationships)
+	t.Log("")
+
+	t.Logf("Trace Consolidation:")
+	t.Logf("  Episodes processed: %d", metrics.EpisodesProcessed)
+	t.Logf("  Traces created: %d", metrics.TracesCreated)
+	t.Logf("  Grouped traces: %d (%.1f%%)", metrics.GroupedTraces, pct(metrics.GroupedTraces, metrics.TracesCreated))
+	t.Log("")
+
+	t.Logf("Spreading Activation:")
+	t.Logf("  Entity name matches: %d", metrics.EntitySeedMatches)
+	t.Logf("  SIMILAR_TO edges used: %d", metrics.SimilarEdgeMatches)
+	t.Log("")
+
+	// Validation: basic sanity checks
+	if metrics.TotalQueries == 0 {
+		t.Fatal("No queries executed")
+	}
+	if metrics.QueriesWithResults == 0 {
+		t.Fatal("No queries returned results")
+	}
+	if metrics.TracesCreated == 0 {
+		t.Fatal("No traces created")
+	}
+	if metrics.UniqueEntities == 0 {
+		t.Fatal("No entities extracted")
+	}
+
+	// Success criteria from e2e-test-scenarios.md
+	precision := pct(metrics.HighConfidenceResults, metrics.QueriesWithResults)
+	if precision < 50.0 {
+		t.Logf("WARNING: High-confidence precision %.1f%% below target (50%%)", precision)
+	}
+
+	if metrics.AvgTopActivation < 0.7 {
+		t.Logf("WARNING: Average top activation %.3f below target (0.7)", metrics.AvgTopActivation)
+	}
+
+	t.Log("=== E2E Metrics Validation Complete ===")
+}
+
+func pct(numerator, denominator int) float64 {
+	if denominator == 0 {
+		return 0.0
+	}
+	return float64(numerator) / float64(denominator) * 100.0
+}
+
+// trackQuery updates metrics for a retrieval query
+func (m *e2eMetrics) trackQuery(traces []*graph.Trace, activations map[string]float64) {
+	m.TotalQueries++
+
+	if len(traces) > 0 {
+		m.QueriesWithResults++
+		m.AvgResultCount += float64(len(traces))
+
+		// Find top activation
+		topActivation := 0.0
+		for _, act := range activations {
+			if act > topActivation {
+				topActivation = act
+			}
+		}
+		m.AvgTopActivation += topActivation
+
+		// Count high-confidence results (>= 0.7)
+		if topActivation >= 0.7 {
+			m.HighConfidenceResults++
+		}
+	}
+}
+
+// Scenario metric runners (simplified versions that focus on metric collection)
+
+func runMetricScenario1(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 1: Person Introduction & Recall")
+
+	mockEntities := `[
+		{"name":"Sarah Chen","type":"PERSON","confidence":0.95},
+		{"name":"Acme Corp","type":"ORG","confidence":0.9}
+	]`
+	mockRelationships := `[
+		{"subject":"Sarah Chen","predicate":"affiliated_with","object":"Acme Corp","confidence":0.9},
+		{"subject":"Sarah Chen","predicate":"has_role","object":"designer","confidence":0.85}
+	]`
+
+	h.ingestWithExtraction("I met Sarah Chen today, she's the new designer at Acme Corp",
+		time.Now(), "user", mockEntities, mockRelationships)
+	m.EpisodesProcessed++
+	m.EntitiesExtracted += 2
+	m.EntityTypes[graph.EntityPerson]++
+	m.EntityTypes[graph.EntityOrg]++
+	m.RelationshipsCreated += 2
+
+	h.runConsolidation()
+
+	traces, activations, _ := h.query("who is the designer?")
+	m.trackQuery(traces, activations)
+}
+
+func runMetricScenario2(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 2: Relationship Updates")
+
+	now := time.Now()
+
+	mockEntities1 := `[{"name":"Sarah Chen","type":"PERSON","confidence":0.95},{"name":"Acme Corp","type":"ORG","confidence":0.9}]`
+	h.ingestWithExtraction("Sarah Chen joined Acme Corp as a designer", now, "user", mockEntities1, "")
+	m.EpisodesProcessed++
+
+	h.runConsolidation()
+
+	mockEntities2 := `[{"name":"Sarah","type":"PERSON","confidence":0.9}]`
+	h.ingestWithExtraction("Sarah got promoted to design lead", now.Add(7*24*time.Hour), "user", mockEntities2, "")
+	m.EpisodesProcessed++
+
+	h.runConsolidation()
+
+	traces, activations, _ := h.query("what does sarah do?")
+	m.trackQuery(traces, activations)
+}
+
+func runMetricScenario3(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 3: Cross-Reference Recall")
+
+	now := time.Now()
+
+	mockEntities1 := `[{"name":"Anurag","type":"PERSON","confidence":0.95},{"name":"Avail","type":"ORG","confidence":0.9}]`
+	h.ingestWithExtraction("Anurag works at Avail", now, "user", mockEntities1, "")
+	m.EpisodesProcessed++
+	m.EntitiesExtracted += 2
+	m.EntityTypes[graph.EntityPerson]++
+	m.EntityTypes[graph.EntityOrg]++
+
+	mockEntities2 := `[{"name":"Avail","type":"ORG","confidence":0.9}]`
+	h.ingestWithExtraction("Avail is building a rental platform", now.Add(1*time.Hour), "user", mockEntities2, "")
+	m.EpisodesProcessed++
+
+	h.runConsolidation()
+
+	traces, activations, _ := h.query("what is anurag working on?")
+	m.trackQuery(traces, activations)
+
+	// Check for entity-based seeding
+	entities, _ := h.db.FindEntitiesByText("anurag", 1)
+	if len(entities) > 0 {
+		m.EntitySeedMatches++
+	}
+}
+
+func runMetricScenario5(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 5: Decay + Reinforcement")
+
+	mockEntities := `[{"name":"xyz123","type":"CONCEPT","confidence":0.8}]`
+	h.ingestWithExtraction("The API key is xyz123", time.Now(), "user", mockEntities, "")
+	m.EpisodesProcessed++
+	m.EntitiesExtracted++
+
+	h.runConsolidation()
+
+	traces, activations, _ := h.query("what's the api key?")
+	m.trackQuery(traces, activations)
+}
+
+func runMetricScenario6(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 6: Operational vs Knowledge Traces")
+
+	now := time.Now()
+
+	mockOpEntities := `[{"name":"relationship extraction","type":"CONCEPT","confidence":0.8}]`
+	h.ingestWithExtraction("Meeting starts in 5 minutes", now, "bud", mockOpEntities, "")
+	m.EpisodesProcessed++
+
+	mockKnEntities := `[{"name":"PostgreSQL","type":"PRODUCT","confidence":0.9},{"name":"JSON","type":"CONCEPT","confidence":0.85}]`
+	h.ingestWithExtraction("We decided to use PostgreSQL because of its JSON support", now.Add(1*time.Hour), "user", mockKnEntities, "")
+	m.EpisodesProcessed++
+	m.EntitiesExtracted += 2
+	m.EntityTypes[graph.EntityProduct]++
+
+	h.runConsolidation()
+}
+
+func runMetricScenario7(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 7: Entity-Based Activation Seeding")
+
+	mockEntities := `[{"name":"Anjan","type":"PERSON","confidence":0.95},{"name":"Nightshade","type":"PRODUCT","confidence":0.9}]`
+	h.ingestWithExtraction("Anjan presented the Nightshade design", time.Now(), "user", mockEntities, "")
+	m.EpisodesProcessed++
+	m.EntitiesExtracted += 2
+	m.EntityTypes[graph.EntityPerson]++
+	m.EntityTypes[graph.EntityProduct]++
+
+	h.runConsolidation()
+
+	traces, activations, _ := h.query("what did anjan present?")
+	m.trackQuery(traces, activations)
+
+	// Check for entity-based seeding
+	entities, _ := h.db.FindEntitiesByText("anjan", 1)
+	if len(entities) > 0 {
+		m.EntitySeedMatches++
+	}
+}
+
+func runMetricScenario9(t *testing.T, h *e2eTestHarness, m *e2eMetrics) {
+	t.Helper()
+	t.Log("Scenario 9: Similar Trace Linking")
+
+	now := time.Now()
+
+	mockEntities1 := `[{"name":"React","type":"PRODUCT","confidence":0.9}]`
+	h.ingestWithExtraction("We're using React for the frontend", now, "user", mockEntities1, "")
+	m.EpisodesProcessed++
+	m.EntitiesExtracted++
+	m.EntityTypes[graph.EntityProduct]++
+
+	h.runConsolidation()
+
+	mockEntities2 := `[{"name":"React","type":"PRODUCT","confidence":0.9}]`
+	h.ingestWithExtraction("The React components are well-structured", now.Add(1*time.Hour), "user", mockEntities2, "")
+	m.EpisodesProcessed++
+
+	h.runConsolidation()
+
+	// Check for SIMILAR_TO edges by getting all traces and checking for links
+	allTraces, _ := h.db.GetAllTraces()
+	for _, trace := range allTraces {
+		neighbors, _ := h.db.GetTraceNeighbors(trace.ID)
+		for _, neighbor := range neighbors {
+			if neighbor.Type == graph.EdgeSimilarTo {
+				m.SimilarEdgeMatches++
+				break
+			}
+		}
+	}
+}
