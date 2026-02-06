@@ -900,6 +900,9 @@ func main() {
 						log.Printf("[ingest-bud] Entity extraction failed: %v", err)
 						return
 					}
+
+					// Build entity ID map for relationship resolution
+					entityIDMap := make(map[string]string)
 					for _, ext := range result.Entities {
 						resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
 						if err != nil || resolveResult == nil || resolveResult.Entity == nil {
@@ -908,9 +911,95 @@ func main() {
 						if err := graphDB.LinkEpisodeToEntity(episodeID, resolveResult.Entity.ID); err != nil {
 							log.Printf("[ingest-bud] Failed to link episode to entity: %v", err)
 						}
+						entityIDMap[strings.ToLower(ext.Name)] = resolveResult.Entity.ID
 					}
 					if len(result.Entities) > 0 {
 						log.Printf("[ingest-bud] Extracted %d entities from Bud response", len(result.Entities))
+					}
+
+					// Store relationships with temporal invalidation detection
+					log.Printf("[ingest-bud] Processing %d extracted relationships", len(result.Relationships))
+					for _, rel := range result.Relationships {
+						log.Printf("[ingest-bud] Relationship: %s -[%s]-> %s (confidence: %.2f)",
+							rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+
+						subjectID := entityIDMap[strings.ToLower(rel.Subject)]
+						objectID := entityIDMap[strings.ToLower(rel.Object)]
+
+						// Handle "speaker" reference - map to bud entity
+						speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
+						if speakerTerms[strings.ToLower(rel.Subject)] {
+							subjectID = "entity-PERSON-bud"
+							// Ensure bud entity exists
+							graphDB.AddEntity(&graph.Entity{
+								ID:   "entity-PERSON-bud",
+								Name: "Bud",
+								Type: graph.EntityPerson,
+							})
+						}
+						if speakerTerms[strings.ToLower(rel.Object)] {
+							objectID = "entity-PERSON-bud"
+							// Ensure bud entity exists
+							graphDB.AddEntity(&graph.Entity{
+								ID:   "entity-PERSON-bud",
+								Name: "Bud",
+								Type: graph.EntityPerson,
+							})
+						}
+
+						// Skip if we still don't have both entities
+						if subjectID == "" || objectID == "" {
+							log.Printf("[ingest-bud] ⚠️  Skipping relationship: cannot resolve entities (subject='%s'->%s, object='%s'->%s)",
+								rel.Subject, subjectID, rel.Object, objectID)
+							log.Printf("[ingest-bud]   Available entities in map: %v", func() []string {
+								keys := make([]string, 0, len(entityIDMap))
+								for k := range entityIDMap {
+									keys = append(keys, k)
+								}
+								return keys
+							}())
+							continue
+						}
+
+						edgeType := extract.PredicateToEdgeType(rel.Predicate)
+
+						// Check for invalidation candidates (existing relations that might be contradicted)
+						candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
+						if err != nil {
+							log.Printf("[ingest-bud] Failed to find invalidation candidates: %v", err)
+						}
+
+						// Add the new relationship first to get its ID
+						newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, episodeID)
+						if err != nil {
+							log.Printf("[ingest-bud] Failed to store relationship %s->%s: %v", rel.Subject, rel.Object, err)
+							continue
+						}
+
+						// If there are candidates and this is an exclusive relation type, check for contradictions
+						if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
+							// Build entity name map for the invalidation prompt
+							entityNames := make(map[string]string)
+							for name, id := range entityIDMap {
+								entityNames[id] = name
+							}
+
+							invResult, err := invalidator.CheckInvalidation(
+								rel.Subject, rel.Predicate, rel.Object,
+								candidates, entityNames,
+							)
+							if err != nil {
+								log.Printf("[ingest-bud] Invalidation check failed: %v", err)
+							} else if len(invResult.InvalidatedIDs) > 0 {
+								for _, oldID := range invResult.InvalidatedIDs {
+									if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
+										log.Printf("[ingest-bud] Failed to invalidate relation %d: %v", oldID, err)
+									} else {
+										log.Printf("[ingest-bud] Invalidated relation %d (reason: %s)", oldID, invResult.Reason)
+									}
+								}
+							}
+						}
 					}
 				}(responseID, content)
 			}
