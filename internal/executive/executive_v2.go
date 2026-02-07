@@ -400,11 +400,11 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 }
 
 // buildRecentConversation retrieves recent episodes for the channel and formats them
-// as a conversation log. Excludes the current focus item to avoid duplication.
+// as a conversation log using pyramid summaries. Excludes the current focus item.
 // Returns the formatted content and whether authorization patterns were detected.
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
-	// Query last 20 episodes within 10 minutes
-	episodes, err := e.graph.GetRecentEpisodes(10*time.Minute, channelID, 20)
+	// Query last 30 episodes within 30 minutes (wider window for pyramid)
+	episodes, err := e.graph.GetRecentEpisodes(30*time.Minute, channelID, 30)
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
 		return "", false
@@ -420,28 +420,65 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		episodes[i], episodes[j] = episodes[j], episodes[i]
 	}
 
-	// Format as conversation and check for authorizations
+	// Pyramid policy: Full text for last 5, compressed for next 10, highly compressed for next 15
+	// Token budget: 2000 tokens
+	tokenBudget := 2000
+	tokenUsed := 0
 	var parts []string
 	hasAuth := false
 
-	for _, ep := range episodes {
-		// Skip the current focus item (it's shown separately in Current Focus)
-		if ep.ID == excludeID {
-			continue
-		}
+	// Define tier policy
+	tiers := []struct {
+		count int
+		level int
+	}{
+		{5, graph.CompressionLevelFull},   // Last 5: full text
+		{10, graph.CompressionLevelMedium}, // Next 10: key points
+		{15, graph.CompressionLevelHigh},   // Next 15: essence
+	}
 
-		formatted := fmt.Sprintf("%s: %s", ep.Author, ep.Content)
+	episodeIdx := 0
 
-		// Check for authorization patterns
-		if e.authClassifier != nil {
-			_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
-			if entryHasAuth {
-				hasAuth = true
-				log.Printf("[executive] Authorization detected in episode: %s", truncate(ep.Content, 50))
+	for _, tier := range tiers {
+		for i := 0; i < tier.count && episodeIdx < len(episodes); i++ {
+			ep := episodes[episodeIdx]
+			episodeIdx++
+
+			// Skip the current focus item
+			if ep.ID == excludeID {
+				continue
 			}
-		}
 
-		parts = append(parts, formatted)
+			// Get summary at appropriate compression level
+			content := ep.Content // fallback to full text
+			tokens := estimateTokens(content)
+
+			summary, err := e.graph.GetEpisodeSummary(ep.ID, tier.level)
+			if err == nil && summary != nil {
+				content = summary.Summary
+				tokens = summary.Tokens
+			}
+
+			// Check token budget
+			if tokenUsed+tokens > tokenBudget {
+				log.Printf("[executive] Hit token budget (%d/%d), stopping at episode %d", tokenUsed, tokenBudget, episodeIdx)
+				break
+			}
+
+			formatted := fmt.Sprintf("%s: %s", ep.Author, content)
+
+			// Check for authorization patterns (only in full text to avoid false positives)
+			if tier.level == graph.CompressionLevelFull && e.authClassifier != nil {
+				_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
+				if entryHasAuth {
+					hasAuth = true
+					log.Printf("[executive] Authorization detected in episode: %s", truncate(ep.Content, 50))
+				}
+			}
+
+			parts = append(parts, formatted)
+			tokenUsed += tokens
+		}
 	}
 
 	if len(parts) == 0 {
@@ -449,6 +486,16 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	}
 
 	return strings.Join(parts, "\n"), hasAuth
+}
+
+// estimateTokens provides a rough token count estimate (4 chars ≈ 1 token)
+func estimateTokens(text string) int {
+	chars := len(text)
+	tokens := chars / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
 }
 
 // buildPrompt constructs the prompt from a context bundle

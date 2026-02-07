@@ -545,6 +545,11 @@ func main() {
 			return
 		}
 
+		// Generate episode summaries (async for level 1-2)
+		if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
+			log.Printf("[ingest] Warning: failed to generate summaries for episode: %v", err)
+		}
+
 		// Create FOLLOWS edge from previous episode in same channel
 		if prevID, ok := lastEpisodeByChannel[msg.ChannelID]; ok {
 			if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
@@ -862,6 +867,11 @@ func main() {
 				log.Printf("Warning: failed to store Bud episode: %v", err)
 			} else {
 				log.Printf("[main] Stored Bud response as episode for consolidation")
+
+				// Generate episode summaries (async for level 1-2)
+				if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
+					log.Printf("[main] Warning: failed to generate summaries for Bud response: %v", err)
+				}
 				// Create FOLLOWS edge from previous episode in same channel
 				if prevID, ok := lastEpisodeByChannel[channelID]; ok {
 					if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {

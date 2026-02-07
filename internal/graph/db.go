@@ -340,6 +340,30 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (6)")
 	}
 
+	// Migration v7: Add episode_summaries table for pyramid summaries
+	if version < 7 {
+		migrations := []string{
+			`CREATE TABLE IF NOT EXISTS episode_summaries (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				episode_id TEXT NOT NULL,
+				compression_level INTEGER NOT NULL,
+				summary TEXT NOT NULL,
+				tokens INTEGER NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+				UNIQUE(episode_id, compression_level)
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_episode_summaries_episode ON episode_summaries(episode_id)",
+			"CREATE INDEX IF NOT EXISTS idx_episode_summaries_level ON episode_summaries(compression_level)",
+		}
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				return fmt.Errorf("migration v7 failed: %w", err)
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (7)")
+	}
+
 	return nil
 }
 
@@ -347,7 +371,7 @@ func (g *DB) runMigrations() error {
 func (g *DB) Stats() (map[string]int, error) {
 	stats := make(map[string]int)
 
-	tables := []string{"episodes", "entities", "traces", "episode_edges", "entity_relations", "trace_relations"}
+	tables := []string{"episodes", "episode_summaries", "entities", "traces", "episode_edges", "entity_relations", "trace_relations"}
 	for _, table := range tables {
 		var count int
 		err := g.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
@@ -365,7 +389,7 @@ func (g *DB) Clear() error {
 	tables := []string{
 		"trace_relations", "trace_entities", "trace_sources", "traces",
 		"entity_relations", "episode_mentions", "entity_aliases", "entities",
-		"episode_edges", "episodes",
+		"episode_edges", "episode_summaries", "episodes",
 	}
 
 	for _, table := range tables {
