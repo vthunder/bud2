@@ -412,6 +412,9 @@ func main() {
 		return nil
 	})
 
+	// Declare variable for fallback callback (will be set after discordEffector is created)
+	var fallbackSendMessage func(channelID, message string) error
+
 	// Initialize v2 executive with focus-based attention
 	exec := executive.NewExecutiveV2(
 		graphDB,
@@ -426,6 +429,13 @@ func main() {
 			BotAuthor: "Bud", // Filter out bot's own responses on incremental buffer sync
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
+			SendMessageFallback: func(channelID, message string) error {
+				if fallbackSendMessage != nil {
+					return fallbackSendMessage(channelID, message)
+				}
+				log.Printf("[fallback] ERROR: discordEffector not yet initialized")
+				return fmt.Errorf("effector not initialized")
+			},
 			OnExecWake: func(focusID, context string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
 			},
@@ -1105,6 +1115,23 @@ func main() {
 			log.Printf("[mcp] Sending message to channel %s: %s", channelID, truncate(message, 50))
 			action := &types.Action{
 				ID:       fmt.Sprintf("mcp-reply-%d", time.Now().UnixNano()),
+				Type:     "send_message",
+				Effector: "discord",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"content":    message,
+				},
+				Timestamp: time.Now(),
+			}
+			discordEffector.Submit(action)
+			return nil
+		}
+
+		// Wire fallback callback to effector
+		fallbackSendMessage = func(channelID, message string) error {
+			log.Printf("[fallback] Sending fallback message to channel %s", channelID)
+			action := &types.Action{
+				ID:       fmt.Sprintf("fallback-%d", time.Now().UnixNano()),
 				Type:     "send_message",
 				Effector: "discord",
 				Payload: map[string]any{

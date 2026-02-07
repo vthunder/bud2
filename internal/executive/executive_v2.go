@@ -64,12 +64,13 @@ type ExecutiveV2Config struct {
 	BotAuthor string
 
 	// Callbacks
-	SessionTracker *budget.SessionTracker
-	StartTyping    func(channelID string)
-	StopTyping     func(channelID string)
-	OnExecWake     func(focusID, context string)
-	OnExecDone     func(focusID, summary string, durationSec float64, usage *SessionUsage)
-	OnMemoryEval   func(eval string) // Called when Claude outputs memory self-evaluation
+	SessionTracker      *budget.SessionTracker
+	StartTyping         func(channelID string)
+	StopTyping          func(channelID string)
+	SendMessageFallback func(channelID, message string) error
+	OnExecWake          func(focusID, context string)
+	OnExecDone          func(focusID, summary string, durationSec float64, usage *SessionUsage)
+	OnMemoryEval        func(eval string) // Called when Claude outputs memory self-evaluation
 
 	// WakeupInstructions is the content of seed/wakeup.md, injected into
 	// autonomous wake prompts to give Claude concrete work to do.
@@ -204,6 +205,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		return nil
 	}
 
+	// Track whether user got a response (for validation)
+	var userGotResponse bool
+
 	// Set up callbacks
 	var output strings.Builder
 	e.session.OnOutput(func(text string) {
@@ -211,6 +215,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	})
 
 	e.session.OnToolCall(func(name string, args map[string]any) (string, error) {
+		// Track responses to user (talk_to_user or emoji reaction)
+		if strings.HasSuffix(name, "talk_to_user") || strings.HasSuffix(name, "send_message") || strings.HasSuffix(name, "respond_to_user") {
+			userGotResponse = true
+		}
+		if strings.HasSuffix(name, "discord_react") {
+			userGotResponse = true
+		}
 		return e.handleToolCall(item, name, args)
 	})
 
@@ -260,6 +271,33 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 			if e.config.OnMemoryEval != nil {
 				e.config.OnMemoryEval(eval)
 			}
+		}
+	}
+
+	// VALIDATION: Check if user message was handled
+	// User messages (priority P1) MUST produce a response (talk_to_user or emoji reaction)
+	isUserMessage := item.Priority == focus.P1UserInput || item.Source == "discord" || item.Source == "inbox"
+	if isUserMessage && !userGotResponse {
+		log.Printf("[executive-v2] ERROR: User message completed without response (no talk_to_user or emoji reaction)")
+		log.Printf("[executive-v2]   Item ID: %s", item.ID)
+		log.Printf("[executive-v2]   Content: %s", truncate(item.Content, 100))
+		log.Printf("[executive-v2]   Output length: %d", output.Len())
+
+		// Build fallback message - use Claude's output or generic error
+		fallbackMsg := strings.TrimSpace(output.String())
+		if fallbackMsg == "" {
+			fallbackMsg = "[Internal error: response was generated but not sent. This is a bug.]"
+		}
+
+		// Send via fallback callback (bypassing MCP since that's what failed)
+		if e.config.SendMessageFallback != nil {
+			if err := e.config.SendMessageFallback(channelID, fallbackMsg); err != nil {
+				log.Printf("[executive-v2] ERROR: Fallback send failed: %v", err)
+			} else {
+				log.Printf("[executive-v2] Sent fallback message via effector")
+			}
+		} else {
+			log.Printf("[executive-v2] ERROR: No SendMessageFallback configured, message lost")
 		}
 	}
 

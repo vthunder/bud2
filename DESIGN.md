@@ -599,60 +599,28 @@ bud2/
 
 Claude Code runs in tmux windows (interactive mode) and needs to communicate back to bud2 to send Discord messages. Claude Code supports MCP (Model Context Protocol) for tool integration.
 
-### Decision: File-Based Outbox
+### MCP Integration: In-Memory Effector Submission
 
-We chose to have the MCP server write to the same `outbox.jsonl` file that effectors read from, rather than direct IPC between MCP and effectors.
+MCP tools submit actions directly to in-memory effectors via callback functions, providing low latency and no coordination overhead.
 
 ```
-Claude (tmux) → talk_to_user tool → bud-mcp (subprocess)
-                                         ↓
-                                    outbox.jsonl
-                                         ↓
-                         Discord effector polls file (100ms)
-                                         ↓
-                                    Discord API
+Claude (stdio MCP) → talk_to_user tool → callback → discordEffector.Submit()
+                                                            ↓
+                                                      Discord API
 ```
 
-### Alternatives Considered
+**Implementation:**
+- MCP server runs in same process as bud2 (stdio transport via Claude Code)
+- Each MCP tool that produces output gets a callback to the appropriate effector
+- Example: `talk_to_user` → `discordEffector.Submit(action)`
+- No file coordination, no polling - direct in-memory submission
 
-**1. Direct IPC (Unix socket / HTTP)**
-```
-Claude → MCP server → socket → effector → Discord
-```
-- Pros: Lower latency, simpler flow
-- Cons: No persistence, lost actions on crash, harder to debug
+**Benefits:**
+- **Low latency**: No polling delays
+- **Simple**: Direct function calls, no file coordination
+- **Robust**: Actions tracked in effector's in-memory queue with retry logic
 
-**2. In-process MCP (HTTP-based)**
-```
-Claude --mcp-url=http://localhost:9999 → bud2 HTTP handler → in-memory outbox
-```
-- Pros: Single process, direct memory access
-- Cons: Requires HTTP MCP transport (not stdio), more setup
-
-### Why File-Based
-
-| Benefit | Explanation |
-|---------|-------------|
-| **Persistence** | Actions survive crashes, can retry on restart |
-| **Debugging** | Inspect `outbox.jsonl` to see what was sent |
-| **Audit trail** | Complete history of all actions |
-| **Decoupling** | MCP server doesn't need to know about effectors |
-| **Simplicity** | No IPC coordination, just file append |
-
-| Tradeoff | Mitigation |
-|----------|------------|
-| 100ms polling latency | Acceptable for Discord chat |
-| File coordination | Simple append-only, offset tracking |
-
-### Implementation Details
-
-- **MCP server** (`cmd/bud-mcp`): Writes JSON action to `outbox.jsonl`
-- **Outbox** (`internal/memory/outbox.go`): Tracks file offset, `Poll()` reads new entries
-- **Effector**: Calls `Poll()` before `GetPending()` each cycle
-
-### Future Considerations
-
-If latency becomes critical (e.g., real-time applications), switch to HTTP-based MCP transport where bud2 exposes an HTTP endpoint and Claude connects to it directly. This would allow direct in-memory outbox access while keeping the outbox abstraction for logging.
+**Note:** Activity log provides audit trail of all MCP actions for debugging/observability.
 
 ## Next Steps
 
