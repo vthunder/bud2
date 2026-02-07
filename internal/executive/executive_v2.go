@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/budget"
-	"github.com/vthunder/bud2/internal/buffer"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/reflex"
@@ -29,7 +28,7 @@ type AuthClassifier interface {
 // Key simplifications:
 // - Single Claude session (not per-thread sessions)
 // - Focus-based context assembly (not thread-based)
-// - Uses conversation buffer for reply chain context
+// - Uses episodes for conversation history
 // - Uses graph layer for memory retrieval
 type ExecutiveV2 struct {
 	session *SimpleSession
@@ -40,7 +39,6 @@ type ExecutiveV2 struct {
 
 	// Memory systems
 	graph    *graph.DB
-	buffers  *buffer.ConversationBuffer
 	embedder Embedder
 
 	// Authorization classifier for session reset protection
@@ -80,7 +78,6 @@ type ExecutiveV2Config struct {
 // NewExecutiveV2 creates a new v2 executive
 func NewExecutiveV2(
 	graph *graph.DB,
-	buffers *buffer.ConversationBuffer,
 	reflexLog *reflex.Log,
 	embedder Embedder,
 	authClassifier AuthClassifier,
@@ -92,7 +89,6 @@ func NewExecutiveV2(
 		attention:      focus.New(),
 		queue:          focus.NewQueue(statePath, 100),
 		graph:          graph,
-		buffers:        buffers,
 		embedder:       embedder,
 		authClassifier: authClassifier,
 		reflexLog:      reflexLog,
@@ -322,55 +318,11 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		}
 	}
 
-	// Get conversation buffer - only entries since last sync
-	// This avoids re-sending context that's already in the Claude session
-	if e.buffers != nil {
-		var scope buffer.Scope
-		if item.ChannelID != "" {
-			scope = buffer.ScopeChannel(item.ChannelID)
-		} else {
-			scope = buffer.ScopeFocus(item.ID)
-		}
-
-		// One-shot sessions: always include full buffer (no incremental sync)
-		// Filter only to exclude the current focus item (it's shown separately)
-		filter := buffer.BufferFilter{
-			ExcludeID: item.ID, // Don't duplicate current focus in buffer
-		}
-		entries, summary, hasNew := e.buffers.GetEntriesSinceFiltered(scope, time.Time{}, filter)
-
-		if hasNew {
-			var parts []string
-			hasAuth := false
-
-			// One-shot sessions: always include summary and check all content for authorization
-			if summary != "" {
-				parts = append(parts, fmt.Sprintf("[Earlier context]\n%s", summary))
-				// Check summary for authorization
-				if e.authClassifier != nil {
-					_, summaryHasAuth := e.authClassifier.AnnotateIfAuthorized(summary)
-					if summaryHasAuth {
-						hasAuth = true
-						log.Printf("[executive] Authorization detected in buffer summary")
-					}
-				}
-			}
-
-			// Format entries and check each for authorization
-			for _, entry := range entries {
-				formatted := fmt.Sprintf("%s: %s", entry.Author, entry.Content)
-				// Check for authorization but don't annotate - just track it
-				if e.authClassifier != nil {
-					_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
-					if entryHasAuth {
-						hasAuth = true
-						log.Printf("[executive] Authorization detected in buffer: %s", truncate(entry.Content, 50))
-					}
-				}
-				parts = append(parts, formatted)
-			}
-
-			bundle.BufferContent = strings.Join(parts, "\n")
+	// Get recent conversation from episodes (last 20 episodes within 10 minutes)
+	if e.graph != nil && item.ChannelID != "" {
+		content, hasAuth := e.buildRecentConversation(item.ChannelID, item.ID)
+		if content != "" {
+			bundle.BufferContent = content
 			bundle.HasAuthorizations = hasAuth
 		}
 	}
@@ -445,6 +397,58 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 	}
 
 	return bundle
+}
+
+// buildRecentConversation retrieves recent episodes for the channel and formats them
+// as a conversation log. Excludes the current focus item to avoid duplication.
+// Returns the formatted content and whether authorization patterns were detected.
+func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
+	// Query last 20 episodes within 10 minutes
+	episodes, err := e.graph.GetRecentEpisodes(10*time.Minute, channelID, 20)
+	if err != nil {
+		log.Printf("[executive] Failed to get recent episodes: %v", err)
+		return "", false
+	}
+
+	if len(episodes) == 0 {
+		return "", false
+	}
+
+	// Reverse to chronological order (oldest first)
+	// GetRecentEpisodes returns DESC order
+	for i, j := 0, len(episodes)-1; i < j; i, j = i+1, j-1 {
+		episodes[i], episodes[j] = episodes[j], episodes[i]
+	}
+
+	// Format as conversation and check for authorizations
+	var parts []string
+	hasAuth := false
+
+	for _, ep := range episodes {
+		// Skip the current focus item (it's shown separately in Current Focus)
+		if ep.ID == excludeID {
+			continue
+		}
+
+		formatted := fmt.Sprintf("%s: %s", ep.Author, ep.Content)
+
+		// Check for authorization patterns
+		if e.authClassifier != nil {
+			_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
+			if entryHasAuth {
+				hasAuth = true
+				log.Printf("[executive] Authorization detected in episode: %s", truncate(ep.Content, 50))
+			}
+		}
+
+		parts = append(parts, formatted)
+	}
+
+	if len(parts) == 0 {
+		return "", false
+	}
+
+	return strings.Join(parts, "\n"), hasAuth
 }
 
 // buildPrompt constructs the prompt from a context bundle

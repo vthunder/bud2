@@ -21,7 +21,6 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/authorize"
 	"github.com/vthunder/bud2/internal/budget"
-	"github.com/vthunder/bud2/internal/buffer"
 	"github.com/vthunder/bud2/internal/consolidate"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/embedding"
@@ -221,13 +220,6 @@ func main() {
 	defer graphDB.Close()
 	log.Println("[main] Graph database initialized")
 
-	// Conversation buffer - new in v2
-	conversationBuffer := buffer.New(systemPath, nil) // No summarizer for now
-	if err := conversationBuffer.Load(); err != nil {
-		log.Printf("Warning: failed to load conversation buffer: %v", err)
-	}
-	log.Println("[main] Conversation buffer initialized")
-
 	// Entity extractor - using Ollama with qwen2.5:7b for NER
 	ollamaClient := embedding.NewClient("", "") // defaults: localhost:11434, nomic-embed-text
 	ollamaClient.SetGenerationModel("qwen2.5:7b")
@@ -418,7 +410,6 @@ func main() {
 	// Initialize v2 executive with focus-based attention
 	exec := executive.NewExecutiveV2(
 		graphDB,
-		conversationBuffer,
 		reflexLog,
 		ollamaClient,     // for query-based memory retrieval
 		authClassifier,   // for detecting stale authorizations on session reset
@@ -426,7 +417,7 @@ func main() {
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
 			WorkDir:   ".",
-			BotAuthor: "Bud", // Filter out bot's own responses on incremental buffer sync
+			BotAuthor: "Bud", // Kept for compatibility, but no longer used
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
 			SendMessageFallback: func(channelID, message string) error {
@@ -739,20 +730,7 @@ func main() {
 			channelID = ch
 		}
 
-		// Add to conversation buffer
-		if channelID != "" && content != "" {
-			bufferEntry := buffer.Entry{
-				ID:        percept.ID,
-				Author:    author,
-				Content:   content,
-				Timestamp: percept.Timestamp,
-				ChannelID: channelID,
-				ReplyTo:   percept.ReplyTo,
-			}
-			if err := conversationBuffer.Add(bufferEntry); err != nil {
-				log.Printf("Warning: failed to add to buffer: %v", err)
-			}
-		}
+		// Note: episodes are now used directly for conversation history (no separate buffer)
 
 		// Log input event
 		inputSummary := content
@@ -865,19 +843,7 @@ func main() {
 		now := time.Now()
 		responseID := fmt.Sprintf("bud-response-%d", now.UnixNano())
 
-		// Add Bud's response to conversation buffer
-		bufferEntry := buffer.Entry{
-			ID:        responseID,
-			Author:    "Bud",
-			Content:   content,
-			Timestamp: now,
-			ChannelID: channelID,
-		}
-		if err := conversationBuffer.Add(bufferEntry); err != nil {
-			log.Printf("Warning: failed to add response to buffer: %v", err)
-		}
-
-		// Also store Bud's response as an episode in memory graph
+		// Store Bud's response as an episode in memory graph
 		// This enables consolidation to capture Bud's observations and decisions
 		if graphDB != nil {
 			episode := &graph.Episode{
@@ -1386,9 +1352,8 @@ func main() {
 	}
 
 	// Start trigger file watcher goroutine (runs immediately, no delay)
-	// This handles buffer.clear and consolidate.trigger signals from MCP
+	// This handles consolidate.trigger signals from MCP
 	consolidationTriggerFile := filepath.Join(statePath, "consolidate.trigger")
-	bufferClearTriggerFile := filepath.Join(statePath, "buffer.clear")
 	go func() {
 		triggerCheckTicker := time.NewTicker(500 * time.Millisecond)
 		defer triggerCheckTicker.Stop()
@@ -1398,13 +1363,6 @@ func main() {
 			case <-stopChan:
 				return
 			case <-triggerCheckTicker.C:
-				// Check for buffer clear trigger (written by MCP memory_reset)
-				// This must be processed quickly for memory_reset to work correctly
-				if _, err := os.Stat(bufferClearTriggerFile); err == nil {
-					os.Remove(bufferClearTriggerFile)
-					conversationBuffer.Clear()
-					log.Println("[main] Conversation buffer cleared (memory_reset)")
-				}
 				// Check for consolidation trigger (written by MCP memory_flush)
 				if _, err := os.Stat(consolidationTriggerFile); err == nil {
 					os.Remove(consolidationTriggerFile)
@@ -1496,9 +1454,6 @@ func main() {
 	}
 
 	// Persist state
-	if err := conversationBuffer.Save(); err != nil {
-		log.Printf("Warning: failed to save conversation buffer: %v", err)
-	}
 	if err := exec.GetQueue().Save(); err != nil {
 		log.Printf("Warning: failed to save focus queue: %v", err)
 	}
