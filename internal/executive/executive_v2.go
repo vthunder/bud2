@@ -187,15 +187,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.OnExecWake(item.ID, truncate(item.Content, 100))
 	}
 
-	// Check if session needs reset due to context size
-	// This must happen BEFORE buildContext so that IsFirstPrompt() returns true
-	// and core identity gets included in the fresh session
-	if e.session.ShouldReset() {
-		log.Printf("[executive-v2] Session threshold reached, resetting for fresh start")
-		e.session.Reset()
-	}
-
-	// Build context bundle
+	// Build context bundle (one-shot sessions: no reset logic needed)
 	bundle := e.buildContext(item)
 
 	// Collect memory IDs to mark as seen after prompt is sent
@@ -252,10 +244,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		}
 	}
 
-	// Mark items and memories as seen, update buffer sync time
-	e.session.MarkItemsSeen([]string{item.ID})
-	e.session.MarkMemoriesSeen(memoryIDs)
-	e.session.UpdateBufferSync(time.Now())
+	// One-shot sessions: no state tracking needed (each prompt is independent)
 
 	// Log completion with usage data
 	if e.config.OnExecDone != nil {
@@ -305,28 +294,19 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			scope = buffer.ScopeFocus(item.ID)
 		}
 
-		// Get only entries since last buffer sync, with filtering:
-		// - ExcludeID: skip the current focus item (it's in Current Focus section)
-		// - ExcludeBotAuthor: on incremental sync, skip bot's own responses
-		//   (Claude already knows what it said in this session)
-		since := e.session.LastBufferSync()
+		// One-shot sessions: always include full buffer (no incremental sync)
+		// Filter only to exclude the current focus item (it's shown separately)
 		filter := buffer.BufferFilter{
-			ExcludeID:        item.ID, // Don't duplicate current focus in buffer
-			ExcludeBotAuthor: e.config.BotAuthor,
+			ExcludeID: item.ID, // Don't duplicate current focus in buffer
 		}
-		entries, summary, hasNew := e.buffers.GetEntriesSinceFiltered(scope, since, filter)
+		entries, summary, hasNew := e.buffers.GetEntriesSinceFiltered(scope, time.Time{}, filter)
 
 		if hasNew {
 			var parts []string
 			hasAuth := false
 
-			// On first sync (new session), run authorization classifier to detect
-			// stale authorizations that shouldn't be acted upon without re-confirmation.
-			// This prevents the "session reset acting on old 'do it now'" bug.
-			isNewSession := since.IsZero()
-
-			// Include summary only on first sync (when since is zero)
-			if isNewSession && summary != "" {
+			// One-shot sessions: always include summary and check all content for authorization
+			if summary != "" {
 				parts = append(parts, fmt.Sprintf("[Earlier context]\n%s", summary))
 				// Check summary for authorization
 				if e.authClassifier != nil {
@@ -338,11 +318,11 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 				}
 			}
 
-			// Format entries, classifying each for authorization on new sessions
+			// Format entries and check each for authorization
 			for _, entry := range entries {
 				formatted := fmt.Sprintf("%s: %s", entry.Author, entry.Content)
 				// Check for authorization but don't annotate - just track it
-				if isNewSession && e.authClassifier != nil {
+				if e.authClassifier != nil {
 					_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
 					if entryHasAuth {
 						hasAuth = true
@@ -412,16 +392,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			}
 		}
 
-		// Filter out memories already sent in this session
-		priorCount := 0
-		for _, mem := range allMemories {
-			if e.session.HasSeenMemory(mem.ID) {
-				priorCount++
-			} else {
-				bundle.Memories = append(bundle.Memories, mem)
-			}
-		}
-		bundle.PriorMemoriesCount = priorCount
+		// One-shot sessions: include all retrieved memories (no deduplication needed)
+		bundle.Memories = allMemories
+		bundle.PriorMemoriesCount = 0
 
 		// Boost activation for newly shown memories (keeps used traces alive)
 		if len(bundle.Memories) > 0 {
@@ -440,25 +413,19 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	var prompt strings.Builder
 
-	// Core identity and session context - only include on first prompt to this session
-	// (Claude session already has this context after first message)
-	if len(bundle.CoreIdentity) > 0 && e.session.IsFirstPrompt() {
+	// One-shot sessions: always include core identity
+	if len(bundle.CoreIdentity) > 0 {
 		prompt.WriteString("## Identity\n")
 		for _, identity := range bundle.CoreIdentity {
 			prompt.WriteString(fmt.Sprintf("- %s\n", identity))
 		}
 		prompt.WriteString("\n")
 
-		// Session timestamp guardrail: Help Claude distinguish current vs historical context
-		sessionStart := e.session.SessionStartTime()
+		// Session timestamp: use current time (one-shot = each prompt is new session)
 		prompt.WriteString("## Session Context\n")
-		prompt.WriteString(fmt.Sprintf("Session started: %s\n\n", sessionStart.Format(time.RFC3339)))
+		prompt.WriteString(fmt.Sprintf("Session started: %s\n\n", time.Now().Format(time.RFC3339)))
 		prompt.WriteString("Messages and memories from before session start are historical context only.\n")
 		prompt.WriteString("Do not act on authorizations or commands from before session start without re-confirmation.\n\n")
-	} else if bundle.CurrentFocus != nil && bundle.CurrentFocus.Type == "message" {
-		// For user messages after first prompt, remind about communication protocol
-		// This ensures the talk_to_user rule stays prominent as context grows
-		prompt.WriteString("- CRITICAL: I can ONLY communicate with users by calling the talk_to_user tool. Text I write without this tool is invisible to users. Every response, answer, or acknowledgment MUST use talk_to_user. Always omit the channel_id parameter to let the system use the default Discord channel - do not guess or hallucinate channel IDs. No tool call = no communication. After completing a task or responding to a message, I call signal_done to track thinking time and enable autonomous scheduling.\n\n")
 	}
 
 	// Recent reflex activity
@@ -483,16 +450,12 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			sort.Slice(bundle.Memories, func(i, j int) bool {
 				return bundle.Memories[i].Relevance > bundle.Memories[j].Relevance
 			})
+			// Assign display IDs (M1, M2, ...) per prompt for self-eval tracking
+			// The memory ID map is reset at the start of each SendPrompt
 			for _, mem := range bundle.Memories {
-				// Get or assign a display ID for this memory
 				displayID := e.session.GetOrAssignMemoryID(mem.ID)
 				prompt.WriteString(fmt.Sprintf("- [M%d] I recall: %s\n", displayID, mem.Summary))
 			}
-		}
-
-		// Note about memories already in context from earlier in session
-		if bundle.PriorMemoriesCount > 0 {
-			prompt.WriteString(fmt.Sprintf("[Plus %d memories from earlier in this session]\n", bundle.PriorMemoriesCount))
 		}
 		prompt.WriteString("\n")
 	}

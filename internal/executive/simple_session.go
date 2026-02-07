@@ -256,12 +256,13 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		"--verbose",
 	}
 
-	// First prompt creates the session; subsequent prompts resume it
-	if s.IsFirstPrompt() {
-		args = append(args, "--session-id", s.sessionID)
-	} else {
-		args = append(args, "--resume", s.sessionID)
-	}
+	// One-shot sessions: always create fresh session, never resume
+	// Generate new session ID and reset state for each prompt to keep them independent
+	s.sessionID = generateSessionUUID()
+	s.sessionStartTime = time.Now()
+	s.memoryIDMap = make(map[string]int) // Reset memory display IDs
+	s.nextMemoryID = 1
+	args = append(args, "--session-id", s.sessionID)
 
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
