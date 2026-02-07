@@ -141,6 +141,30 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 		extra["reply_to"] = fmt.Sprintf("discord-%s-%s", m.MessageReference.ChannelID, m.MessageReference.MessageID)
 	}
 
+	// Capture attachments (screenshots, images, etc.)
+	if len(m.Attachments) > 0 {
+		attachments := make([]map[string]any, 0, len(m.Attachments))
+		for _, att := range m.Attachments {
+			attData := map[string]any{
+				"id":       att.ID,
+				"url":      att.URL,
+				"filename": att.Filename,
+				"size":     att.Size,
+			}
+			if att.ContentType != "" {
+				attData["content_type"] = att.ContentType
+			}
+			if att.Width > 0 {
+				attData["width"] = att.Width
+			}
+			if att.Height > 0 {
+				attData["height"] = att.Height
+			}
+			attachments = append(attachments, attData)
+		}
+		extra["attachments"] = attachments
+	}
+
 	// Create inbox message
 	msg := &memory.InboxMessage{
 		ID:        fmt.Sprintf("discord-%s-%s", m.ChannelID, m.ID),
