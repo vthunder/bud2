@@ -88,7 +88,9 @@ const (
 // Episode represents a raw message in the memory graph (Tier 1)
 type Episode struct {
 	ID                string    `json:"id"`
+	ShortID           string    `json:"short_id"`           // First 5 chars of BLAKE3 hash for display
 	Content           string    `json:"content"`
+	TokenCount        int       `json:"token_count"`        // Pre-computed token count
 	Source            string    `json:"source"`             // discord, calendar, etc.
 	Author            string    `json:"author,omitempty"`
 	AuthorID          string    `json:"author_id,omitempty"`

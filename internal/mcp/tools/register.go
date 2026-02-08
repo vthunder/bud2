@@ -367,6 +367,69 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 			data, _ := json.MarshalIndent(result, "", "  ")
 			return string(data), nil
 		})
+
+		// query_episode - query specific episode by short ID or full ID
+		server.RegisterTool("query_episode", mcp.ToolDef{
+			Description: "Query a specific episode by its ID (short 5-char ID or full ID). Returns the full episode details including content, author, timestamp, and summaries if available.",
+			Properties: map[string]mcp.PropDef{
+				"id": {Type: "string", Description: "Episode ID (short 5-char ID like 'a3f2b' or full ID)"},
+			},
+			Required: []string{"id"},
+		}, func(ctx any, args map[string]any) (string, error) {
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required")
+			}
+
+			var episode *graph.Episode
+			var err error
+
+			// Try short ID first (5 chars), then fall back to full ID
+			if len(id) == 5 {
+				episode, err = deps.GraphDB.GetEpisodeByShortID(id)
+			} else {
+				episode, err = deps.GraphDB.GetEpisode(id)
+			}
+
+			if err != nil {
+				return "", fmt.Errorf("failed to get episode: %w", err)
+			}
+			if episode == nil {
+				return "", fmt.Errorf("episode not found: %s", id)
+			}
+
+			// Get available summaries
+			summaries := []map[string]any{}
+			for level := 1; level <= 2; level++ {
+				summary, _ := deps.GraphDB.GetEpisodeSummary(episode.ID, level)
+				if summary != nil {
+					summaries = append(summaries, map[string]any{
+						"level":   summary.CompressionLevel,
+						"summary": summary.Summary,
+						"tokens":  summary.Tokens,
+					})
+				}
+			}
+
+			result := map[string]any{
+				"id":        episode.ID,
+				"short_id":  episode.ShortID,
+				"content":   episode.Content,
+				"tokens":    episode.TokenCount,
+				"author":    episode.Author,
+				"channel":   episode.Channel,
+				"timestamp": episode.TimestampEvent.Format(time.RFC3339),
+				"source":    episode.Source,
+				"reply_to":  episode.ReplyTo,
+			}
+
+			if len(summaries) > 0 {
+				result["summaries"] = summaries
+			}
+
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return string(data), nil
+		})
 	}
 }
 

@@ -18,10 +18,11 @@ type EpisodeSummary struct {
 
 // CompressionLevel represents different tiers of compression
 const (
-	CompressionLevelFull   = 0 // Full text
 	CompressionLevelMedium = 1 // Key points (~30% reduction)
 	CompressionLevelHigh   = 2 // Essential summary (~70% reduction)
 )
+
+// Note: Level 0 (full text) removed - we fall back to episodes.content directly
 
 // AddEpisodeSummary stores a summary for an episode at a given compression level
 func (g *DB) AddEpisodeSummary(episodeID string, level int, summary string, tokens int) error {
@@ -34,6 +35,7 @@ func (g *DB) AddEpisodeSummary(episodeID string, level int, summary string, toke
 
 // GetEpisodeSummary retrieves a summary for an episode at a specific compression level
 // Falls back to higher compression levels if the requested level doesn't exist
+// Returns nil if no summary exists (caller should fall back to episodes.content)
 func (g *DB) GetEpisodeSummary(episodeID string, level int) (*EpisodeSummary, error) {
 	// Try requested level first, then higher levels
 	for lvl := level; lvl <= CompressionLevelHigh; lvl++ {
@@ -53,7 +55,8 @@ func (g *DB) GetEpisodeSummary(episodeID string, level int) (*EpisodeSummary, er
 			return &summary, nil
 		}
 	}
-	return nil, fmt.Errorf("no summary found for episode %s", episodeID)
+	// No summary found - caller should use episodes.content
+	return nil, nil
 }
 
 // CompressEpisode generates summaries at different compression levels
@@ -62,18 +65,12 @@ type Compressor interface {
 	Generate(prompt string) (string, error)
 }
 
-// GenerateEpisodeSummaries creates summaries at all compression levels for an episode
-// Returns immediately after storing level 0 (full text), generates level 1-2 asynchronously
+// GenerateEpisodeSummaries creates summaries at compression levels 1-2 for an episode
+// Generates asynchronously - full text is stored in episodes table with token_count
 func (g *DB) GenerateEpisodeSummaries(episode Episode, compressor Compressor) error {
-	// Level 0: Store full text with token count
-	tokens := estimateTokens(episode.Content)
-	if err := g.AddEpisodeSummary(episode.ID, CompressionLevelFull, episode.Content, tokens); err != nil {
-		return fmt.Errorf("failed to store level 0 summary: %w", err)
-	}
-
 	// Generate compressed versions asynchronously if content is long enough
-	if compressor != nil && tokens > 50 {
-		go g.generateCompressedSummaries(episode, compressor, tokens)
+	if compressor != nil && episode.TokenCount > 50 {
+		go g.generateCompressedSummaries(episode, compressor, episode.TokenCount)
 	}
 
 	return nil

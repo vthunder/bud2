@@ -364,6 +364,21 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (7)")
 	}
 
+	// Migration v8: Add token_count and short_id to episodes, remove level 0 summaries
+	if version < 8 {
+		migrations := []string{
+			"ALTER TABLE episodes ADD COLUMN token_count INTEGER DEFAULT 0",
+			"ALTER TABLE episodes ADD COLUMN short_id TEXT DEFAULT ''",
+			"CREATE INDEX IF NOT EXISTS idx_episodes_short_id ON episodes(short_id)",
+			"DELETE FROM episode_summaries WHERE compression_level = 0",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (8)")
+	}
+
 	return nil
 }
 

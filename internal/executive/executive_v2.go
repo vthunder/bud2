@@ -403,8 +403,8 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 // as a conversation log using pyramid summaries. Excludes the current focus item.
 // Returns the formatted content and whether authorization patterns were detected.
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
-	// Query last 30 episodes within 30 minutes (wider window for pyramid)
-	episodes, err := e.graph.GetRecentEpisodes(30*time.Minute, channelID, 30)
+	// Query last 30 episodes (no time limit - rely on episode count and compression)
+	episodes, err := e.graph.GetRecentEpisodes(channelID, 30)
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
 		return "", false
@@ -427,12 +427,12 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	var parts []string
 	hasAuth := false
 
-	// Define tier policy
+	// Define tier policy (level 0 = full text from episodes.content)
 	tiers := []struct {
 		count int
 		level int
 	}{
-		{5, graph.CompressionLevelFull},   // Last 5: full text
+		{5, 0},                             // Last 5: full text
 		{10, graph.CompressionLevelMedium}, // Next 10: key points
 		{15, graph.CompressionLevelHigh},   // Next 15: essence
 	}
@@ -449,14 +449,18 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				continue
 			}
 
-			// Get summary at appropriate compression level
-			content := ep.Content // fallback to full text
-			tokens := estimateTokens(content)
+			// Get content at appropriate compression level
+			content := ep.Content // default to full text
+			tokens := ep.TokenCount
+			compressionLevel := 0
 
-			summary, err := e.graph.GetEpisodeSummary(ep.ID, tier.level)
-			if err == nil && summary != nil {
-				content = summary.Summary
-				tokens = summary.Tokens
+			if tier.level > 0 {
+				summary, err := e.graph.GetEpisodeSummary(ep.ID, tier.level)
+				if err == nil && summary != nil {
+					content = summary.Summary
+					tokens = summary.Tokens
+					compressionLevel = summary.CompressionLevel
+				}
 			}
 
 			// Check token budget
@@ -465,10 +469,16 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				break
 			}
 
-			formatted := fmt.Sprintf("%s: %s", ep.Author, content)
+			// Format with ID and compression indicator
+			var formatted string
+			if compressionLevel > 0 {
+				formatted = fmt.Sprintf("[ID: %s, C%d] %s: %s", ep.ShortID, compressionLevel, ep.Author, content)
+			} else {
+				formatted = fmt.Sprintf("[ID: %s] %s: %s", ep.ShortID, ep.Author, content)
+			}
 
 			// Check for authorization patterns (only in full text to avoid false positives)
-			if tier.level == graph.CompressionLevelFull && e.authClassifier != nil {
+			if tier.level == 0 && e.authClassifier != nil {
 				_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
 				if entryHasAuth {
 					hasAuth = true

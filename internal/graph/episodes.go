@@ -2,10 +2,19 @@ package graph
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/zeebo/blake3"
 )
+
+// generateShortID creates a 5-character ID from BLAKE3 hash of the full ID
+func generateShortID(id string) string {
+	hash := blake3.Sum256([]byte(id))
+	return hex.EncodeToString(hash[:])[:5]
+}
 
 // AddEpisode adds a new episode to the graph
 func (g *DB) AddEpisode(ep *Episode) error {
@@ -25,17 +34,28 @@ func (g *DB) AddEpisode(ep *Episode) error {
 		ep.CreatedAt = time.Now()
 	}
 
+	// Generate short ID if not set
+	if ep.ShortID == "" {
+		ep.ShortID = generateShortID(ep.ID)
+	}
+
+	// Compute token count if not set
+	if ep.TokenCount == 0 {
+		ep.TokenCount = estimateTokens(ep.Content)
+	}
+
 	_, err = g.db.Exec(`
-		INSERT INTO episodes (id, content, source, author, author_id, channel,
+		INSERT INTO episodes (id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 			embedding, reply_to, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			content = excluded.content,
+			token_count = excluded.token_count,
 			embedding = excluded.embedding,
 			entropy_score = excluded.entropy_score
 	`,
-		ep.ID, ep.Content, ep.Source, ep.Author, ep.AuthorID, ep.Channel,
+		ep.ID, ep.ShortID, ep.Content, ep.TokenCount, ep.Source, ep.Author, ep.AuthorID, ep.Channel,
 		ep.TimestampEvent, ep.TimestampIngested, ep.DialogueAct, ep.EntropyScore,
 		embeddingBytes, ep.ReplyTo, ep.CreatedAt,
 	)
@@ -62,7 +82,7 @@ func (g *DB) GetAllEpisodes(limit int) ([]*Episode, error) {
 	}
 
 	rows, err := g.db.Query(`
-		SELECT id, content, source, author, author_id, channel,
+		SELECT id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 			embedding, reply_to, created_at
 		FROM episodes
@@ -96,11 +116,23 @@ func (g *DB) CountEpisodes() (int, error) {
 // GetEpisode retrieves an episode by ID
 func (g *DB) GetEpisode(id string) (*Episode, error) {
 	row := g.db.QueryRow(`
-		SELECT id, content, source, author, author_id, channel,
+		SELECT id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 			embedding, reply_to, created_at
 		FROM episodes WHERE id = ?
 	`, id)
+
+	return scanEpisode(row)
+}
+
+// GetEpisodeByShortID retrieves an episode by its short ID
+func (g *DB) GetEpisodeByShortID(shortID string) (*Episode, error) {
+	row := g.db.QueryRow(`
+		SELECT id, short_id, content, token_count, source, author, author_id, channel,
+			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
+			embedding, reply_to, created_at
+		FROM episodes WHERE short_id = ?
+	`, shortID)
 
 	return scanEpisode(row)
 }
@@ -112,7 +144,7 @@ func (g *DB) GetEpisodes(ids []string) ([]*Episode, error) {
 	}
 
 	// Build query with placeholders
-	query := `SELECT id, content, source, author, author_id, channel,
+	query := `SELECT id, short_id, content, token_count, source, author, author_id, channel,
 		timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 		embedding, reply_to, created_at FROM episodes WHERE id IN (`
 	args := make([]interface{}, len(ids))
@@ -143,33 +175,35 @@ func (g *DB) GetEpisodes(ids []string) ([]*Episode, error) {
 	return episodes, nil
 }
 
-// GetRecentEpisodes retrieves episodes from the last duration, optionally filtered by channel
-func (g *DB) GetRecentEpisodes(since time.Duration, channel string, limit int) ([]*Episode, error) {
-	cutoff := time.Now().Add(-since)
+// GetRecentEpisodes retrieves the most recent episodes, optionally filtered by channel
+// Removed time-based filtering - we now rely on episode count and pyramid compression
+func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
+	if limit <= 0 {
+		limit = 30
+	}
 
 	var rows *sql.Rows
 	var err error
 
 	if channel != "" {
 		rows, err = g.db.Query(`
-			SELECT id, content, source, author, author_id, channel,
+			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 				embedding, reply_to, created_at
 			FROM episodes
-			WHERE timestamp_event > ? AND channel = ?
+			WHERE channel = ?
 			ORDER BY timestamp_event DESC
 			LIMIT ?
-		`, cutoff, channel, limit)
+		`, channel, limit)
 	} else {
 		rows, err = g.db.Query(`
-			SELECT id, content, source, author, author_id, channel,
+			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
 				embedding, reply_to, created_at
 			FROM episodes
-			WHERE timestamp_event > ?
 			ORDER BY timestamp_event DESC
 			LIMIT ?
-		`, cutoff, limit)
+		`, limit)
 	}
 
 	if err != nil {
@@ -192,7 +226,7 @@ func (g *DB) GetRecentEpisodes(since time.Duration, channel string, limit int) (
 // GetEpisodeReplies returns all episodes that reply to the given episode
 func (g *DB) GetEpisodeReplies(id string) ([]*Episode, error) {
 	rows, err := g.db.Query(`
-		SELECT e.id, e.content, e.source, e.author, e.author_id, e.channel,
+		SELECT e.id, e.short_id, e.content, e.token_count, e.source, e.author, e.author_id, e.channel,
 			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
 			e.embedding, e.reply_to, e.created_at
 		FROM episodes e
@@ -262,7 +296,7 @@ func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
 	}
 
 	rows, err := g.db.Query(`
-		SELECT e.id, e.content, e.source, e.author, e.author_id, e.channel,
+		SELECT e.id, e.short_id, e.content, e.token_count, e.source, e.author, e.author_id, e.channel,
 			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
 			e.embedding, e.reply_to, e.created_at
 		FROM episodes e
@@ -313,11 +347,12 @@ func (g *DB) GetEpisodeEntities(episodeID string) ([]string, error) {
 func scanEpisode(row *sql.Row) (*Episode, error) {
 	var ep Episode
 	var embeddingBytes []byte
+	var shortID sql.NullString
 	var author, authorID, channel, dialogueAct, replyTo sql.NullString
 	var entropyScore sql.NullFloat64
 
 	err := row.Scan(
-		&ep.ID, &ep.Content, &ep.Source, &author, &authorID, &channel,
+		&ep.ID, &shortID, &ep.Content, &ep.TokenCount, &ep.Source, &author, &authorID, &channel,
 		&ep.TimestampEvent, &ep.TimestampIngested, &dialogueAct, &entropyScore,
 		&embeddingBytes, &replyTo, &ep.CreatedAt,
 	)
@@ -328,6 +363,7 @@ func scanEpisode(row *sql.Row) (*Episode, error) {
 		return nil, err
 	}
 
+	ep.ShortID = shortID.String
 	ep.Author = author.String
 	ep.AuthorID = authorID.String
 	ep.Channel = channel.String
@@ -346,11 +382,12 @@ func scanEpisode(row *sql.Row) (*Episode, error) {
 func scanEpisodeRow(rows *sql.Rows) (*Episode, error) {
 	var ep Episode
 	var embeddingBytes []byte
+	var shortID sql.NullString
 	var author, authorID, channel, dialogueAct, replyTo sql.NullString
 	var entropyScore sql.NullFloat64
 
 	err := rows.Scan(
-		&ep.ID, &ep.Content, &ep.Source, &author, &authorID, &channel,
+		&ep.ID, &shortID, &ep.Content, &ep.TokenCount, &ep.Source, &author, &authorID, &channel,
 		&ep.TimestampEvent, &ep.TimestampIngested, &dialogueAct, &entropyScore,
 		&embeddingBytes, &replyTo, &ep.CreatedAt,
 	)
@@ -358,6 +395,7 @@ func scanEpisodeRow(rows *sql.Rows) (*Episode, error) {
 		return nil, err
 	}
 
+	ep.ShortID = shortID.String
 	ep.Author = author.String
 	ep.AuthorID = authorID.String
 	ep.Channel = channel.String
