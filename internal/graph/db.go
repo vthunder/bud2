@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -434,6 +435,32 @@ func (g *DB) runMigrations() error {
 			}
 		}
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (10)")
+	}
+
+	// Migration v11: Backfill short_id for episodes missing it
+	if version < 11 {
+		// Get all episodes without short_id
+		rows, err := g.db.Query("SELECT id FROM episodes WHERE short_id IS NULL OR short_id = ''")
+		if err == nil {
+			var ids []string
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					ids = append(ids, id)
+				}
+			}
+			rows.Close()
+
+			// Generate and update short_id for each episode
+			for _, id := range ids {
+				shortID := generateShortID(id)
+				g.db.Exec("UPDATE episodes SET short_id = ? WHERE id = ?", shortID, id)
+			}
+			if len(ids) > 0 {
+				log.Printf("[graph] Backfilled short_id for %d episodes", len(ids))
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (11)")
 	}
 
 	return nil
