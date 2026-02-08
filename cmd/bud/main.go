@@ -342,6 +342,9 @@ func main() {
 	var mcpSendMessage func(channelID, message string) error      // Will be wired to Discord effector
 	var mcpAddReaction func(channelID, messageID, emoji string) error // Will be wired to Discord effector
 
+	// Declare variable for executive (will be initialized after MCP deps are set up)
+	var exec *executive.ExecutiveV2
+
 	mcpDeps := &tools.Dependencies{
 		GraphDB:        graphDB,
 		ActivityLog:    activityLog,
@@ -381,6 +384,11 @@ func main() {
 			inbox.Add(msg)
 			return nil
 		},
+		OnMCPToolCall: func(toolName string) {
+			if exec != nil {
+				exec.GetMCPToolCallback()(toolName)
+			}
+		},
 	}
 
 	// Load idea store
@@ -408,7 +416,8 @@ func main() {
 	var fallbackSendMessage func(channelID, message string) error
 
 	// Initialize v2 executive with focus-based attention
-	exec := executive.NewExecutiveV2(
+	// Note: exec is already declared above so OnMCPToolCall can reference it
+	exec = executive.NewExecutiveV2(
 		graphDB,
 		reflexLog,
 		ollamaClient,     // for query-based memory retrieval

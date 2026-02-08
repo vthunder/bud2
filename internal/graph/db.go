@@ -20,7 +20,7 @@ type DB struct {
 
 // Open opens or creates the memory graph database
 func Open(statePath string) (*DB, error) {
-	dbPath := filepath.Join(statePath, "memory.db")
+	dbPath := filepath.Join(statePath, "system", "memory.db")
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
@@ -377,6 +377,63 @@ func (g *DB) runMigrations() error {
 			g.db.Exec(sql)
 		}
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (8)")
+	}
+
+	// Migration v9: Add trace_summaries table for pyramid summaries
+	if version < 9 {
+		migrations := []string{
+			`CREATE TABLE IF NOT EXISTS trace_summaries (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				trace_id TEXT NOT NULL,
+				compression_level INTEGER NOT NULL,
+				summary TEXT NOT NULL,
+				tokens INTEGER NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE,
+				UNIQUE(trace_id, compression_level)
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_trace_summaries_trace ON trace_summaries(trace_id)",
+			"CREATE INDEX IF NOT EXISTS idx_trace_summaries_level ON trace_summaries(compression_level)",
+		}
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				return fmt.Errorf("migration v9 failed: %w", err)
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (9)")
+	}
+
+	// Migration v10: Make traces.summary nullable (preparing for removal)
+	// SQLite doesn't support ALTER COLUMN, so we need to recreate the table
+	if version < 10 {
+		migrations := []string{
+			`CREATE TABLE IF NOT EXISTS traces_new (
+				id TEXT PRIMARY KEY,
+				summary TEXT,
+				topic TEXT,
+				activation REAL DEFAULT 0.5,
+				strength INTEGER DEFAULT 1,
+				is_core BOOLEAN DEFAULT FALSE,
+				embedding BLOB,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+				labile_until DATETIME,
+				trace_type TEXT DEFAULT 'knowledge'
+			)`,
+			`INSERT INTO traces_new SELECT id, summary, topic, activation, strength, is_core, embedding, created_at, last_accessed, labile_until, trace_type FROM traces`,
+			`DROP TABLE traces`,
+			`ALTER TABLE traces_new RENAME TO traces`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_activation ON traces(activation)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_is_core ON traces(is_core)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_last_accessed ON traces(last_accessed)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_trace_type ON traces(trace_type)`,
+		}
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				return fmt.Errorf("migration v10 failed: %w", err)
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (10)")
 	}
 
 	return nil

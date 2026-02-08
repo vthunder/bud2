@@ -782,9 +782,10 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 		if content == "" {
 			continue
 		}
+		traceID := fmt.Sprintf("core-%d-%d", time.Now().UnixNano(), idx)
 		trace := &graph.Trace{
-			ID:           fmt.Sprintf("core-%d-%d", time.Now().UnixNano(), idx),
-			Summary:      content,
+			ID:           traceID,
+			Summary:      content, // Still set for backwards compat, but won't be persisted
 			Activation:   1.0,
 			Strength:     100,
 			IsCore:       true,
@@ -794,6 +795,13 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 		if err := i.graphDB.AddTrace(trace); err != nil {
 			return count, fmt.Errorf("failed to add trace: %w", err)
 		}
+
+		// Store verbatim content in trace_summaries at level 0
+		tokens := len(content) / 4 // rough estimate
+		if err := i.graphDB.AddTraceSummary(traceID, graph.CompressionLevelVerbatim, content, tokens); err != nil {
+			return count, fmt.Errorf("failed to add trace summary: %w", err)
+		}
+
 		count++
 	}
 
@@ -961,13 +969,11 @@ func (i *Inspector) GetTraceContext(traceID string) (*TraceContext, error) {
 	return ctx, nil
 }
 
-// QueryTrace runs a question against the source episodes of a trace using the LLM
-func (i *Inspector) QueryTrace(traceID, question string) (string, error) {
+// QueryTrace runs a question against the source episodes of a trace using the LLM.
+// level parameter controls compression: 0=raw episodes, 1=L1 summary (default), 2=L2 summary
+func (i *Inspector) QueryTrace(traceID, question string, level int) (string, error) {
 	if i.graphDB == nil {
 		return "", fmt.Errorf("graph database not initialized")
-	}
-	if i.embedder == nil {
-		return "", fmt.Errorf("embedder not configured")
 	}
 
 	// Get source episodes for context
@@ -980,23 +986,59 @@ func (i *Inspector) QueryTrace(traceID, question string) (string, error) {
 		return "", fmt.Errorf("trace has no source episodes")
 	}
 
-	// Gather episode content
+	// Validate compression level
+	if level < 0 || level > 2 {
+		return "", fmt.Errorf("invalid compression level %d (must be 0-2)", level)
+	}
+
+	// Gather episode content (raw or compressed)
 	var context strings.Builder
+	var usedCompression bool
 	for _, epID := range episodeIDs {
 		ep, err := i.graphDB.GetEpisode(epID)
 		if err != nil || ep == nil {
 			continue
 		}
-		context.WriteString(fmt.Sprintf("[%s] %s: %s\n", ep.TimestampEvent.Format("2006-01-02 15:04"), ep.Author, ep.Content))
+
+		var content string
+		if level > 0 {
+			// Try to get compressed summary
+			summary, err := i.graphDB.GetEpisodeSummary(epID, level)
+			if err == nil && summary != nil {
+				content = summary.Summary
+				usedCompression = true
+			} else {
+				// Fall back to raw content if summary not available
+				content = ep.Content
+			}
+		} else {
+			// Level 0: use raw content
+			content = ep.Content
+		}
+
+		context.WriteString(fmt.Sprintf("[%s] %s: %s\n",
+			ep.TimestampEvent.Format("2006-01-02 15:04"), ep.Author, content))
 	}
 
 	if context.Len() == 0 {
 		return "", fmt.Errorf("no episode content available")
 	}
 
-	// Build prompt for the LLM - we'll need an LLM interface
-	// For now, return the context with a note that LLM query is not yet implemented
-	return fmt.Sprintf("Context from %d source episodes:\n\n%s\n\n(LLM query not yet implemented - add Generator interface to Inspector)", len(episodeIDs), context.String()), nil
+	// Build result string
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("Context from %d source episodes", len(episodeIDs)))
+	if usedCompression {
+		result.WriteString(fmt.Sprintf(" (compression level %d)", level))
+	}
+	result.WriteString(":\n\n")
+	result.WriteString(context.String())
+
+	if question != "" {
+		result.WriteString("\n(LLM query not yet implemented - add Generator interface to Inspector)\n")
+		result.WriteString(fmt.Sprintf("Question: %s\n", question))
+	}
+
+	return result.String(), nil
 }
 
 // Helper methods

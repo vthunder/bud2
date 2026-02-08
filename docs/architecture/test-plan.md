@@ -19,6 +19,12 @@ All major components from the architecture have code:
 | `extract` | ✅ Implemented | fast.go, deep.go, resolve.go |
 | `metacog` | ✅ Implemented | patterns.go, compiler.go, reflection.go |
 
+**Recent Enhancements (Feb 2026)**:
+- **Pyramid summaries**: Episodes stored with 5 compression levels (L1-L5: 4, 8, 16, 32, 64 words) + L0 original
+- **Stable IDs**: Episodes and traces have 5-char IDs from blake3 hash (e.g., `a3f9c`, `tr_68730`)
+- **Token counting**: Episodes track token counts for context budget management
+- **MCP introspection tools**: `query_trace()`, `query_episode()`, `get_trace_context()`
+
 ---
 
 ## Test Categories

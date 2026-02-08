@@ -33,11 +33,10 @@ func (g *DB) AddTrace(tr *Trace) error {
 	}
 
 	_, err = g.db.Exec(`
-		INSERT INTO traces (id, summary, topic, trace_type, activation, strength, is_core,
+		INSERT INTO traces (id, topic, trace_type, activation, strength, is_core,
 			embedding, created_at, last_accessed, labile_until)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			summary = excluded.summary,
 			trace_type = excluded.trace_type,
 			activation = excluded.activation,
 			strength = excluded.strength,
@@ -45,7 +44,7 @@ func (g *DB) AddTrace(tr *Trace) error {
 			last_accessed = excluded.last_accessed,
 			labile_until = excluded.labile_until
 	`,
-		tr.ID, tr.Summary, tr.Topic, string(traceType), tr.Activation, tr.Strength, tr.IsCore,
+		tr.ID, tr.Topic, string(traceType), tr.Activation, tr.Strength, tr.IsCore,
 		embeddingBytes, tr.CreatedAt, tr.LastAccessed, nullableTime(tr.LabileUntil),
 	)
 
@@ -57,11 +56,25 @@ func (g *DB) AddTrace(tr *Trace) error {
 }
 
 // GetTrace retrieves a trace by ID
+// Tries compression levels in order of preference: 32, 64, 16, 8, 4, 0
+// Falls back to empty string if no summary is available
 func (g *DB) GetTrace(id string) (*Trace, error) {
+	// Try to get summary with fallback across compression levels
 	row := g.db.QueryRow(`
-		SELECT id, summary, topic, trace_type, activation, strength, is_core,
-			embedding, created_at, last_accessed, labile_until
-		FROM traces WHERE id = ?
+		SELECT t.id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.id = ?
 	`, id)
 
 	return scanTrace(row)
@@ -69,11 +82,14 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 
 // GetCoreTraces retrieves all core identity traces
 func (g *DB) GetCoreTraces() ([]*Trace, error) {
+	// Use verbatim (level 0) content from trace_summaries, fall back to empty string if not available
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, trace_type, activation, strength, is_core,
-			embedding, created_at, last_accessed, labile_until
-		FROM traces WHERE is_core = TRUE
-		ORDER BY created_at ASC
+		SELECT t.id, COALESCE(ts.summary, ''), t.topic, t.trace_type,
+			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		LEFT JOIN trace_summaries ts ON t.id = ts.trace_id AND ts.compression_level = 0
+		WHERE t.is_core = TRUE
+		ORDER BY t.created_at ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query core traces: %w", err)
@@ -84,13 +100,24 @@ func (g *DB) GetCoreTraces() ([]*Trace, error) {
 }
 
 // GetActivatedTraces retrieves traces with activation above threshold
+// Tries compression levels in order of preference: 32, 64, 16, 8, 4, 0
 func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, trace_type, activation, strength, is_core,
-			embedding, created_at, last_accessed, labile_until
-		FROM traces
-		WHERE activation >= ? AND is_core = FALSE
-		ORDER BY activation DESC
+		SELECT t.id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.activation >= ? AND t.is_core = FALSE
+		ORDER BY t.activation DESC
 		LIMIT ?
 	`, threshold, limit)
 	if err != nil {

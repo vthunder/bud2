@@ -222,7 +222,12 @@ func (g *DB) FindTracesWithKeywords(query string, topK int) ([]string, error) {
 
 	// Build SQL LIKE query for each keyword
 	// This is a simple approximation of BM25 - matches any keyword
-	rows, err := g.db.Query(`SELECT id, summary FROM traces`)
+	// Use L32 pyramid summary from trace_summaries, fall back to empty string if not available
+	rows, err := g.db.Query(`
+		SELECT t.id, COALESCE(ts.summary, '')
+		FROM traces t
+		LEFT JOIN trace_summaries ts ON t.id = ts.trace_id AND ts.compression_level = 32
+	`)
 	if err != nil {
 		return nil, err
 	}

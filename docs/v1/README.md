@@ -17,10 +17,13 @@ The **v2 architecture** (implemented 2026-01-13) is documented in `docs/architec
 | Component | V1 | V2 |
 |-----------|-----|-----|
 | **Memory** | Flat traces (JSON) | Three-tier graph (SQLite): episodes → entities → traces |
+| **Episode Storage** | Raw content only | Pyramid summaries (L1-L5: 4, 8, 16, 32, 64 words) + L0 original |
+| **IDs** | Sequential/generated | Stable 5-char IDs from blake3 hash (e.g., `a3f9c`, `tr_68730`) |
 | **Attention** | Thread-based routing | Focus-based single-stream with P0-P4 priorities |
 | **Executive** | Multi-session per thread | Single persistent Claude session |
-| **Context** | Full trace reload | Conversation buffer with incremental sync |
+| **Context** | Full trace reload | Conversation buffer with incremental sync, adaptive detail |
 | **Retrieval** | Semantic similarity | Spreading activation + "feeling of knowing" |
+| **Introspection** | Limited | MCP tools for querying specific episodes/traces by ID |
 
 ## V1 Documents (Historical)
 

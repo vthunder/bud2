@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeebo/blake3"
 )
 
 const (
@@ -33,9 +36,8 @@ type SimpleSession struct {
 
 	// Track what's been sent to this session
 	seenItemIDs   map[string]bool
-	seenMemoryIDs map[string]bool // Track which memory traces have been sent
-	memoryIDMap   map[string]int  // Map trace_id -> display ID (M1, M2, etc.)
-	nextMemoryID  int             // Next display ID to assign
+	seenMemoryIDs map[string]bool   // Track which memory traces have been sent
+	memoryIDMap   map[string]string // Map trace_id -> short hash display ID (tr_xxxxx)
 
 	// Track conversation buffer sync to avoid re-sending already-seen context
 	// Only buffer entries after this time need to be sent
@@ -59,8 +61,7 @@ func NewSimpleSession(statePath string) *SimpleSession {
 		sessionStartTime: time.Now(),
 		seenItemIDs:      make(map[string]bool),
 		seenMemoryIDs:    make(map[string]bool),
-		memoryIDMap:      make(map[string]int),
-		nextMemoryID:     1,
+		memoryIDMap:      make(map[string]string),
 		statePath:        statePath,
 	}
 }
@@ -142,40 +143,38 @@ func (s *SimpleSession) SeenMemoryCount() int {
 }
 
 // GetOrAssignMemoryID returns the display ID for a trace, assigning one if needed
-// This ensures the same trace always gets the same ID within a session
-func (s *SimpleSession) GetOrAssignMemoryID(traceID string) int {
+// Generates a stable BLAKE3 short hash ID (tr_xxxxx) for content-addressable references
+func (s *SimpleSession) GetOrAssignMemoryID(traceID string) string {
 	if id, exists := s.memoryIDMap[traceID]; exists {
 		return id
 	}
-	id := s.nextMemoryID
+	// Generate BLAKE3 short hash (5 chars) from trace ID
+	hash := blake3.Sum256([]byte(traceID))
+	shortHash := hex.EncodeToString(hash[:])[:5]
+	id := "tr_" + shortHash
 	s.memoryIDMap[traceID] = id
-	s.nextMemoryID++
 	return id
 }
 
-// GetMemoryID returns the display ID for a trace, or 0 if not assigned
-func (s *SimpleSession) GetMemoryID(traceID string) int {
+// GetMemoryID returns the display ID for a trace, or empty string if not assigned
+func (s *SimpleSession) GetMemoryID(traceID string) string {
 	return s.memoryIDMap[traceID]
 }
 
-// ResolveMemoryEval takes a memory_eval map like {"M1": 5, "M2": 1} and returns
+// ResolveMemoryEval takes a memory_eval map like {"tr_a3f9c": 5, "tr_b2e1d": 1} and returns
 // a map of trace_id -> rating by reversing the memoryIDMap lookup.
+// Also supports legacy "M1", "M2" format for backwards compatibility.
 // Unknown display IDs are skipped.
 func (s *SimpleSession) ResolveMemoryEval(eval map[string]any) map[string]int {
 	// Build reverse map: display_id -> trace_id
-	reverseMap := make(map[int]string, len(s.memoryIDMap))
+	reverseMap := make(map[string]string, len(s.memoryIDMap))
 	for traceID, displayID := range s.memoryIDMap {
 		reverseMap[displayID] = traceID
 	}
 
 	resolved := make(map[string]int)
 	for key, val := range eval {
-		// Parse "M1" -> 1
-		var displayID int
-		if _, err := fmt.Sscanf(key, "M%d", &displayID); err != nil {
-			continue
-		}
-		// Parse rating value
+		// Parse rating value first
 		var rating int
 		switch v := val.(type) {
 		case float64:
@@ -185,9 +184,19 @@ func (s *SimpleSession) ResolveMemoryEval(eval map[string]any) map[string]int {
 		default:
 			continue
 		}
-		// Resolve to trace_id
-		if traceID, ok := reverseMap[displayID]; ok {
+
+		// Try new format (tr_xxxxx) first
+		if traceID, ok := reverseMap[key]; ok {
 			resolved[traceID] = rating
+			continue
+		}
+
+		// Legacy format: Parse "M1" -> look up in old sequential map
+		// This won't work for new sessions but provides graceful degradation
+		var displayID int
+		if _, err := fmt.Sscanf(key, "M%d", &displayID); err == nil {
+			// Can't resolve legacy IDs in new system, skip
+			continue
 		}
 	}
 	return resolved
@@ -260,8 +269,7 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	// Generate new session ID and reset state for each prompt to keep them independent
 	s.sessionID = generateSessionUUID()
 	s.sessionStartTime = time.Now()
-	s.memoryIDMap = make(map[string]int) // Reset memory display IDs
-	s.nextMemoryID = 1
+	s.memoryIDMap = make(map[string]string) // Reset memory display IDs
 	args = append(args, "--session-id", s.sessionID)
 
 	if cfg.Model != "" {
@@ -485,8 +493,7 @@ func (s *SimpleSession) Reset() {
 	s.sessionStartTime = time.Now()
 	s.seenItemIDs = make(map[string]bool)
 	s.seenMemoryIDs = make(map[string]bool)
-	s.memoryIDMap = make(map[string]int)
-	s.nextMemoryID = 1
+	s.memoryIDMap = make(map[string]string)
 	s.lastBufferSync = time.Time{} // Reset buffer sync so full buffer is sent on first prompt
 	s.userMessageCount = 0         // Reset message counter
 	s.lastUsage = nil              // Clear usage data

@@ -53,6 +53,14 @@ func (m *mockLLM) Summarize(fragments []string) (string, error) {
 	return result, nil
 }
 
+func (m *mockLLM) Generate(prompt string) (string, error) {
+	// Simple mock that just returns a truncated version of the prompt
+	if len(prompt) > 100 {
+		return prompt[:100], nil
+	}
+	return prompt, nil
+}
+
 func TestGroupEpisodesByTimeProximity(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

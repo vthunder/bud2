@@ -149,82 +149,88 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 
 ### 2.1 Conversation Buffer
 
-**Purpose**: Solve the 60-second percept window problem. Keep recent conversation raw for immediate context.
+**Purpose**: Maintain continuous conversation context across interactions. All conversation history is stored as episodes in the memory graph with pyramid summaries, then dynamically assembled for Claude's context.
 
-**Implementation** (LangChain SummaryBufferMemory style):
+**Current Implementation** (2026-02-08):
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │              CONVERSATION BUFFER                      │
 ├──────────────────────────────────────────────────────┤
-│ Recent (raw):     Last 5-10 minutes                  │
-│                   User messages + Bud responses       │
-│                   Full content, no summarization      │
+│ All conversations are stored as episodes in the      │
+│ memory graph with pyramid summarization:             │
 │                                                       │
-│ Older (summary):  Beyond 10 minutes                  │
-│                   Summarized when buffer overflows    │
-│                   Key points preserved                │
-├──────────────────────────────────────────────────────┤
+│ Episode Storage:                                      │
+│   - L0: Full content (always preserved)              │
+│   - L1-L5: Pyramid summaries (4-64 words)            │
+│   - Stable 5-char IDs for reference                  │
+│   - Token counts for context budget                  │
+│                                                       │
+│ Context Assembly (per executive wake):               │
+│   - Fetch episodes from memory graph                 │
+│   - Apply compression based on recency:              │
+│     * Very recent: L0 (full content)                 │
+│     * Recent: L4-L5 (32-64 words)                    │
+│     * Older: L2-L3 (8-16 words)                      │
+│     * Ancient: L1 (4 words) or omitted               │
+│   - Format as "Recent Conversation" section          │
+│                                                       │
 │ Scope:            Per-channel (Discord)              │
 │                   Or per-focus (autonomous work)      │
-├──────────────────────────────────────────────────────┤
-│ Reply Tracking:   Each message links to what it      │
-│                   responds to (explicit chain)        │
+│                                                       │
+│ No persistent buffer file - context is assembled     │
+│ on-demand from episodes in the memory graph.         │
 └──────────────────────────────────────────────────────┘
 ```
 
-**Key insight**: "yes" stays with its question because they're in the same buffer window.
+**Key insight**: "yes" stays with its question because both are in the recent episode window, retrieved together from the memory graph.
 
-**Incremental Sync Optimization** (implemented 2026-01-13):
+**Pyramid Summarization** (implemented 2026-02-01, inverted 2026-02-08):
 
-Since the Claude session is persistent (single tmux window), we avoid re-sending buffer content that's already in Claude's context:
+Episodes are summarized into multiple compression levels when stored:
+- **L0**: Original full content (always preserved, ~500 words average)
+- **L1**: 64 words - detailed summary
+- **L2**: 32 words - moderate detail
+- **L3**: 16 words - short summary
+- **L4**: 8 words - very brief summary
+- **L5**: 4 words - extreme compression, gist only
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  BUFFER SYNC LOGIC                       │
-├─────────────────────────────────────────────────────────┤
-│ session.lastBufferSync = time.Time{}  (zero on start)   │
-│                                                          │
-│ On first prompt (lastBufferSync is zero):               │
-│   - Include summary (if any)                            │
-│   - Include ALL buffer entries                          │
-│   - Update: session.lastBufferSync = time.Now()         │
-│                                                          │
-│ On subsequent prompts:                                  │
-│   - Include ONLY entries after lastBufferSync           │
-│   - Skip summary (already in Claude's context)          │
-│   - Update: session.lastBufferSync = time.Now()         │
-│                                                          │
-│ On session.Reset():                                      │
-│   - Clear lastBufferSync (full sync on next prompt)     │
-└─────────────────────────────────────────────────────────┘
-```
+**Inverted pyramid rationale**: Higher levels = more detail (like building floors). L0 is "ground truth", L1-L5 are increasingly compressed views. This aligns with intuition where "level up" = more information.
 
-This avoids token waste from re-sending the same conversation history every prompt.
+When building context for Claude:
+- Most recent messages (last few minutes): L0 (full detail)
+- Recent messages (5-20 min ago): L1-L2 (32-64 words)
+- Older messages (20+ min ago): L3-L4 (8-16 words)
+- Very old context: L5 (4 words) or fetched from consolidated traces
 
-**Additional Filtering** (to avoid redundancy):
+This provides adaptive detail levels while maintaining full history access via stable IDs.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│              BUFFER ENTRY FILTERING                      │
-├─────────────────────────────────────────────────────────┤
-│ ExcludeID: Current focus item's ID                      │
-│   - The user's message appears in "Current Focus"       │
-│   - Don't duplicate it in "Recent Conversation"         │
-│                                                          │
-│ ExcludeBotAuthor: "Bud" (on incremental sync only)      │
-│   - Claude already knows what it said in this session   │
-│   - Skip bot responses to save tokens                   │
-│   - On first sync (session reset): INCLUDE bot msgs     │
-│     (Claude has amnesia and needs the history)          │
-└─────────────────────────────────────────────────────────┘
-```
+**Context Budget Management**:
+
+Episodes track token counts, enabling precise context budget control:
+- Target: Stay within Claude's context window (~180k tokens)
+- Strategy: Include as many recent episodes as budget allows
+- Compression: Dynamically choose L0-L5 based on:
+  * Episode recency (newer = more detail)
+  * Remaining budget (tight = more compression)
+  * Relevance to current focus (high = more detail)
+
+**Incremental Episode Fetching**:
+
+Episodes are fetched from the memory graph based on:
+1. **Time window**: Last N hours/days of conversation
+2. **Scope filter**: Channel/focus matching current context
+3. **Compression level**: Chosen dynamically per episode
+4. **Deduplication**: Exclude current focus item if already in prompt
+
+No persistent buffer state between sessions - each executive wake assembles context fresh from the episode graph.
 
 **Files involved**:
-- `internal/executive/simple_session.go`: `lastBufferSync`, `LastBufferSync()`, `UpdateBufferSync()`, `IsFirstPrompt()`
-- `internal/buffer/buffer.go`: `BufferFilter`, `GetEntriesSinceFiltered(scope, since, filter)`
-- `internal/executive/executive_v2.go`: `buildContext()` uses filtered fetch, `processItem()` updates sync time
-- `cmd/bud/main.go`: Sets `BotAuthor: "Bud"` in ExecutiveV2Config
+- `internal/graph/db.go`: Episode storage with pyramid summaries, token counts, stable IDs
+- `internal/graph/compression.go`: Pyramid summarization (L0-L5)
+- `internal/executive/executive_v2.go`: Context assembly with dynamic compression
+- `cmd/bud/main.go`: ExecutiveV2 initialization
+- `cmd/compress-episodes/main.go`: Batch compression script for existing episodes
 
 ### 2.2 Quality Filter (NER-Based)
 
@@ -302,8 +308,8 @@ def apply_modifiers(item):
 ```
 TIER 1: EPISODES (Non-lossy)
 ├── Node: Episode
-│   ├── id: string
-│   ├── content: string (raw message)
+│   ├── id: string (stable 5-char ID derived from blake3 hash)
+│   ├── content: string (raw message - always preserved as L0)
 │   ├── source: string (discord, calendar, etc.)
 │   ├── author: string
 │   ├── channel: string
@@ -311,7 +317,15 @@ TIER 1: EPISODES (Non-lossy)
 │   ├── timestamp_ingested: datetime (T' - when we learned it)
 │   ├── dialogue_act: string (backchannel, question, statement, etc.)
 │   ├── entropy_score: float
-│   └── embedding: vector
+│   ├── embedding: vector
+│   ├── token_count: int (for context budget)
+│   └── pyramid_summaries: {
+│       L1: string (4 words)
+│       L2: string (8 words)
+│       L3: string (16 words)
+│       L4: string (32 words)
+│       L5: string (64 words)
+│   }
 │
 ├── Edge: REPLIES_TO (episode → episode)
 ├── Edge: FOLLOWS (temporal sequence)
@@ -332,7 +346,7 @@ TIER 2: ENTITIES (Extracted)
 
 TIER 3: TRACES (Consolidated)
 ├── Node: Trace
-│   ├── id: string
+│   ├── id: string (stable 5-char ID derived from blake3 hash)
 │   ├── summary: string (1-2 sentences)
 │   ├── topic: string (optional association)
 │   ├── activation: float
@@ -363,6 +377,26 @@ def retrieve_memories(query_embedding, current_focus, limit=10):
 
     # 4. Filter and return
     return ranked[:limit]
+```
+
+**Stable IDs for Introspection** (implemented 2026-02-01):
+
+Both episodes and traces are assigned **stable 5-character IDs** derived from the blake3 hash of their content. This enables:
+
+1. **Reference stability**: IDs don't change even if database is rebuilt
+2. **Executive introspection**: The executive can query specific memories via MCP tools:
+   - `query_trace(trace_id)` - Get full trace details with source episodes
+   - `query_episode(id)` - Get specific episode by short ID
+   - `get_trace_context(trace_id)` - Get detailed context including linked entities
+3. **Higher resolution retrieval**: When memories in context are too compressed, the executive can request less-compressed versions using the stable ID
+4. **Memory debugging**: Easy to reference specific memories in logs and conversations
+
+Example workflow:
+```
+1. Executive gets recalled memory [tr_a3f9c] with L2 summary (8 words)
+2. Needs more detail → calls query_trace("tr_a3f9c", level=1)
+3. Receives L4/L5 summaries of source episodes (32-64 words each)
+4. Or calls query_episode() on specific episode IDs for full L0 content
 ```
 
 ### 2.5 Reflex-Executive Integration

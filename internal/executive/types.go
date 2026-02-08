@@ -1,6 +1,10 @@
 package executive
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 // ClaudeConfig holds configuration for Claude sessions
 type ClaudeConfig struct {
@@ -62,4 +66,39 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// formatMemoryTimestamp formats a memory timestamp for display in prompts
+// Shows relative time if recent, otherwise shows date
+func formatMemoryTimestamp(t time.Time) string {
+	if t.IsZero() {
+		return "Unknown"
+	}
+
+	now := time.Now()
+	diff := now.Sub(t)
+
+	// Less than 1 hour: show minutes
+	if diff < time.Hour {
+		mins := int(diff.Minutes())
+		if mins == 0 {
+			return "Just now"
+		}
+		return fmt.Sprintf("%dm ago", mins)
+	}
+
+	// Less than 24 hours: show hours
+	if diff < 24*time.Hour {
+		hours := int(diff.Hours())
+		return fmt.Sprintf("%dh ago", hours)
+	}
+
+	// Less than 7 days: show days
+	if diff < 7*24*time.Hour {
+		days := int(diff.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	}
+
+	// Otherwise show date
+	return t.Format("2006-01-02")
 }

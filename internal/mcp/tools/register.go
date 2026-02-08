@@ -72,6 +72,11 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 
 		log.Printf("talk_to_user: channel=%s message=%s", channelID, truncate(message, 50))
 
+		// Notify that this MCP tool was called (for user response detection)
+		if deps.OnMCPToolCall != nil {
+			deps.OnMCPToolCall("talk_to_user")
+		}
+
 		// Direct effector required
 		if deps.SendMessage == nil {
 			return "", fmt.Errorf("SendMessage callback not configured")
@@ -112,6 +117,11 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		discordMsgID := parts[2]
 
 		log.Printf("discord_react: channel=%s message=%s emoji=%s", channelID, discordMsgID, emoji)
+
+		// Notify that this MCP tool was called (for user response detection)
+		if deps.OnMCPToolCall != nil {
+			deps.OnMCPToolCall("discord_react")
+		}
 
 		// Direct effector required
 		if deps.AddReaction == nil {
@@ -345,10 +355,11 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		})
 
 		server.RegisterTool("query_trace", mcp.ToolDef{
-			Description: "Query a specific trace for detailed information. Returns the trace with its source episodes.",
+			Description: "Query a specific trace for detailed information. Returns the trace with its source episodes. Uses L1 compressed summaries by default to reduce noise while preserving context.",
 			Properties: map[string]mcp.PropDef{
 				"trace_id": {Type: "string", Description: "The trace ID to query"},
 				"question": {Type: "string", Description: "Optional question to answer about this trace"},
+				"level":    {Type: "number", Description: "Compression level for episodes: 0=raw, 1=L1 summary (default), 2=L2 summary"},
 			},
 			Required: []string{"trace_id"},
 		}, func(ctx any, args map[string]any) (string, error) {
@@ -359,13 +370,18 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 
 			question, _ := args["question"].(string)
 
-			result, err := deps.StateInspector.QueryTrace(traceID, question)
+			// Parse level parameter (default to 1 for L1 compression)
+			level := 1
+			if lvl, ok := args["level"].(float64); ok {
+				level = int(lvl)
+			}
+
+			result, err := deps.StateInspector.QueryTrace(traceID, question, level)
 			if err != nil {
 				return "", err
 			}
 
-			data, _ := json.MarshalIndent(result, "", "  ")
-			return string(data), nil
+			return result, nil
 		})
 
 		// query_episode - query specific episode by short ID or full ID

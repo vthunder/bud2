@@ -17,6 +17,7 @@ import (
 type LLMClient interface {
 	Embed(text string) ([]float64, error)
 	Summarize(fragments []string) (string, error)
+	Generate(prompt string) (string, error) // For pyramid summary generation
 }
 
 // Consolidator handles memory consolidation
@@ -270,6 +271,13 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 	for entityID := range group.entityIDs {
 		if err := c.graph.LinkTraceToEntity(traceID, entityID); err != nil {
 			log.Printf("[consolidate] Failed to link trace to entity %s: %v", entityID, err)
+		}
+	}
+
+	// Generate pyramid summaries (L64→L32→L16→L8→L4) from source episodes
+	if c.llm != nil {
+		if err := c.graph.GenerateTracePyramid(traceID, group.episodes, c.llm); err != nil {
+			log.Printf("[consolidate] Failed to generate pyramid summaries for trace %s: %v", traceID, err)
 		}
 	}
 

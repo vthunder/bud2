@@ -31,7 +31,7 @@ func NewClient(baseURL, model string) *Client {
 		model:           model,
 		generationModel: "llama3.2", // fast, available by default
 		client: &http.Client{
-			Timeout: 60 * time.Second, // generation can take longer
+			Timeout: 300 * time.Second, // 5 minutes for long-running compressions
 		},
 	}
 }
@@ -125,24 +125,25 @@ func (c *Client) Generate(prompt string) (string, error) {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
+	start := time.Now()
 	resp, err := c.client.Post(
 		c.baseURL+"/api/generate",
 		"application/json",
 		bytes.NewReader(jsonBody),
 	)
 	if err != nil {
-		return "", fmt.Errorf("ollama request: %w", err)
+		return "", fmt.Errorf("ollama request (took %s): %w", time.Since(start), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ollama error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("ollama error (status %d, took %s): %s", resp.StatusCode, time.Since(start), string(body))
 	}
 
 	var result generateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("decode response (took %s): %w", time.Since(start), err)
 	}
 
 	return result.Response, nil

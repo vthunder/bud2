@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+// addTestTrace adds a trace with minimal pyramid summary for testing
+func addTestTrace(t *testing.T, db *DB, tr *Trace) error {
+	t.Helper()
+	if err := db.AddTrace(tr); err != nil {
+		return err
+	}
+	// Add minimal L32 summary so GetTrace queries work
+	summary := tr.Summary
+	if summary == "" {
+		summary = "Test trace"
+	}
+	return db.AddTraceSummary(tr.ID, 32, summary, estimateTokens(summary))
+}
+
 // setupTestDB creates a temporary test database
 func setupTestDB(t *testing.T) (*DB, func()) {
 	t.Helper()

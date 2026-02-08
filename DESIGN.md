@@ -1,5 +1,16 @@
 # Bud2: Subsumption-Inspired Agent Architecture
 
+> **⚠️ NOTE**: This document describes the v1 conceptual architecture (early January 2026).
+>
+> **For current v2 implementation**, see `docs/architecture/v2-memory-architecture.md`
+>
+> **Key v2 changes**:
+> - Three-tier memory graph (episodes → entities → traces) with pyramid summaries
+> - Stable 5-char IDs for episodes/traces derived from content hashes
+> - Conversation buffer with adaptive detail (recent=full, distant=compressed)
+> - MCP tools for executive introspection (query_trace, query_episode)
+> - Spreading activation retrieval with "feeling of knowing"
+
 ## Influences
 
 ### Rodney Brooks' Subsumption Architecture (MIT, 1980s)

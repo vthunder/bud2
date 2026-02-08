@@ -12,6 +12,7 @@ Daily procedure to maintain memory quality and identify system improvements.
 - **This guide**: `state/system/guides/memory-introspection.md`
 - **Health report & insights**: `state/notes/memory-health.md`
 - **Memory database**: `state/system/memory.db`
+- **Prompt logs**: `state/debug/prompts/<focus_id>.txt` (for debugging wrong responses)
 - **Task**: `task-memory-introspection-daily`
 
 ## Daily Procedure
@@ -41,12 +42,20 @@ SELECT ROUND(activation, 1) as bucket, COUNT(*) FROM traces GROUP BY bucket ORDE
 # New PRODUCT entities (check for false positives)
 sqlite3 ... "SELECT name FROM entities WHERE type = 'PRODUCT' ORDER BY rowid DESC LIMIT 10;"
 
-# Recent traces (check for quality issues)
-sqlite3 ... "SELECT summary FROM traces ORDER BY created_at DESC LIMIT 10;"
+# Recent traces (check for quality issues) - now showing stable IDs
+sqlite3 ... "SELECT id, summary FROM traces ORDER BY created_at DESC LIMIT 10;"
 
 # PERSON entities (are names being captured?)
 sqlite3 ... "SELECT name FROM entities WHERE type = 'PERSON';"
+
+# Check episode compression quality (pyramid summaries)
+sqlite3 ... "SELECT id, author, substr(content, 1, 60) as content, l1, l2 FROM episodes ORDER BY timestamp_event DESC LIMIT 5;"
 ```
+
+**Note on stable IDs**: Episodes and traces now have 5-character IDs (e.g., `a3f9c`, `tr_68730`) derived from blake3 hashes. These IDs are stable across database rebuilds and can be used with MCP tools:
+- `query_trace(trace_id)` - Get full details
+- `query_episode(id)` - Get specific episode
+- `get_trace_context(trace_id)` - Get context with entities
 
 ### Step 4: Auto-Prune Obviously Wrong Data
 
@@ -96,8 +105,43 @@ SELECT name FROM entities WHERE type = 'PRODUCT' LIMIT 20;
 -- Sample PERSON entities
 SELECT name FROM entities WHERE type = 'PERSON';
 
--- Recent traces
-SELECT summary FROM traces ORDER BY created_at DESC LIMIT 10;
+-- Recent traces with stable IDs
+SELECT id, summary FROM traces ORDER BY created_at DESC LIMIT 10;
+
+-- Check pyramid summary quality
+SELECT id, author, substr(content, 1, 60) as content, l1, l2, l3
+FROM episodes
+ORDER BY timestamp_event DESC LIMIT 10;
+
+-- Find episode by short ID
+SELECT id, author, content, l4, l5 FROM episodes WHERE id LIKE 'a3f9c%';
+
+-- Check token counts (for context budget)
+SELECT AVG(token_count) as avg_tokens, MAX(token_count) as max_tokens
+FROM episodes;
+```
+
+## Debugging Wrong Responses
+
+If you notice you answered the wrong question or responded to something not in the conversation:
+
+1. **Find the session/focus ID** - Check recent activity log with `activity_recent`
+2. **Read the prompt** - The full prompt sent to Claude is saved to `state/debug/prompts/<focus_id>.txt`
+3. **Check what went wrong**:
+   - Wrong memories retrieved? (Check "Recalled Memories" section)
+   - Wrong conversation history? (Check "Recent Conversation" section)
+   - Wrong focus item? (Check "Current Focus" section)
+4. **Create task to fix root cause** - Don't just note the symptom, fix the bug
+
+Example:
+```bash
+# Find the problematic session
+activity_recent count=10 | grep executive_wake
+
+# Read the prompt that was sent
+cat state/debug/prompts/inbox-discord-1454634002290970761-1470068982118613002.txt
+
+# Look for what context was wrong and file a bug
 ```
 
 ## Time & Frequency
