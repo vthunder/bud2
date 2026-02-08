@@ -16,14 +16,15 @@ type EpisodeSummary struct {
 	Tokens           int    `json:"tokens"`
 }
 
-// CompressionLevel represents different tiers of compression (pyramid structure)
+// CompressionLevel represents compression targets by max words (inverted pyramid)
+// Level indicates target maximum word count - higher level = MORE compression
 const (
-	CompressionLevelMedium      = 1 // Key points (~50-100 words)
-	CompressionLevelHigh        = 2 // Essential summary (~20-30 words)
-	CompressionLevelCore        = 3 // Core facts (~16 words)
-	CompressionLevelMinimal     = 4 // Minimal summary (~8 words)
-	CompressionLevelUltra       = 5 // Ultra-compressed (~4 words)
-	CompressionLevelMax         = 5 // Maximum compression level
+	CompressionLevel64  = 1 // ~64 words max
+	CompressionLevel32  = 2 // ~32 words max
+	CompressionLevel16  = 3 // ~16 words max
+	CompressionLevel8   = 4 // ~8 words max
+	CompressionLevel4   = 5 // ~4 words max
+	CompressionLevelMax = 5 // Maximum compression level
 )
 
 // Note: Level 0 (full text) removed - we fall back to episodes.content directly
@@ -69,134 +70,97 @@ type Compressor interface {
 	Generate(prompt string) (string, error)
 }
 
-// GenerateEpisodeSummaries creates summaries at compression levels 1-5 for an episode
-// Generates asynchronously - full text is stored in episodes table with token_count
+// GenerateEpisodeSummaries creates summaries at all compression levels (1-5) for an episode
+// Always generates all levels - uses verbatim text if episode already below target word count
 func (g *DB) GenerateEpisodeSummaries(episode Episode, compressor Compressor) error {
-	// Generate compressed versions asynchronously if content is long enough
-	if compressor != nil && episode.TokenCount > 50 {
-		go g.generateCompressedSummaries(episode, compressor, episode.TokenCount)
+	// Generate all compression levels asynchronously
+	if compressor != nil {
+		go g.generateCompressedSummaries(episode, compressor)
 	}
 
 	return nil
 }
 
-// generateCompressedSummaries creates level 1-5 summaries (async)
-func (g *DB) generateCompressedSummaries(episode Episode, compressor Compressor, fullTokens int) {
-	// Level 1: Key points (~50-100 words, if content > 100 tokens)
-	if fullTokens > 100 {
-		summary, err := compressToKeyPoints(episode, compressor)
-		if err == nil {
-			tokens := estimateTokens(summary)
-			g.AddEpisodeSummary(episode.ID, CompressionLevelMedium, summary, tokens)
-		}
+// generateCompressedSummaries creates all compression levels (1-5) for every episode
+// Uses verbatim text if episode is already below target word count
+func (g *DB) generateCompressedSummaries(episode Episode, compressor Compressor) {
+	wordCount := estimateWordCount(episode.Content)
+
+	// Level 1: ~64 words max
+	summary, err := compressToTarget(episode, compressor, 64, wordCount)
+	if err == nil {
+		tokens := estimateTokens(summary)
+		g.AddEpisodeSummary(episode.ID, CompressionLevel64, summary, tokens)
 	}
 
-	// Level 2: Essential summary (~20-30 words, if content > 300 tokens)
-	if fullTokens > 300 {
-		summary, err := compressToEssence(episode, compressor)
-		if err == nil {
-			tokens := estimateTokens(summary)
-			g.AddEpisodeSummary(episode.ID, CompressionLevelHigh, summary, tokens)
-		}
+	// Level 2: ~32 words max
+	summary, err = compressToTarget(episode, compressor, 32, wordCount)
+	if err == nil {
+		tokens := estimateTokens(summary)
+		g.AddEpisodeSummary(episode.ID, CompressionLevel32, summary, tokens)
 	}
 
-	// Level 3: Core facts (~16 words, if content > 500 tokens)
-	if fullTokens > 500 {
-		summary, err := compressToCore(episode, compressor)
-		if err == nil {
-			tokens := estimateTokens(summary)
-			g.AddEpisodeSummary(episode.ID, CompressionLevelCore, summary, tokens)
-		}
+	// Level 3: ~16 words max
+	summary, err = compressToTarget(episode, compressor, 16, wordCount)
+	if err == nil {
+		tokens := estimateTokens(summary)
+		g.AddEpisodeSummary(episode.ID, CompressionLevel16, summary, tokens)
 	}
 
-	// Level 4: Minimal summary (~8 words, if content > 700 tokens)
-	if fullTokens > 700 {
-		summary, err := compressToMinimal(episode, compressor)
-		if err == nil {
-			tokens := estimateTokens(summary)
-			g.AddEpisodeSummary(episode.ID, CompressionLevelMinimal, summary, tokens)
-		}
+	// Level 4: ~8 words max
+	summary, err = compressToTarget(episode, compressor, 8, wordCount)
+	if err == nil {
+		tokens := estimateTokens(summary)
+		g.AddEpisodeSummary(episode.ID, CompressionLevel8, summary, tokens)
 	}
 
-	// Level 5: Ultra-compressed (~4 words, if content > 1000 tokens)
-	if fullTokens > 1000 {
-		summary, err := compressToUltra(episode, compressor)
-		if err == nil {
-			tokens := estimateTokens(summary)
-			g.AddEpisodeSummary(episode.ID, CompressionLevelUltra, summary, tokens)
-		}
+	// Level 5: ~4 words max
+	summary, err = compressToTarget(episode, compressor, 4, wordCount)
+	if err == nil {
+		tokens := estimateTokens(summary)
+		g.AddEpisodeSummary(episode.ID, CompressionLevel4, summary, tokens)
 	}
 }
 
-// compressToKeyPoints creates a medium compression summary (level 1)
-func compressToKeyPoints(episode Episode, compressor Compressor) (string, error) {
-	prompt := buildCompressionPrompt(episode, "key points", `
-Extract the key points from this message:
-- Keep important facts, decisions, and insights
-- Remove small talk, acknowledgments, and filler
-- Preserve technical details and context
-- Output 1-2 sentences
-`)
+// compressToTarget compresses episode to target word count or returns verbatim if already below target
+func compressToTarget(episode Episode, compressor Compressor, targetWords int, currentWords int) (string, error) {
+	// If episode is already below target, use verbatim text
+	if currentWords <= targetWords {
+		return episode.Content, nil
+	}
+
+	// Otherwise compress to target
+	prompt := buildCompressionPrompt(episode, targetWords)
 	return compressor.Generate(prompt)
 }
 
-// compressToEssence creates a high compression summary (level 2)
-func compressToEssence(episode Episode, compressor Compressor) (string, error) {
-	prompt := buildCompressionPrompt(episode, "essence", `
-Summarize the essential point of this message in 1 sentence (20-30 words):
-- What is the core information?
-- Strip everything except the minimal necessary context
-`)
-	return compressor.Generate(prompt)
+// estimateWordCount provides rough word count estimate
+func estimateWordCount(text string) int {
+	// Simple word count: split on whitespace
+	words := strings.Fields(text)
+	return len(words)
 }
 
-// compressToCore creates a core facts summary (level 3)
-func compressToCore(episode Episode, compressor Compressor) (string, error) {
-	prompt := buildCompressionPrompt(episode, "core facts", `
-Compress to core facts in exactly 16 words or less:
-- Keep only the absolutely essential information
-- Remove all context and qualifiers
-- Focus on the main subject and action
-`)
-	return compressor.Generate(prompt)
-}
-
-// compressToMinimal creates a minimal summary (level 4)
-func compressToMinimal(episode Episode, compressor Compressor) (string, error) {
-	prompt := buildCompressionPrompt(episode, "minimal", `
-Compress to exactly 8 words or less:
-- Maximum compression while remaining intelligible
-- Subject + verb + object only
-- No extra words
-`)
-	return compressor.Generate(prompt)
-}
-
-// compressToUltra creates an ultra-compressed summary (level 5)
-func compressToUltra(episode Episode, compressor Compressor) (string, error) {
-	prompt := buildCompressionPrompt(episode, "ultra-compressed", `
-Compress to exactly 4 words:
-- Absolute minimum representation
-- Key concepts only
-- Telegram style
-`)
-	return compressor.Generate(prompt)
-}
-
-// buildCompressionPrompt constructs a prompt for episode compression
-func buildCompressionPrompt(episode Episode, level, instruction string) string {
+// buildCompressionPrompt constructs a prompt for episode compression to target word count
+func buildCompressionPrompt(episode Episode, targetWords int) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("You are compressing a conversation message to %s.\n\n", level))
-	sb.WriteString(instruction)
-	sb.WriteString("\n\nMessage context:\n")
+	sb.WriteString(fmt.Sprintf("Compress this message to %d words or less.\n\n", targetWords))
+	sb.WriteString("Rules:\n")
+	sb.WriteString(fmt.Sprintf("- Maximum %d words\n", targetWords))
+	sb.WriteString("- Keep the core meaning\n")
+	sb.WriteString("- Remove filler, small talk, redundancy\n")
+	sb.WriteString("- Preserve key facts and decisions\n")
+
+	sb.WriteString("\nMessage context:\n")
 	sb.WriteString(fmt.Sprintf("- Author: %s\n", episode.Author))
 	if episode.DialogueAct != "" {
 		sb.WriteString(fmt.Sprintf("- Type: %s\n", episode.DialogueAct))
 	}
-	sb.WriteString("\nMessage:\n")
+
+	sb.WriteString("\nOriginal message:\n")
 	sb.WriteString(episode.Content)
-	sb.WriteString("\n\nSummary:")
+	sb.WriteString("\n\nCompressed version:")
 
 	return sb.String()
 }

@@ -41,7 +41,7 @@ func main() {
 	log.Printf("Episodes: %d", totalEpisodes)
 	log.Printf("Existing summaries: %d", totalSummaries)
 
-	// Get episodes without summaries
+	// Get all episodes that need any compression level
 	episodes, err := getUncompressedEpisodes(db)
 	if err != nil {
 		log.Fatalf("Failed to get uncompressed episodes: %v", err)
@@ -62,7 +62,7 @@ func main() {
 
 	// Compress episodes in parallel
 	start := time.Now()
-	var processed, l1Created, l2Created, l3Created, l4Created, l5Created atomic.Int64
+	var processed, l64Created, l32Created, l16Created, l8Created, l4Created atomic.Int64
 
 	var wg sync.WaitGroup
 	episodeChan := make(chan *graph.Episode, len(episodes))
@@ -73,25 +73,25 @@ func main() {
 		go func(workerID int) {
 			defer wg.Done()
 			for ep := range episodeChan {
-				// Compress this episode
+				// Compress this episode to all levels
 				counts, err := compressEpisode(db, ep, ollamaClient)
 				if err != nil {
 					log.Printf("[worker %d] Failed to compress episode %s: %v", workerID, ep.ShortID, err)
 				} else {
-					if counts.L1 {
-						l1Created.Add(1)
+					if counts.L64 {
+						l64Created.Add(1)
 					}
-					if counts.L2 {
-						l2Created.Add(1)
+					if counts.L32 {
+						l32Created.Add(1)
 					}
-					if counts.L3 {
-						l3Created.Add(1)
+					if counts.L16 {
+						l16Created.Add(1)
+					}
+					if counts.L8 {
+						l8Created.Add(1)
 					}
 					if counts.L4 {
 						l4Created.Add(1)
-					}
-					if counts.L5 {
-						l5Created.Add(1)
 					}
 				}
 				n := processed.Add(1)
@@ -117,15 +117,15 @@ func main() {
 	elapsed := time.Since(start)
 	log.Printf("Compression complete!")
 	log.Printf("Time: %s (%.1f episodes/sec)", elapsed.Round(time.Second), float64(len(episodes))/elapsed.Seconds())
-	log.Printf("L1 summaries created: %d", l1Created.Load())
-	log.Printf("L2 summaries created: %d", l2Created.Load())
-	log.Printf("L3 summaries created: %d", l3Created.Load())
+	log.Printf("L64 summaries created: %d", l64Created.Load())
+	log.Printf("L32 summaries created: %d", l32Created.Load())
+	log.Printf("L16 summaries created: %d", l16Created.Load())
+	log.Printf("L8 summaries created: %d", l8Created.Load())
 	log.Printf("L4 summaries created: %d", l4Created.Load())
-	log.Printf("L5 summaries created: %d", l5Created.Load())
 }
 
 type compressionCounts struct {
-	L1, L2, L3, L4, L5 bool
+	L64, L32, L16, L8, L4 bool
 }
 
 func getUncompressedEpisodes(db *graph.DB) ([]*graph.Episode, error) {
@@ -135,68 +135,20 @@ func getUncompressedEpisodes(db *graph.DB) ([]*graph.Episode, error) {
 		return nil, err
 	}
 
-	// Filter to only those that need compression based on token count
+	// Filter to only those missing any compression level
 	var uncompressed []*graph.Episode
 	for _, ep := range episodes {
-		// Skip very short episodes (< 50 tokens)
-		if ep.TokenCount < 50 {
-			continue
-		}
-
 		needsCompression := false
 
-		// Check if needs L1 (> 100 tokens)
-		if ep.TokenCount > 100 {
-			l1Summary, err := db.GetEpisodeSummary(ep.ID, graph.CompressionLevelMedium)
+		// Check all compression levels (L64, L32, L16, L8, L4)
+		for _, level := range []int{graph.CompressionLevel64, graph.CompressionLevel32, graph.CompressionLevel16, graph.CompressionLevel8, graph.CompressionLevel4} {
+			summary, err := db.GetEpisodeSummary(ep.ID, level)
 			if err != nil {
 				return nil, err
 			}
-			if l1Summary == nil {
+			if summary == nil {
 				needsCompression = true
-			}
-		}
-
-		// Check if needs L2 (> 300 tokens)
-		if ep.TokenCount > 300 {
-			l2Summary, err := db.GetEpisodeSummary(ep.ID, graph.CompressionLevelHigh)
-			if err != nil {
-				return nil, err
-			}
-			if l2Summary == nil {
-				needsCompression = true
-			}
-		}
-
-		// Check if needs L3 (> 500 tokens)
-		if ep.TokenCount > 500 {
-			l3Summary, err := db.GetEpisodeSummary(ep.ID, graph.CompressionLevelCore)
-			if err != nil {
-				return nil, err
-			}
-			if l3Summary == nil {
-				needsCompression = true
-			}
-		}
-
-		// Check if needs L4 (> 700 tokens)
-		if ep.TokenCount > 700 {
-			l4Summary, err := db.GetEpisodeSummary(ep.ID, graph.CompressionLevelMinimal)
-			if err != nil {
-				return nil, err
-			}
-			if l4Summary == nil {
-				needsCompression = true
-			}
-		}
-
-		// Check if needs L5 (> 1000 tokens)
-		if ep.TokenCount > 1000 {
-			l5Summary, err := db.GetEpisodeSummary(ep.ID, graph.CompressionLevelUltra)
-			if err != nil {
-				return nil, err
-			}
-			if l5Summary == nil {
-				needsCompression = true
+				break
 			}
 		}
 
@@ -211,167 +163,97 @@ func getUncompressedEpisodes(db *graph.DB) ([]*graph.Episode, error) {
 func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compressor) (compressionCounts, error) {
 	var counts compressionCounts
 
-	// Skip very short episodes
-	if ep.TokenCount < 50 {
-		return counts, nil
-	}
+	// Generate all compression levels (verbatim if already below target)
+	wordCount := estimateWordCount(ep.Content)
 
-	// L1: Key points (if > 100 tokens)
-	if ep.TokenCount > 100 {
-		summary, err := compressToKeyPoints(ep, compressor)
-		if err != nil {
-			return counts, fmt.Errorf("L1 compression failed: %w", err)
-		}
-		tokens := estimateTokens(summary)
-		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevelMedium, summary, tokens); err != nil {
-			return counts, fmt.Errorf("failed to store L1 summary: %w", err)
-		}
-		counts.L1 = true
+	// L64: ~64 words max
+	summary, err := compressToTarget(ep, compressor, 64, wordCount)
+	if err != nil {
+		return counts, fmt.Errorf("L64 compression failed: %w", err)
 	}
+	tokens := estimateTokens(summary)
+	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel64, summary, tokens); err != nil {
+		return counts, fmt.Errorf("failed to store L64 summary: %w", err)
+	}
+	counts.L64 = true
 
-	// L2: Essential (if > 300 tokens)
-	if ep.TokenCount > 300 {
-		summary, err := compressToEssence(ep, compressor)
-		if err != nil {
-			return counts, fmt.Errorf("L2 compression failed: %w", err)
-		}
-		tokens := estimateTokens(summary)
-		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevelHigh, summary, tokens); err != nil {
-			return counts, fmt.Errorf("failed to store L2 summary: %w", err)
-		}
-		counts.L2 = true
+	// L32: ~32 words max
+	summary, err = compressToTarget(ep, compressor, 32, wordCount)
+	if err != nil {
+		return counts, fmt.Errorf("L32 compression failed: %w", err)
 	}
+	tokens = estimateTokens(summary)
+	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel32, summary, tokens); err != nil {
+		return counts, fmt.Errorf("failed to store L32 summary: %w", err)
+	}
+	counts.L32 = true
 
-	// L3: Core facts (if > 500 tokens)
-	if ep.TokenCount > 500 {
-		summary, err := compressToCore(ep, compressor)
-		if err != nil {
-			return counts, fmt.Errorf("L3 compression failed: %w", err)
-		}
-		tokens := estimateTokens(summary)
-		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevelCore, summary, tokens); err != nil {
-			return counts, fmt.Errorf("failed to store L3 summary: %w", err)
-		}
-		counts.L3 = true
+	// L16: ~16 words max
+	summary, err = compressToTarget(ep, compressor, 16, wordCount)
+	if err != nil {
+		return counts, fmt.Errorf("L16 compression failed: %w", err)
 	}
+	tokens = estimateTokens(summary)
+	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel16, summary, tokens); err != nil {
+		return counts, fmt.Errorf("failed to store L16 summary: %w", err)
+	}
+	counts.L16 = true
 
-	// L4: Minimal (if > 700 tokens)
-	if ep.TokenCount > 700 {
-		summary, err := compressToMinimal(ep, compressor)
-		if err != nil {
-			return counts, fmt.Errorf("L4 compression failed: %w", err)
-		}
-		tokens := estimateTokens(summary)
-		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevelMinimal, summary, tokens); err != nil {
-			return counts, fmt.Errorf("failed to store L4 summary: %w", err)
-		}
-		counts.L4 = true
+	// L8: ~8 words max
+	summary, err = compressToTarget(ep, compressor, 8, wordCount)
+	if err != nil {
+		return counts, fmt.Errorf("L8 compression failed: %w", err)
 	}
+	tokens = estimateTokens(summary)
+	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel8, summary, tokens); err != nil {
+		return counts, fmt.Errorf("failed to store L8 summary: %w", err)
+	}
+	counts.L8 = true
 
-	// L5: Ultra-compressed (if > 1000 tokens)
-	if ep.TokenCount > 1000 {
-		summary, err := compressToUltra(ep, compressor)
-		if err != nil {
-			return counts, fmt.Errorf("L5 compression failed: %w", err)
-		}
-		tokens := estimateTokens(summary)
-		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevelUltra, summary, tokens); err != nil {
-			return counts, fmt.Errorf("failed to store L5 summary: %w", err)
-		}
-		counts.L5 = true
+	// L4: ~4 words max
+	summary, err = compressToTarget(ep, compressor, 4, wordCount)
+	if err != nil {
+		return counts, fmt.Errorf("L4 compression failed: %w", err)
 	}
+	tokens = estimateTokens(summary)
+	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel4, summary, tokens); err != nil {
+		return counts, fmt.Errorf("failed to store L4 summary: %w", err)
+	}
+	counts.L4 = true
 
 	return counts, nil
 }
 
-func compressToKeyPoints(ep *graph.Episode, compressor graph.Compressor) (string, error) {
-	prompt := fmt.Sprintf(`You are compressing a conversation message to key points.
+// compressToTarget compresses episode to target word count or returns verbatim if already below target
+func compressToTarget(ep *graph.Episode, compressor graph.Compressor, targetWords int, currentWords int) (string, error) {
+	// If episode is already below target, use verbatim text
+	if currentWords <= targetWords {
+		return ep.Content, nil
+	}
 
-Extract the key points from this message:
-- Keep important facts, decisions, and insights
-- Remove small talk, acknowledgments, and filler
-- Preserve technical details and context
-- Output 1-2 sentences
-
-Message context:
-- Author: %s
-%s
-Message:
-%s
-
-Summary:`, ep.Author, dialogueActContext(ep), ep.Content)
+	// Otherwise compress to target
+	prompt := buildCompressionPrompt(ep, targetWords)
 	return compressor.Generate(prompt)
 }
 
-func compressToEssence(ep *graph.Episode, compressor graph.Compressor) (string, error) {
-	prompt := fmt.Sprintf(`You are compressing a conversation message to essence.
+// buildCompressionPrompt constructs a prompt for episode compression to target word count
+func buildCompressionPrompt(ep *graph.Episode, targetWords int) string {
+	prompt := fmt.Sprintf(`Compress this message to %d words or less.
 
-Summarize the essential point of this message in 1 sentence (20-30 words):
-- What is the core information?
-- Strip everything except the minimal necessary context
-
-Message context:
-- Author: %s
-%s
-Message:
-%s
-
-Summary:`, ep.Author, dialogueActContext(ep), ep.Content)
-	return compressor.Generate(prompt)
-}
-
-func compressToCore(ep *graph.Episode, compressor graph.Compressor) (string, error) {
-	prompt := fmt.Sprintf(`You are compressing a conversation message to core facts.
-
-Compress to core facts in exactly 16 words or less:
-- Keep only the absolutely essential information
-- Remove all context and qualifiers
-- Focus on the main subject and action
+Rules:
+- Maximum %d words
+- Keep the core meaning
+- Remove filler, small talk, redundancy
+- Preserve key facts and decisions
 
 Message context:
 - Author: %s
 %s
-Message:
+Original message:
 %s
 
-Summary:`, ep.Author, dialogueActContext(ep), ep.Content)
-	return compressor.Generate(prompt)
-}
-
-func compressToMinimal(ep *graph.Episode, compressor graph.Compressor) (string, error) {
-	prompt := fmt.Sprintf(`You are compressing a conversation message to minimal.
-
-Compress to exactly 8 words or less:
-- Maximum compression while remaining intelligible
-- Subject + verb + object only
-- No extra words
-
-Message context:
-- Author: %s
-%s
-Message:
-%s
-
-Summary:`, ep.Author, dialogueActContext(ep), ep.Content)
-	return compressor.Generate(prompt)
-}
-
-func compressToUltra(ep *graph.Episode, compressor graph.Compressor) (string, error) {
-	prompt := fmt.Sprintf(`You are compressing a conversation message to ultra-compressed.
-
-Compress to exactly 4 words:
-- Absolute minimum representation
-- Key concepts only
-- Telegram style
-
-Message context:
-- Author: %s
-%s
-Message:
-%s
-
-Summary:`, ep.Author, dialogueActContext(ep), ep.Content)
-	return compressor.Generate(prompt)
+Compressed version:`, targetWords, targetWords, ep.Author, dialogueActContext(ep), ep.Content)
+	return prompt
 }
 
 func dialogueActContext(ep *graph.Episode) string {
@@ -388,4 +270,19 @@ func estimateTokens(text string) int {
 		tokens = 1
 	}
 	return tokens
+}
+
+func estimateWordCount(text string) int {
+	// Simple word count: count whitespace-separated tokens
+	count := 0
+	inWord := false
+	for _, r := range text {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			inWord = false
+		} else if !inWord {
+			count++
+			inWord = true
+		}
+	}
+	return count
 }

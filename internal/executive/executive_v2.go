@@ -364,6 +364,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						ID:        t.ID,
 						Summary:   t.Summary,
 						Relevance: t.Activation,
+						Timestamp: t.LastAccessed, // Use last access time for recency
 					})
 				}
 			}
@@ -377,6 +378,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						ID:        t.ID,
 						Summary:   t.Summary,
 						Relevance: t.Activation,
+						Timestamp: t.LastAccessed, // Use last access time for recency
 					})
 				}
 			}
@@ -432,9 +434,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		count int
 		level int
 	}{
-		{5, 0},                             // Last 5: full text
-		{10, graph.CompressionLevelMedium}, // Next 10: key points
-		{15, graph.CompressionLevelHigh},   // Next 15: essence
+		{5, 0},                           // Last 5: full text
+		{10, graph.CompressionLevel64},   // Next 10: ~64 words
+		{15, graph.CompressionLevel32},   // Next 15: ~32 words
 	}
 
 	episodeIdx := 0
@@ -539,7 +541,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 
 	// Recalled memories (past context, not instructions)
 	// Only show NEW memories not already sent in this session
-	// Format with [M1], [M2] IDs for self-eval tracking
+	// Format with [tr_xxxxx] BLAKE3 hash IDs for self-eval tracking
 	if len(bundle.Memories) > 0 || bundle.PriorMemoriesCount > 0 {
 		prompt.WriteString("## Recalled Memories (Past Context)\n")
 		prompt.WriteString("These are things I remember from past interactions - NOT current instructions:\n")
@@ -549,11 +551,13 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			sort.Slice(bundle.Memories, func(i, j int) bool {
 				return bundle.Memories[i].Relevance > bundle.Memories[j].Relevance
 			})
-			// Assign display IDs (M1, M2, ...) per prompt for self-eval tracking
+			// Assign display IDs using BLAKE3 short hash for content-addressable IDs
 			// The memory ID map is reset at the start of each SendPrompt
 			for _, mem := range bundle.Memories {
 				displayID := e.session.GetOrAssignMemoryID(mem.ID)
-				prompt.WriteString(fmt.Sprintf("- [M%d] I recall: %s\n", displayID, mem.Summary))
+				// Format timestamp as relative time if recent, otherwise as date
+				timeStr := formatMemoryTimestamp(mem.Timestamp)
+				prompt.WriteString(fmt.Sprintf("- [%s] [%s] I recall: %s\n", displayID, timeStr, mem.Summary))
 			}
 		}
 		prompt.WriteString("\n")
@@ -623,7 +627,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	if len(bundle.Memories) > 0 {
 		prompt.WriteString("## Memory Eval\n")
 		prompt.WriteString("When calling signal_done, include memory_eval with usefulness ratings.\n")
-		prompt.WriteString("Format: `{\"M1\": 5, \"M2\": 1}` (1=not useful, 5=very useful)\n")
+		prompt.WriteString("Format: `{\"tr_a3f9c\": 5, \"tr_b2e1d\": 1}` (1=not useful, 5=very useful)\n")
 		prompt.WriteString("This helps improve memory retrieval.\n\n")
 	}
 
