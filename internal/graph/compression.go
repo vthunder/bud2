@@ -16,10 +16,14 @@ type EpisodeSummary struct {
 	Tokens           int    `json:"tokens"`
 }
 
-// CompressionLevel represents different tiers of compression
+// CompressionLevel represents different tiers of compression (pyramid structure)
 const (
-	CompressionLevelMedium = 1 // Key points (~30% reduction)
-	CompressionLevelHigh   = 2 // Essential summary (~70% reduction)
+	CompressionLevelMedium      = 1 // Key points (~50-100 words)
+	CompressionLevelHigh        = 2 // Essential summary (~20-30 words)
+	CompressionLevelCore        = 3 // Core facts (~16 words)
+	CompressionLevelMinimal     = 4 // Minimal summary (~8 words)
+	CompressionLevelUltra       = 5 // Ultra-compressed (~4 words)
+	CompressionLevelMax         = 5 // Maximum compression level
 )
 
 // Note: Level 0 (full text) removed - we fall back to episodes.content directly
@@ -38,7 +42,7 @@ func (g *DB) AddEpisodeSummary(episodeID string, level int, summary string, toke
 // Returns nil if no summary exists (caller should fall back to episodes.content)
 func (g *DB) GetEpisodeSummary(episodeID string, level int) (*EpisodeSummary, error) {
 	// Try requested level first, then higher levels
-	for lvl := level; lvl <= CompressionLevelHigh; lvl++ {
+	for lvl := level; lvl <= CompressionLevelMax; lvl++ {
 		var summary EpisodeSummary
 		err := g.db.QueryRow(`
 			SELECT id, episode_id, compression_level, summary, tokens
@@ -65,7 +69,7 @@ type Compressor interface {
 	Generate(prompt string) (string, error)
 }
 
-// GenerateEpisodeSummaries creates summaries at compression levels 1-2 for an episode
+// GenerateEpisodeSummaries creates summaries at compression levels 1-5 for an episode
 // Generates asynchronously - full text is stored in episodes table with token_count
 func (g *DB) GenerateEpisodeSummaries(episode Episode, compressor Compressor) error {
 	// Generate compressed versions asynchronously if content is long enough
@@ -76,9 +80,9 @@ func (g *DB) GenerateEpisodeSummaries(episode Episode, compressor Compressor) er
 	return nil
 }
 
-// generateCompressedSummaries creates level 1 and 2 summaries (async)
+// generateCompressedSummaries creates level 1-5 summaries (async)
 func (g *DB) generateCompressedSummaries(episode Episode, compressor Compressor, fullTokens int) {
-	// Level 1: Key points (if content > 100 tokens)
+	// Level 1: Key points (~50-100 words, if content > 100 tokens)
 	if fullTokens > 100 {
 		summary, err := compressToKeyPoints(episode, compressor)
 		if err == nil {
@@ -87,12 +91,39 @@ func (g *DB) generateCompressedSummaries(episode Episode, compressor Compressor,
 		}
 	}
 
-	// Level 2: Essential summary (if content > 300 tokens)
+	// Level 2: Essential summary (~20-30 words, if content > 300 tokens)
 	if fullTokens > 300 {
 		summary, err := compressToEssence(episode, compressor)
 		if err == nil {
 			tokens := estimateTokens(summary)
 			g.AddEpisodeSummary(episode.ID, CompressionLevelHigh, summary, tokens)
+		}
+	}
+
+	// Level 3: Core facts (~16 words, if content > 500 tokens)
+	if fullTokens > 500 {
+		summary, err := compressToCore(episode, compressor)
+		if err == nil {
+			tokens := estimateTokens(summary)
+			g.AddEpisodeSummary(episode.ID, CompressionLevelCore, summary, tokens)
+		}
+	}
+
+	// Level 4: Minimal summary (~8 words, if content > 700 tokens)
+	if fullTokens > 700 {
+		summary, err := compressToMinimal(episode, compressor)
+		if err == nil {
+			tokens := estimateTokens(summary)
+			g.AddEpisodeSummary(episode.ID, CompressionLevelMinimal, summary, tokens)
+		}
+	}
+
+	// Level 5: Ultra-compressed (~4 words, if content > 1000 tokens)
+	if fullTokens > 1000 {
+		summary, err := compressToUltra(episode, compressor)
+		if err == nil {
+			tokens := estimateTokens(summary)
+			g.AddEpisodeSummary(episode.ID, CompressionLevelUltra, summary, tokens)
 		}
 	}
 }
@@ -112,9 +143,42 @@ Extract the key points from this message:
 // compressToEssence creates a high compression summary (level 2)
 func compressToEssence(episode Episode, compressor Compressor) (string, error) {
 	prompt := buildCompressionPrompt(episode, "essence", `
-Summarize the essential point of this message in 1 sentence:
+Summarize the essential point of this message in 1 sentence (20-30 words):
 - What is the core information?
 - Strip everything except the minimal necessary context
+`)
+	return compressor.Generate(prompt)
+}
+
+// compressToCore creates a core facts summary (level 3)
+func compressToCore(episode Episode, compressor Compressor) (string, error) {
+	prompt := buildCompressionPrompt(episode, "core facts", `
+Compress to core facts in exactly 16 words or less:
+- Keep only the absolutely essential information
+- Remove all context and qualifiers
+- Focus on the main subject and action
+`)
+	return compressor.Generate(prompt)
+}
+
+// compressToMinimal creates a minimal summary (level 4)
+func compressToMinimal(episode Episode, compressor Compressor) (string, error) {
+	prompt := buildCompressionPrompt(episode, "minimal", `
+Compress to exactly 8 words or less:
+- Maximum compression while remaining intelligible
+- Subject + verb + object only
+- No extra words
+`)
+	return compressor.Generate(prompt)
+}
+
+// compressToUltra creates an ultra-compressed summary (level 5)
+func compressToUltra(episode Episode, compressor Compressor) (string, error) {
+	prompt := buildCompressionPrompt(episode, "ultra-compressed", `
+Compress to exactly 4 words:
+- Absolute minimum representation
+- Key concepts only
+- Telegram style
 `)
 	return compressor.Generate(prompt)
 }
