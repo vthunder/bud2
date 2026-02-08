@@ -29,6 +29,12 @@ func main() {
 
 	log.Printf("Database: %s", dbPath)
 
+	// Wipe existing summaries for fresh start
+	log.Println("Wiping existing summaries...")
+	if err := db.DeleteAllEpisodeSummaries(); err != nil {
+		log.Fatalf("Failed to delete existing summaries: %v", err)
+	}
+
 	// Count episodes
 	stats, err := db.Stats()
 	if err != nil {
@@ -72,12 +78,15 @@ func main() {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			log.Printf("[worker %d] Started", workerID)
 			for ep := range episodeChan {
+				log.Printf("[worker %d] Processing episode %s", workerID, ep.ShortID)
 				// Compress this episode to all levels
 				counts, err := compressEpisode(db, ep, ollamaClient)
 				if err != nil {
 					log.Printf("[worker %d] Failed to compress episode %s: %v", workerID, ep.ShortID, err)
 				} else {
+					log.Printf("[worker %d] Successfully compressed episode %s", workerID, ep.ShortID)
 					if counts.L64 {
 						l64Created.Add(1)
 					}
@@ -102,6 +111,7 @@ func main() {
 					log.Printf("Progress: %d/%d (%.1f/s, ~%s remaining)", n, len(episodes), rate, remaining.Round(time.Second))
 				}
 			}
+			log.Printf("[worker %d] Finished", workerID)
 		}(i)
 	}
 
@@ -165,8 +175,10 @@ func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compresso
 
 	// Generate all compression levels (verbatim if already below target)
 	wordCount := estimateWordCount(ep.Content)
+	log.Printf("  Episode %s has %d words", ep.ShortID, wordCount)
 
 	// L64: ~64 words max
+	log.Printf("  Compressing %s to L64...", ep.ShortID)
 	summary, err := compressToTarget(ep, compressor, 64, wordCount)
 	if err != nil {
 		return counts, fmt.Errorf("L64 compression failed: %w", err)
@@ -176,6 +188,7 @@ func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compresso
 		return counts, fmt.Errorf("failed to store L64 summary: %w", err)
 	}
 	counts.L64 = true
+	log.Printf("  ✓ L64 done for %s", ep.ShortID)
 
 	// L32: ~32 words max
 	summary, err = compressToTarget(ep, compressor, 32, wordCount)
@@ -246,13 +259,10 @@ Rules:
 - Remove filler, small talk, redundancy
 - Preserve key facts and decisions
 
-Message context:
-- Author: %s
-%s
-Original message:
+%sOriginal message:
 %s
 
-Compressed version:`, targetWords, targetWords, ep.Author, dialogueActContext(ep), ep.Content)
+Compressed version:`, targetWords, targetWords, dialogueActContext(ep), ep.Content)
 	return prompt
 }
 
