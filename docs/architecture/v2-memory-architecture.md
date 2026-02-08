@@ -75,7 +75,7 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 │  │  Single Claude Session                                                │  │
 │  │  ┌─────────────────────────────────────────────────────────────────┐ │  │
 │  │  │ Context Assembly:                                               │ │  │
-│  │  │  1. Core Identity (always)                                      │ │  │
+│  │  │  1. Core Identity (loaded from state/core.md)                   │ │  │
 │  │  │  2. Conversation Buffer (recent raw exchanges)                  │ │  │
 │  │  │  3. Retrieved Memories (graph-based, focus-relevant)            │ │  │
 │  │  │  4. Recent Reflex Activity (observable)                         │ │  │
@@ -167,12 +167,11 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 │   - Token counts for context budget                  │
 │                                                       │
 │ Context Assembly (per executive wake):               │
-│   - Fetch episodes from memory graph                 │
-│   - Apply compression based on recency:              │
-│     * Very recent: L0 (full content)                 │
-│     * Recent: L4-L5 (32-64 words)                    │
-│     * Older: L2-L3 (8-16 words)                      │
-│     * Ancient: L1 (4 words) or omitted               │
+│   - Fetch last 30 episodes from memory graph         │
+│   - Apply compression tiers (newest first):          │
+│     * Last 5: L0 (full content)                      │
+│     * Next 10: L32 (32 words max)                    │
+│     * Next 15: L8 (8 words max)                      │
 │   - Format as "Recent Conversation" section          │
 │                                                       │
 │ Scope:            Per-channel (Discord)              │
@@ -185,23 +184,23 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 
 **Key insight**: "yes" stays with its question because both are in the recent episode window, retrieved together from the memory graph.
 
-**Pyramid Summarization** (implemented 2026-02-01, inverted 2026-02-08):
+**Pyramid Summarization** (implemented 2026-02-01, redesigned 2026-02-08):
 
 Episodes are summarized into multiple compression levels when stored:
-- **L0**: Original full content (always preserved, ~500 words average)
-- **L1**: 64 words - detailed summary
-- **L2**: 32 words - moderate detail
-- **L3**: 16 words - short summary
-- **L4**: 8 words - very brief summary
-- **L5**: 4 words - extreme compression, gist only
+- **L0**: Original full content (always preserved in episodes table)
+- **L64**: 64 words max - detailed summary
+- **L32**: 32 words max - moderate detail
+- **L16**: 16 words max - short summary
+- **L8**: 8 words max - very brief summary
+- **L4**: 4 words max - extreme compression, gist only
 
-**Inverted pyramid rationale**: Higher levels = more detail (like building floors). L0 is "ground truth", L1-L5 are increasingly compressed views. This aligns with intuition where "level up" = more information.
+**Level naming**: Level number = target maximum word count (L32 = 32 words max). All levels are generated for every episode. If content is already below target, verbatim text is used.
 
-When building context for Claude:
-- Most recent messages (last few minutes): L0 (full detail)
-- Recent messages (5-20 min ago): L1-L2 (32-64 words)
-- Older messages (20+ min ago): L3-L4 (8-16 words)
-- Very old context: L5 (4 words) or fetched from consolidated traces
+**Recent Conversation context assembly** (fixed 2026-02-08):
+- Last 5 messages: L0 (full detail from episodes.content)
+- Next 10 messages: L32 (32 words max)
+- Next 15 messages: L8 (8 words max)
+- Total: 30 messages max in recent conversation window
 
 This provides adaptive detail levels while maintaining full history access via stable IDs.
 

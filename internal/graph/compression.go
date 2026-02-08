@@ -308,7 +308,7 @@ func (g *DB) GetTraceSummary(traceID string, level int) (*TraceSummary, error) {
 			return &summary, nil
 		}
 	}
-	// No summary found - caller should use traces.summary
+	// No summary found at any compression level
 	return nil, nil
 }
 

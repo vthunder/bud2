@@ -48,10 +48,10 @@ Me: [deletes the 3 test traces]
 ## Safe vs Unsafe Operations
 
 ### Safe (regenerable/transient)
-- `state_traces(action="clear", clear_core=true)` + `state_regen_core()` - core traces regenerate from core_seed.md
 - `state_percepts(action="clear")` - percepts are transient by design
 - `state_queues(action="clear")` - operational, not memory
 - `state_sessions(action="clear")` - just tracking data
+- **Core identity**: Now stored in `state/core.md` (file-based, not database). Edit the file directly to update core identity.
 
 ### Careful (check first)
 - `state_traces(action="delete", id="...")` - may lose learned information

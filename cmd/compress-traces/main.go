@@ -68,9 +68,7 @@ func main() {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			log.Printf("[worker %d] Started", workerID)
 			for tr := range traceChan {
-				log.Printf("[worker %d] Processing trace %s", workerID, tr.ID[:8])
 
 				// Get source episodes for this trace
 				sourceIDs, err := db.GetTraceSources(tr.ID)
@@ -109,9 +107,8 @@ func main() {
 				// Compress this trace to all levels
 				counts, err := compressTrace(db, tr, episodes, ollamaClient)
 				if err != nil {
-					log.Printf("[worker %d] Failed to compress trace %s: %v", workerID, tr.ID[:8], err)
+					log.Printf("Failed to compress trace %s: %v", tr.ID[:8], err)
 				} else {
-					log.Printf("[worker %d] Successfully compressed trace %s", workerID, tr.ID[:8])
 					if counts.L64 {
 						l64Created.Add(1)
 					}
@@ -136,7 +133,6 @@ func main() {
 					log.Printf("Progress: %d/%d (%.1f/s, ~%s remaining)", n, len(traces), rate, remaining.Round(time.Second))
 				}
 			}
-			log.Printf("[worker %d] Finished", workerID)
 		}(i)
 	}
 
@@ -176,13 +172,11 @@ func compressTrace(db *graph.DB, tr *graph.Trace, episodes []*graph.Episode, com
 
 	// Estimate total word count
 	wordCount := estimateWordCount(sourceContext)
-	log.Printf("  Trace %s has %d source episodes (%d words total)", tr.ID[:8], len(episodes), wordCount)
 
 	// Cascading compression: Generate L64 first (highest detail), then cascade down
 	// Each level uses the previous level as input for better consistency
 
 	// L64: ~64 words max (from source episodes)
-	log.Printf("  Compressing %s to L64...", tr.ID[:8])
 	l64Summary, err := compressToTarget(sourceContext, compressor, 64, wordCount)
 	if err != nil {
 		return counts, fmt.Errorf("L64 compression failed: %w", err)
@@ -192,7 +186,6 @@ func compressTrace(db *graph.DB, tr *graph.Trace, episodes []*graph.Episode, com
 		return counts, fmt.Errorf("failed to store L64 summary: %w", err)
 	}
 	counts.L64 = true
-	log.Printf("  ✓ L64 done for %s", tr.ID[:8])
 
 	// L32: ~32 words max (from L64)
 	l64Words := estimateWordCount(l64Summary)

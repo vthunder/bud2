@@ -185,7 +185,7 @@ func (g *DB) migrate() error {
 	-- TIER 3: TRACES (Consolidated memories)
 	CREATE TABLE IF NOT EXISTS traces (
 		id TEXT PRIMARY KEY,
-		summary TEXT NOT NULL,
+		summary TEXT,
 		topic TEXT,
 		activation REAL DEFAULT 0.5,
 		strength INTEGER DEFAULT 1,
@@ -403,7 +403,7 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (9)")
 	}
 
-	// Migration v10: Make traces.summary nullable (preparing for removal)
+	// Migration v10: Make traces.summary nullable (deprecated - use trace_summaries instead)
 	// SQLite doesn't support ALTER COLUMN, so we need to recreate the table
 	if version < 10 {
 		migrations := []string{

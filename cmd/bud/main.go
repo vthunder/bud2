@@ -213,7 +213,7 @@ func main() {
 
 	// Initialize v2 memory systems
 	// Graph DB (SQLite) - replaces tracePool
-	graphDB, err := graph.Open(systemPath)
+	graphDB, err := graph.Open(statePath)
 	if err != nil {
 		log.Fatalf("Failed to initialize graph database: %v", err)
 	}
@@ -251,10 +251,19 @@ func main() {
 	// Keep inbox for message queue
 	inbox := memory.NewInbox() // in-memory only, no persistence
 
-	// Bootstrap core identity traces from seed file
-	seedPath := "seed/core_seed.md"
-	if err := bootstrapCoreTraces(graphDB, seedPath); err != nil {
-		log.Printf("Warning: failed to bootstrap core traces: %v", err)
+	// Ensure core.md exists in state directory (copy from seed if missing)
+	coreFile := filepath.Join(statePath, "core.md")
+	if _, err := os.Stat(coreFile); os.IsNotExist(err) {
+		seedPath := "seed/core_seed.md"
+		if data, err := os.ReadFile(seedPath); err == nil {
+			if err := os.WriteFile(coreFile, data, 0644); err != nil {
+				log.Printf("Warning: failed to create core.md: %v", err)
+			} else {
+				log.Printf("[main] Created %s from seed", coreFile)
+			}
+		} else {
+			log.Printf("Warning: failed to read core seed: %v", err)
+		}
 	}
 
 	// Load wakeup instructions for autonomous wake prompts
@@ -1480,74 +1489,8 @@ func main() {
 	log.Println("[main] Goodbye!")
 }
 
-// bootstrapCoreTraces loads core identity traces from seed file if not already present
-func bootstrapCoreTraces(db *graph.DB, seedPath string) error {
-	// Check if core traces already exist
-	existing, err := db.GetCoreTraces()
-	if err != nil {
-		return err
-	}
-	if len(existing) > 0 {
-		log.Printf("[main] Found %d existing core traces", len(existing))
-		return nil
-	}
-
-	// Read seed file
-	data, err := os.ReadFile(seedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[main] No core seed file found at %s", seedPath)
-			return nil
-		}
-		return err
-	}
-
-	// Parse seed file - sections separated by "---"
-	// Each section has a "# Header" followed by content
-	sections := strings.Split(string(data), "\n---\n")
-	count := 0
-	for _, section := range sections {
-		section = strings.TrimSpace(section)
-		if section == "" {
-			continue
-		}
-
-		// Extract topic from header line (# Topic Name)
-		lines := strings.SplitN(section, "\n", 2)
-		topic := "identity"
-		content := section
-
-		if len(lines) >= 1 && strings.HasPrefix(lines[0], "# ") {
-			topic = strings.TrimPrefix(lines[0], "# ")
-			if len(lines) >= 2 {
-				content = strings.TrimSpace(lines[1])
-			}
-		}
-
-		if content == "" {
-			continue
-		}
-
-		trace := &graph.Trace{
-			ID:        fmt.Sprintf("core-%d", time.Now().UnixNano()+int64(count)),
-			Summary:   content,
-			Topic:     topic,
-			IsCore:    true,
-			Strength:  100,
-			CreatedAt: time.Now(),
-		}
-		if err := db.AddTrace(trace); err != nil {
-			log.Printf("Warning: failed to add core trace: %v", err)
-			continue
-		}
-		count++
-	}
-
-	if count > 0 {
-		log.Printf("[main] Bootstrapped %d core identity traces from %s", count, seedPath)
-	}
-	return nil
-}
+// Note: Core identity is now loaded from state/core.md (file-based, not database)
+// The bootstrapCoreTraces function has been removed in favor of simple file loading
 
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {

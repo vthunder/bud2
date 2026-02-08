@@ -56,19 +56,18 @@ func (g *DB) AddTrace(tr *Trace) error {
 }
 
 // GetTrace retrieves a trace by ID
-// Tries compression levels in order of preference: 32, 64, 16, 8, 4, 0
+// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
 // Falls back to empty string if no summary is available
 func (g *DB) GetTrace(id string) (*Trace, error) {
 	// Try to get summary with fallback across compression levels
 	row := g.db.QueryRow(`
 		SELECT t.id,
 			COALESCE(
-				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
-				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
 				''
 			) as summary,
 			t.topic, t.trace_type,
@@ -100,17 +99,16 @@ func (g *DB) GetCoreTraces() ([]*Trace, error) {
 }
 
 // GetActivatedTraces retrieves traces with activation above threshold
-// Tries compression levels in order of preference: 32, 64, 16, 8, 4, 0
+// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
 func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	rows, err := g.db.Query(`
 		SELECT t.id,
 			COALESCE(
-				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
-				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
 				''
 			) as summary,
 			t.topic, t.trace_type,
@@ -541,12 +539,13 @@ func (g *DB) CountTraces() (total int, core int, err error) {
 func scanTrace(row *sql.Row) (*Trace, error) {
 	var tr Trace
 	var embeddingBytes []byte
+	var summary sql.NullString
 	var topic sql.NullString
 	var traceType sql.NullString
 	var labileUntil sql.NullTime
 
 	err := row.Scan(
-		&tr.ID, &tr.Summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
+		&tr.ID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
 		&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 	)
 	if err != nil {
@@ -556,6 +555,7 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 		return nil, err
 	}
 
+	tr.Summary = summary.String
 	tr.Topic = topic.String
 	tr.TraceType = TraceType(traceType.String)
 	if tr.TraceType == "" {
@@ -578,18 +578,20 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 	for rows.Next() {
 		var tr Trace
 		var embeddingBytes []byte
+		var summary sql.NullString
 		var topic sql.NullString
 		var traceType sql.NullString
 		var labileUntil sql.NullTime
 
 		err := rows.Scan(
-			&tr.ID, &tr.Summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
+			&tr.ID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
 			&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 		)
 		if err != nil {
 			continue
 		}
 
+		tr.Summary = summary.String
 		tr.Topic = topic.String
 		tr.TraceType = TraceType(traceType.String)
 		if tr.TraceType == "" {

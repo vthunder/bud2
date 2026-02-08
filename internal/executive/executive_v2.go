@@ -52,6 +52,9 @@ type ExecutiveV2 struct {
 	// MCP tool call tracking (for detecting user responses via MCP tools)
 	mcpToolCalled map[string]bool
 
+	// Core identity (loaded from state/core.md)
+	coreIdentity []string
+
 	// Config
 	config ExecutiveV2Config
 }
@@ -89,7 +92,7 @@ func NewExecutiveV2(
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
-	return &ExecutiveV2{
+	exec := &ExecutiveV2{
 		session:        NewSimpleSession(statePath),
 		attention:      focus.New(),
 		queue:          focus.NewQueue(statePath, 100),
@@ -100,6 +103,17 @@ func NewExecutiveV2(
 		mcpToolCalled:  make(map[string]bool),
 		config:         cfg,
 	}
+
+	// Load core identity from state/core.md
+	coreFile := filepath.Join(statePath, "core.md")
+	if coreLines, err := loadCoreIdentity(coreFile); err != nil {
+		log.Printf("[executive-v2] Warning: failed to load core identity from %s: %v", coreFile, err)
+	} else {
+		exec.coreIdentity = coreLines
+		log.Printf("[executive-v2] Loaded %d core identity sections", len(coreLines))
+	}
+
+	return exec
 }
 
 // SetTypingCallbacks sets the typing indicator callbacks
@@ -333,15 +347,8 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		Metadata:     make(map[string]string),
 	}
 
-	// Get core identity from graph
-	if e.graph != nil {
-		coreTraces, err := e.graph.GetCoreTraces()
-		if err == nil {
-			for _, t := range coreTraces {
-				bundle.CoreIdentity = append(bundle.CoreIdentity, t.Summary)
-			}
-		}
-	}
+	// Get core identity from cached file content
+	bundle.CoreIdentity = e.coreIdentity
 
 	// Get recent conversation from episodes (last 20 episodes within 10 minutes)
 	if e.graph != nil && item.ChannelID != "" {
@@ -430,9 +437,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 // as a conversation log using pyramid summaries. Excludes the current focus item.
 // Returns the formatted content and whether authorization patterns were detected.
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
-	// Query last 50 episodes to ensure we have enough context
+	// Query last 30 episodes for recent conversation
 	// GetRecentEpisodes returns DESC order (newest first) which is what we want
-	episodes, err := e.graph.GetRecentEpisodes(channelID, 50)
+	episodes, err := e.graph.GetRecentEpisodes(channelID, 30)
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
 		return "", false
@@ -456,9 +463,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		count int
 		level int
 	}{
-		{5, 0},                          // Last 5: full text
-		{10, graph.CompressionLevel64},  // Next 10: ~64 words
-		{15, graph.CompressionLevel32},  // Next 15: ~32 words
+		{5, 0},                         // Last 5: full text
+		{10, graph.CompressionLevel32}, // Next 10: ~32 words
+		{15, graph.CompressionLevel8},  // Next 15: ~8 words
 	}
 
 	episodeIdx := 0
@@ -798,4 +805,39 @@ func (e *ExecutiveV2) logPromptToDebug(focusID, prompt string) {
 	}
 
 	log.Printf("[executive-v2] Prompt logged to %s", filename)
+}
+
+// loadCoreIdentity loads core identity sections from state/core.md
+// Parses file by splitting on "---" separators, extracting content after each "# Header"
+func loadCoreIdentity(filePath string) ([]string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse file - sections separated by "---"
+	// Each section has a "# Header" followed by content
+	sections := strings.Split(string(data), "\n---\n")
+	var coreLines []string
+
+	for _, section := range sections {
+		section = strings.TrimSpace(section)
+		if section == "" {
+			continue
+		}
+
+		// Extract content (skip the "# Header" line)
+		lines := strings.SplitN(section, "\n", 2)
+		content := section // fallback to full section
+
+		if len(lines) >= 2 && strings.HasPrefix(lines[0], "# ") {
+			content = strings.TrimSpace(lines[1])
+		}
+
+		if content != "" {
+			coreLines = append(coreLines, content)
+		}
+	}
+
+	return coreLines, nil
 }
