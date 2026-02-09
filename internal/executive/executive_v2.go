@@ -396,7 +396,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						ID:        t.ID,
 						Summary:   t.Summary,
 						Relevance: t.Activation,
-						Timestamp: t.LastAccessed, // Use last access time for recency
+						Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
 					})
 				}
 			}
@@ -410,7 +410,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						ID:        t.ID,
 						Summary:   t.Summary,
 						Relevance: t.Activation,
-						Timestamp: t.LastAccessed, // Use last access time for recency
+						Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
 					})
 				}
 			}

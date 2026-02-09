@@ -251,8 +251,8 @@ func main() {
 	// Keep inbox for message queue
 	inbox := memory.NewInbox() // in-memory only, no persistence
 
-	// Ensure core.md exists in state directory (copy from seed if missing)
-	coreFile := filepath.Join(statePath, "core.md")
+	// Ensure core.md exists in state/system directory (copy from seed if missing)
+	coreFile := filepath.Join(systemPath, "core.md")
 	if _, err := os.Stat(coreFile); os.IsNotExist(err) {
 		seedPath := "seed/core_seed.md"
 		if data, err := os.ReadFile(seedPath); err == nil {
@@ -431,7 +431,7 @@ func main() {
 		reflexLog,
 		ollamaClient,     // for query-based memory retrieval
 		authClassifier,   // for detecting stale authorizations on session reset
-		statePath,        // Pass base state dir (not state/system) so core.md can be found
+		systemPath,       // Pass state/system so core.md can be found at system/core.md
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
 			WorkDir:   ".",
