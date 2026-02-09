@@ -367,21 +367,8 @@ func (s *SimpleSession) processStreamJSON(r io.Reader) {
 func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 	switch event.Type {
 	case "assistant":
-		if event.Message != nil {
-			var msg struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			}
-			if err := json.Unmarshal(event.Message, &msg); err == nil {
-				for _, block := range msg.Content {
-					if block.Type == "text" && block.Text != "" && s.onOutput != nil {
-						s.onOutput(block.Text)
-					}
-				}
-			}
-		}
+		// Skip - text output is handled by "result" event to avoid duplication
+		// (both events fire for text-only responses, causing double output)
 
 	case "tool_use":
 		if event.Tool != nil && s.onToolCall != nil {
