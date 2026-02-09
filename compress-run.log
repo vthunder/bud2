@@ -1,0 +1,33 @@
+2026/02/09 02:08:05 Database: state/system/memory.db
+2026/02/09 02:08:05 Wiping existing trace summaries...
+2026/02/09 02:08:05 Total traces: 173
+2026/02/09 02:08:05 Starting compression with 4 workers...
+2026/02/09 02:10:20 Progress: 10/173 (0.1/s, ~36m44s remaining)
+2026/02/09 02:11:37 Progress: 20/173 (0.1/s, ~27m4s remaining)
+2026/02/09 02:12:27 Progress: 30/173 (0.1/s, ~20m47s remaining)
+2026/02/09 02:13:15 Progress: 40/173 (0.1/s, ~17m10s remaining)
+2026/02/09 02:14:26 Progress: 50/173 (0.1/s, ~15m37s remaining)
+2026/02/09 02:15:28 Progress: 60/173 (0.1/s, ~13m53s remaining)
+2026/02/09 02:16:48 Progress: 70/173 (0.1/s, ~12m49s remaining)
+2026/02/09 02:17:59 Progress: 80/173 (0.1/s, ~11m29s remaining)
+2026/02/09 02:19:47 Progress: 90/173 (0.1/s, ~10m47s remaining)
+2026/02/09 02:21:00 Progress: 100/173 (0.1/s, ~9m26s remaining)
+2026/02/09 02:22:40 Progress: 110/173 (0.1/s, ~8m21s remaining)
+2026/02/09 02:23:36 Progress: 120/173 (0.1/s, ~6m51s remaining)
+2026/02/09 02:25:02 Progress: 130/173 (0.1/s, ~5m36s remaining)
+2026/02/09 02:25:50 Progress: 140/173 (0.1/s, ~4m10s remaining)
+2026/02/09 02:26:48 Progress: 150/173 (0.1/s, ~2m52s remaining)
+2026/02/09 02:27:53 Progress: 160/173 (0.1/s, ~1m36s remaining)
+2026/02/09 02:28:22 [worker 1] Trace core-177 has no source episodes, skipping
+2026/02/09 02:28:22 [worker 1] Trace core-177 has no source episodes, skipping
+2026/02/09 02:28:22 [worker 1] Trace core-177 has no source episodes, skipping
+2026/02/09 02:28:22 [worker 1] Trace core-177 has no source episodes, skipping
+2026/02/09 02:28:32 Progress: 173/173 (0.1/s, ~0s remaining)
+2026/02/09 02:28:32 Compression complete!
+2026/02/09 02:28:32 Time: 20m27s (0.1 traces/sec)
+2026/02/09 02:28:32 L64 summaries created: 169
+2026/02/09 02:28:32 L32 summaries created: 169
+2026/02/09 02:28:32 L16 summaries created: 169
+2026/02/09 02:28:32 L8 summaries created: 169
+2026/02/09 02:28:32 L4 summaries created: 169
+2026/02/09 02:28:32 Skipped (no sources): 4

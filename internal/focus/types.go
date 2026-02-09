@@ -63,7 +63,7 @@ type ContextBundle struct {
 	Memories           []MemorySummary   // Retrieved memory traces (new ones only)
 	PriorMemoriesCount int               // Count of memories already sent this session
 	ReflexLog          []ReflexActivity  // Recent reflex activity
-	CoreIdentity       []string          // Core identity statements
+	CoreIdentity       string            // Core identity (verbatim from core.md)
 	Metadata           map[string]string // Additional context
 }
 

@@ -53,7 +53,7 @@ type ExecutiveV2 struct {
 	mcpToolCalled map[string]bool
 
 	// Core identity (loaded from state/core.md)
-	coreIdentity []string
+	coreIdentity string
 
 	// Config
 	config ExecutiveV2Config
@@ -106,11 +106,11 @@ func NewExecutiveV2(
 
 	// Load core identity from state/core.md
 	coreFile := filepath.Join(statePath, "core.md")
-	if coreLines, err := loadCoreIdentity(coreFile); err != nil {
+	if coreContent, err := os.ReadFile(coreFile); err != nil {
 		log.Printf("[executive-v2] Warning: failed to load core identity from %s: %v", coreFile, err)
 	} else {
-		exec.coreIdentity = coreLines
-		log.Printf("[executive-v2] Loaded %d core identity sections", len(coreLines))
+		exec.coreIdentity = string(coreContent)
+		log.Printf("[executive-v2] Loaded core identity (%d bytes)", len(coreContent))
 	}
 
 	return exec
@@ -551,13 +551,10 @@ func estimateTokens(text string) int {
 func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	var prompt strings.Builder
 
-	// One-shot sessions: always include core identity
-	if len(bundle.CoreIdentity) > 0 {
-		prompt.WriteString("## Identity\n")
-		for _, identity := range bundle.CoreIdentity {
-			prompt.WriteString(fmt.Sprintf("- %s\n", identity))
-		}
-		prompt.WriteString("\n")
+	// One-shot sessions: always include core identity (verbatim from core.md)
+	if bundle.CoreIdentity != "" {
+		prompt.WriteString(bundle.CoreIdentity)
+		prompt.WriteString("\n\n")
 
 		// Session timestamp: use current time (one-shot = each prompt is new session)
 		prompt.WriteString("## Session Context\n")
@@ -807,37 +804,3 @@ func (e *ExecutiveV2) logPromptToDebug(focusID, prompt string) {
 	log.Printf("[executive-v2] Prompt logged to %s", filename)
 }
 
-// loadCoreIdentity loads core identity sections from state/core.md
-// Parses file by splitting on "---" separators, extracting content after each "# Header"
-func loadCoreIdentity(filePath string) ([]string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse file - sections separated by "---"
-	// Each section has a "# Header" followed by content
-	sections := strings.Split(string(data), "\n---\n")
-	var coreLines []string
-
-	for _, section := range sections {
-		section = strings.TrimSpace(section)
-		if section == "" {
-			continue
-		}
-
-		// Extract content (skip the "# Header" line)
-		lines := strings.SplitN(section, "\n", 2)
-		content := section // fallback to full section
-
-		if len(lines) >= 2 && strings.HasPrefix(lines[0], "# ") {
-			content = strings.TrimSpace(lines[1])
-		}
-
-		if content != "" {
-			coreLines = append(coreLines, content)
-		}
-	}
-
-	return coreLines, nil
-}
