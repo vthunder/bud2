@@ -431,7 +431,7 @@ func main() {
 		reflexLog,
 		ollamaClient,     // for query-based memory retrieval
 		authClassifier,   // for detecting stale authorizations on session reset
-		systemPath,
+		statePath,        // Pass base state dir (not state/system) so core.md can be found
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
 			WorkDir:   ".",
