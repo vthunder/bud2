@@ -442,12 +442,23 @@ func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 }
 
 // GetAllTraces retrieves all traces
+// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
+// Falls back to empty string if no summary is available
 func (g *DB) GetAllTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT id, summary, topic, trace_type, activation, strength, is_core,
-			embedding, created_at, last_accessed, labile_until
-		FROM traces
-		ORDER BY created_at DESC
+		SELECT t.id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		ORDER BY t.created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces: %w", err)
