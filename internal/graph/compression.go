@@ -186,6 +186,9 @@ func buildCompressionPrompt(author string, content string, targetWords int) stri
 	sb.WriteString("- Keep only the essential core meaning\n")
 	sb.WriteString("- Remove ALL filler, small talk, and redundancy\n")
 	sb.WriteString("- Preserve key facts and decisions only\n")
+	sb.WriteString("- CRITICAL: You MUST write ONLY in English - NO Chinese characters allowed\n")
+	sb.WriteString("- If you write ANY Chinese characters (像这样的字符), the output will be REJECTED\n")
+	sb.WriteString("- Use ONLY English words from A-Z - absolutely NO non-English characters\n")
 
 	sb.WriteString("\nMessage context:\n")
 	sb.WriteString(fmt.Sprintf("- Author: %s (DO NOT include in output)\n", author))
@@ -401,10 +404,13 @@ Rules:
 - Remove filler, small talk, redundancy
 - Preserve key facts and decisions
 - Write in past tense (e.g., "User reported..." not "User reports...")
+- CRITICAL: You MUST write ONLY in English - NO Chinese characters allowed
+- If you write ANY Chinese characters (像这样的字符), the output will be REJECTED
+- Use ONLY English words from A-Z - absolutely NO non-English characters
 
 Source conversation:
 %s
 
-Compressed summary:`, targetWords, targetWords, content)
+Compressed summary (ONLY English):`, targetWords, targetWords, content)
 	return prompt
 }

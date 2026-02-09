@@ -51,7 +51,7 @@ func main() {
 
 	// Initialize Ollama client for compression
 	ollamaClient := embedding.NewClient("", "")
-	ollamaClient.SetGenerationModel("qwen2.5:7b")
+	ollamaClient.SetGenerationModel("llama3.2:latest")
 
 	log.Printf("Starting compression with %d workers...", *workers)
 
@@ -260,11 +260,14 @@ Rules:
 - Remove filler, small talk, redundancy
 - Preserve key facts and decisions
 - Write in past tense (e.g., "User reported..." not "User reports...")
+- CRITICAL: You MUST write ONLY in English - NO Chinese characters allowed
+- If you write ANY Chinese characters (像这样的字符), the output will be REJECTED
+- Use ONLY English words from A-Z - absolutely NO non-English characters
 
 Source conversation:
 %s
 
-Compressed summary:`, targetWords, targetWords, content)
+Compressed summary (ONLY English):`, targetWords, targetWords, content)
 	return prompt
 }
 
