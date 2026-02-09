@@ -876,7 +876,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			return fmt.Sprintf("Cleared %d non-core traces", count), nil
 
 		case "regen_core":
-			seedPath := "seed/core.md"
+			seedPath := filepath.Join(deps.StatePath, "system", "core.md")
 			count, err := deps.StateInspector.RegenCore(seedPath)
 			if err != nil {
 				return "", err
@@ -925,7 +925,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		Description: "Regenerate core identity traces from core.md. Clears existing core traces first.",
 		Properties:  map[string]mcp.PropDef{},
 	}, func(ctx any, args map[string]any) (string, error) {
-		seedPath := "seed/core.md"
+		seedPath := filepath.Join(deps.StatePath, "system", "core.md")
 		count, err := deps.StateInspector.RegenCore(seedPath)
 		if err != nil {
 			return "", err

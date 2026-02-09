@@ -83,7 +83,7 @@ Commands:
   traces -d <id>       Delete specific trace
   traces --clear       Clear all non-core traces
   traces --clear-core  Clear core traces (will need regeneration)
-  traces --regen-core  Regenerate core traces from core_seed.md
+  traces --regen-core  Regenerate core traces from state/system/core.md
 
   episodes             List recent episodes (Tier 1: raw messages)
   episodes <id>        Show full episode
@@ -181,7 +181,7 @@ func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 	fs.Parse(args)
 
 	if *regenCore {
-		seedPath := "seed/core_seed.md"
+		seedPath := filepath.Join(statePath, "system", "core.md")
 		count, err := inspector.RegenCore(seedPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
