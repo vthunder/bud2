@@ -172,6 +172,11 @@ func compressToTarget(episode Episode, compressor Compressor, targetWords int, c
 		}
 	}
 
+	// Check for reverse case: input has CJK but output doesn't (over-correction)
+	if !hasCJK(summary) && hasCJK(cleanContent) {
+		fmt.Printf("WARNING: Episode %s - Input contains CJK characters but output doesn't. Possible language stripping.\n", episode.ID)
+	}
+
 	return summary, nil
 }
 
@@ -436,6 +441,11 @@ func compressTraceToTarget(content string, compressor Compressor, targetWords in
 			// Reset model back to default
 			mistralCompressor.SetGenerationModel("llama3.2")
 		}
+	}
+
+	// Check for reverse case: input has CJK but output doesn't (over-correction)
+	if !hasCJK(summary) && hasCJK(content) {
+		fmt.Printf("WARNING: Trace compression - Input contains CJK characters but output doesn't. Possible language stripping.\n")
 	}
 
 	return summary, nil
