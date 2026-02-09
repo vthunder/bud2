@@ -254,7 +254,7 @@ func main() {
 	// Ensure core.md exists in state/system directory (copy from seed if missing)
 	coreFile := filepath.Join(systemPath, "core.md")
 	if _, err := os.Stat(coreFile); os.IsNotExist(err) {
-		seedPath := "seed/core_seed.md"
+		seedPath := "seed/core.md"
 		if data, err := os.ReadFile(seedPath); err == nil {
 			if err := os.WriteFile(coreFile, data, 0644); err != nil {
 				log.Printf("Warning: failed to create core.md: %v", err)
