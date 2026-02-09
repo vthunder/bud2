@@ -3,6 +3,7 @@ package graph
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -76,6 +77,12 @@ type Compressor interface {
 	Generate(prompt string) (string, error)
 }
 
+// hasCJK returns true if the text contains any CJK (Chinese/Japanese/Korean) characters
+func hasCJK(text string) bool {
+	re := regexp.MustCompile(`[\x{4E00}-\x{9FFF}]`)
+	return re.MatchString(text)
+}
+
 // GenerateEpisodeSummaries creates summaries at all compression levels (L4-L64) for an episode
 // Always generates all levels - uses verbatim text if episode already below target word count
 func (g *DB) GenerateEpisodeSummaries(episode Episode, compressor Compressor) error {
@@ -145,7 +152,27 @@ func compressToTarget(episode Episode, compressor Compressor, targetWords int, c
 
 	// Otherwise compress to target
 	prompt := buildCompressionPrompt(episode.Author, cleanContent, targetWords)
-	return compressor.Generate(prompt)
+	summary, err := compressor.Generate(prompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for CJK leakage: if output has CJK but input doesn't, re-summarize with fallback
+	if hasCJK(summary) && !hasCJK(cleanContent) {
+		// Try fallback with Mistral (English-focused model)
+		if mistralCompressor, ok := compressor.(interface{ SetGenerationModel(string) }); ok {
+			mistralCompressor.SetGenerationModel("mistral")
+			fallbackSummary, fallbackErr := compressor.Generate(prompt)
+			if fallbackErr == nil && !hasCJK(fallbackSummary) {
+				return fallbackSummary, nil
+			}
+			// If fallback also failed, fall through to return original summary
+			// Reset model back to default
+			mistralCompressor.SetGenerationModel("llama3.2")
+		}
+	}
+
+	return summary, nil
 }
 
 // stripAuthorPrefix removes "AuthorName:" prefix from beginning of content
@@ -391,7 +418,27 @@ func compressTraceToTarget(content string, compressor Compressor, targetWords in
 
 	// Otherwise compress to target
 	prompt := buildTraceCompressionPrompt(content, targetWords)
-	return compressor.Generate(prompt)
+	summary, err := compressor.Generate(prompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for CJK leakage: if output has CJK but input doesn't, re-summarize with fallback
+	if hasCJK(summary) && !hasCJK(content) {
+		// Try fallback with Mistral (English-focused model)
+		if mistralCompressor, ok := compressor.(interface{ SetGenerationModel(string) }); ok {
+			mistralCompressor.SetGenerationModel("mistral")
+			fallbackSummary, fallbackErr := compressor.Generate(prompt)
+			if fallbackErr == nil && !hasCJK(fallbackSummary) {
+				return fallbackSummary, nil
+			}
+			// If fallback also failed, fall through to return original summary
+			// Reset model back to default
+			mistralCompressor.SetGenerationModel("llama3.2")
+		}
+	}
+
+	return summary, nil
 }
 
 // buildTraceCompressionPrompt constructs a prompt for trace compression to target word count

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -238,6 +239,12 @@ func compressTrace(db *graph.DB, tr *graph.Trace, episodes []*graph.Episode, com
 	return counts, nil
 }
 
+// hasCJK returns true if the text contains any CJK (Chinese/Japanese/Korean) characters
+func hasCJK(text string) bool {
+	re := regexp.MustCompile(`[\x{4E00}-\x{9FFF}]`)
+	return re.MatchString(text)
+}
+
 // compressToTarget compresses content to target word count or returns verbatim if already below target
 func compressToTarget(content string, compressor graph.Compressor, targetWords int, currentWords int) (string, error) {
 	// If content is already below target, use verbatim text
@@ -247,7 +254,35 @@ func compressToTarget(content string, compressor graph.Compressor, targetWords i
 
 	// Otherwise compress to target
 	prompt := buildCompressionPrompt(content, targetWords)
-	return compressor.Generate(prompt)
+	summary, err := compressor.Generate(prompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for CJK leakage: if output has CJK but input doesn't, re-summarize with fallback
+	if hasCJK(summary) && !hasCJK(content) {
+		log.Printf("  ⚠ CJK detected in trace summary (L%d), retrying with Mistral...", targetWords)
+		// Try fallback with Mistral (English-focused model)
+		if mistralCompressor, ok := compressor.(interface{ SetGenerationModel(string) }); ok {
+			mistralCompressor.SetGenerationModel("mistral")
+			fallbackSummary, fallbackErr := compressor.Generate(prompt)
+			if fallbackErr == nil && !hasCJK(fallbackSummary) {
+				log.Printf("  ✓ Mistral fallback successful (L%d)", targetWords)
+				// Reset model back to default
+				mistralCompressor.SetGenerationModel("llama3.2:latest")
+				return fallbackSummary, nil
+			}
+			// Reset model back to default
+			mistralCompressor.SetGenerationModel("llama3.2:latest")
+			if fallbackErr != nil {
+				log.Printf("  ✗ Mistral fallback failed (L%d): %v", targetWords, fallbackErr)
+			} else {
+				log.Printf("  ✗ Mistral fallback still has CJK (L%d)", targetWords)
+			}
+		}
+	}
+
+	return summary, nil
 }
 
 // buildCompressionPrompt constructs a prompt for trace compression to target word count

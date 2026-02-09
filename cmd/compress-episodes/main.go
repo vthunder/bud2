@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -237,6 +238,12 @@ func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compresso
 	return counts, nil
 }
 
+// hasCJK returns true if the text contains any CJK (Chinese/Japanese/Korean) characters
+func hasCJK(text string) bool {
+	re := regexp.MustCompile(`[\x{4E00}-\x{9FFF}]`)
+	return re.MatchString(text)
+}
+
 // compressToTarget compresses episode to target word count or returns verbatim if already below target
 func compressToTarget(ep *graph.Episode, compressor graph.Compressor, targetWords int, currentWords int) (string, error) {
 	// If episode is already below target, use verbatim text
@@ -246,7 +253,35 @@ func compressToTarget(ep *graph.Episode, compressor graph.Compressor, targetWord
 
 	// Otherwise compress to target
 	prompt := buildCompressionPrompt(ep, targetWords)
-	return compressor.Generate(prompt)
+	summary, err := compressor.Generate(prompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Check for CJK leakage: if output has CJK but input doesn't, re-summarize with fallback
+	if hasCJK(summary) && !hasCJK(ep.Content) {
+		log.Printf("  ⚠ CJK detected in summary for episode %s, retrying with Mistral...", ep.ShortID)
+		// Try fallback with Mistral (English-focused model)
+		if mistralCompressor, ok := compressor.(interface{ SetGenerationModel(string) }); ok {
+			mistralCompressor.SetGenerationModel("mistral")
+			fallbackSummary, fallbackErr := compressor.Generate(prompt)
+			if fallbackErr == nil && !hasCJK(fallbackSummary) {
+				log.Printf("  ✓ Mistral fallback successful for episode %s", ep.ShortID)
+				// Reset model back to default
+				mistralCompressor.SetGenerationModel("llama3.2:latest")
+				return fallbackSummary, nil
+			}
+			// Reset model back to default
+			mistralCompressor.SetGenerationModel("llama3.2:latest")
+			if fallbackErr != nil {
+				log.Printf("  ✗ Mistral fallback failed for episode %s: %v", ep.ShortID, fallbackErr)
+			} else {
+				log.Printf("  ✗ Mistral fallback still has CJK for episode %s", ep.ShortID)
+			}
+		}
+	}
+
+	return summary, nil
 }
 
 // buildCompressionPrompt constructs a prompt for episode compression to target word count
