@@ -186,20 +186,22 @@ func (g *DB) migrate() error {
 	-- TIER 3: TRACES (Consolidated memories)
 	CREATE TABLE IF NOT EXISTS traces (
 		id TEXT PRIMARY KEY,
+		short_id TEXT DEFAULT '',
 		summary TEXT,
 		topic TEXT,
 		activation REAL DEFAULT 0.5,
 		strength INTEGER DEFAULT 1,
-		is_core BOOLEAN DEFAULT FALSE,
 		embedding BLOB,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
-		labile_until DATETIME
+		labile_until DATETIME,
+		trace_type TEXT DEFAULT 'knowledge'
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_traces_activation ON traces(activation);
-	CREATE INDEX IF NOT EXISTS idx_traces_is_core ON traces(is_core);
+	CREATE INDEX IF NOT EXISTS idx_traces_short_id ON traces(short_id);
 	CREATE INDEX IF NOT EXISTS idx_traces_last_accessed ON traces(last_accessed);
+	CREATE INDEX IF NOT EXISTS idx_traces_trace_type ON traces(trace_type);
 
 	-- Trace sources (trace -> episode)
 	CREATE TABLE IF NOT EXISTS trace_sources (
@@ -463,6 +465,120 @@ func (g *DB) runMigrations() error {
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (11)")
 	}
 
+	// Migration v12: Episode linking (episode-episode + episode-trace) for reconsolidation
+	if version < 12 {
+		log.Println("[graph] Migrating to schema v12: episode linking")
+
+		// 1. Enhance episode_edges table with relationship descriptors
+		migrations := []string{
+			"ALTER TABLE episode_edges ADD COLUMN relationship_desc TEXT",
+			"ALTER TABLE episode_edges ADD COLUMN confidence REAL DEFAULT 1.0",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+
+		// 2. Create episode_trace_edges table
+		_, err := g.db.Exec(`
+			CREATE TABLE IF NOT EXISTS episode_trace_edges (
+				episode_id TEXT NOT NULL,
+				trace_id TEXT NOT NULL,
+				relationship_desc TEXT NOT NULL,
+				confidence REAL DEFAULT 1.0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE,
+				FOREIGN KEY (trace_id) REFERENCES traces(id) ON DELETE CASCADE,
+				PRIMARY KEY (episode_id, trace_id)
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v12 failed to create episode_trace_edges: %w", err)
+		}
+
+		// 3. Create indexes
+		g.db.Exec("CREATE INDEX IF NOT EXISTS idx_episode_trace_trace ON episode_trace_edges(trace_id)")
+		g.db.Exec("CREATE INDEX IF NOT EXISTS idx_episode_trace_episode ON episode_trace_edges(episode_id)")
+
+			g.db.Exec("INSERT INTO schema_version (version) VALUES (12)")
+		log.Println("[graph] Migration to v12 completed successfully")
+	}
+
+	// Migration v13: Add short_id to traces table
+	if version < 13 {
+		log.Println("[graph] Migrating to schema v13: add trace short_id")
+
+		migrations := []string{
+			"ALTER TABLE traces ADD COLUMN short_id TEXT DEFAULT ''",
+			"CREATE INDEX IF NOT EXISTS idx_traces_short_id ON traces(short_id)",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+
+		// Backfill short_id for existing traces
+		rows, err := g.db.Query("SELECT id FROM traces WHERE short_id = '' OR short_id IS NULL")
+		if err == nil {
+			var ids []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err == nil {
+					ids = append(ids, id)
+				}
+			}
+			rows.Close()
+
+			// Generate and update short_id for each trace
+			for _, id := range ids {
+				shortID := generateShortID(id)
+				g.db.Exec("UPDATE traces SET short_id = ? WHERE id = ?", shortID, id)
+			}
+			if len(ids) > 0 {
+				log.Printf("[graph] Backfilled short_id for %d traces", len(ids))
+			}
+		}
+
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (13)")
+		log.Println("[graph] Migration to v13 completed successfully")
+	}
+
+	// Migration v14: Remove is_core column (core identity now loaded from state/system/core.md)
+	if version < 14 {
+		log.Println("[graph] Migrating to schema v14: remove is_core column")
+
+		// SQLite doesn't support DROP COLUMN, so we need to recreate the table
+		migrations := []string{
+			`CREATE TABLE IF NOT EXISTS traces_new (
+				id TEXT PRIMARY KEY,
+				short_id TEXT DEFAULT '',
+				summary TEXT,
+				topic TEXT,
+				activation REAL DEFAULT 0.5,
+				strength INTEGER DEFAULT 1,
+				embedding BLOB,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+				labile_until DATETIME,
+				trace_type TEXT DEFAULT 'knowledge'
+			)`,
+			`INSERT INTO traces_new SELECT id, short_id, summary, topic, activation, strength, embedding, created_at, last_accessed, labile_until, trace_type FROM traces`,
+			`DROP TABLE traces`,
+			`ALTER TABLE traces_new RENAME TO traces`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_activation ON traces(activation)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_short_id ON traces(short_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_last_accessed ON traces(last_accessed)`,
+			`CREATE INDEX IF NOT EXISTS idx_traces_trace_type ON traces(trace_type)`,
+		}
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				return fmt.Errorf("migration v14 failed: %w", err)
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (14)")
+		log.Println("[graph] Migration to v14 completed successfully")
+	}
+
 	return nil
 }
 
@@ -470,7 +586,7 @@ func (g *DB) runMigrations() error {
 func (g *DB) Stats() (map[string]int, error) {
 	stats := make(map[string]int)
 
-	tables := []string{"episodes", "episode_summaries", "entities", "traces", "episode_edges", "entity_relations", "trace_relations"}
+	tables := []string{"episodes", "episode_summaries", "entities", "traces", "trace_sources", "episode_edges", "entity_relations", "trace_relations"}
 	for _, table := range tables {
 		var count int
 		err := g.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
