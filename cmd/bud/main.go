@@ -245,8 +245,11 @@ func main() {
 	_ = entropyFilter // suppress unused warning - available as fallback
 
 	// Memory consolidator - groups related episodes into traces
-	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient)
-	log.Println("[main] Memory consolidator initialized")
+	// Claude is now required for edge inference (not optional)
+	claudeInference := consolidate.NewClaudeInference(claudeModel, ".", false)
+	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient, claudeInference)
+
+	log.Println("[main] Memory consolidator initialized with Claude inference")
 
 	// Keep inbox for message queue
 	inbox := memory.NewInbox() // in-memory only, no persistence
@@ -1434,9 +1437,11 @@ func main() {
 				}
 
 				// Apply time-based activation decay
-				// lambda=0.005 means ~12% decay per day, ~50% after ~6 days
+				// lambda=0.01 achieves ~21% decay per day: exp(-0.01*24) ≈ 0.787
+				// Creates 7-day half-life for boosted traces (0.6→0.1 in ~7 days)
+				// Decay is time-based (hours since last access), not per-interval
 				// floor=0.1 prevents traces from fully disappearing
-				decayed, err := graphDB.DecayActivationByAge(0.005, 0.1)
+				decayed, err := graphDB.DecayActivationByAge(0.01, 0.1)
 				if err != nil {
 					log.Printf("[consolidate] Activation decay error: %v", err)
 				} else if decayed > 0 {
