@@ -33,6 +33,7 @@ import (
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
+	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
@@ -584,21 +585,12 @@ func main() {
 		nerResult, nerErr := nerClient.Extract(msg.Content)
 		if nerErr != nil {
 			// NER sidecar down — fall back to always running Ollama extraction
-			log.Printf("[ingest] NER sidecar unavailable (%v), falling back to Ollama", nerErr)
+			logging.Debug("ingest", "NER sidecar unavailable, falling back to Ollama")
 		} else if !nerResult.HasEntities {
-			log.Printf("[ingest] No entities detected by NER (%.0fms): %s",
-				nerResult.DurationMs, truncate(msg.Content, 60))
+			logging.Debug("ingest", "No entities detected by NER: %s", logging.Truncate(msg.Content, 40))
 			return
 		} else {
-			log.Printf("[ingest] NER found %d entities (%.0fms): %v",
-				len(nerResult.Entities), nerResult.DurationMs,
-				func() []string {
-					names := make([]string, len(nerResult.Entities))
-					for i, e := range nerResult.Entities {
-						names[i] = e.Text + ":" + e.Label
-					}
-					return names
-				}())
+			logging.Debug("ingest", "NER found %d entities", len(nerResult.Entities))
 		}
 
 		// Extract entities and relationships via Ollama (Tier 2 — full LLM extraction)
@@ -614,11 +606,11 @@ func main() {
 			// Use resolver for fuzzy matching and deduplication
 			resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
 			if err != nil {
-				log.Printf("[ingest] Failed to resolve entity %s: %v", ext.Name, err)
+				logging.Debug("ingest", "Failed to resolve entity %s: %v", ext.Name, err)
 				continue
 			}
 			if resolveResult == nil || resolveResult.Entity == nil {
-				log.Printf("[ingest] Failed to resolve entity %s: nil result", ext.Name)
+				logging.Debug("ingest", "Failed to resolve entity %s: nil result", ext.Name)
 				continue
 			}
 
@@ -627,21 +619,19 @@ func main() {
 
 			// Log resolution method for debugging
 			if resolveResult.MatchedBy == "embedding" {
-				log.Printf("[ingest] Merged '%s' with existing entity '%s' via embedding similarity",
-					ext.Name, entity.Name)
+				logging.Debug("ingest", "Merged '%s' with existing entity '%s'", ext.Name, entity.Name)
 			}
 
 			// Link episode to entity
 			if err := graphDB.LinkEpisodeToEntity(msg.ID, entity.ID); err != nil {
-				log.Printf("[ingest] Failed to link episode to entity: %v", err)
+				logging.Debug("ingest", "Failed to link episode to entity: %v", err)
 			}
 		}
 
 		// Store relationships with temporal invalidation detection
-		log.Printf("[ingest] Processing %d extracted relationships", len(result.Relationships))
+		logging.Debug("ingest", "Processing %d extracted relationships", len(result.Relationships))
 		for _, rel := range result.Relationships {
-			log.Printf("[ingest] Relationship: %s -[%s]-> %s (confidence: %.2f)",
-				rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+			logging.Debug("ingest", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
 
 			subjectID := entityIDMap[strings.ToLower(rel.Subject)]
 			objectID := entityIDMap[strings.ToLower(rel.Object)]
@@ -669,15 +659,7 @@ func main() {
 
 			// Skip if we still don't have both entities
 			if subjectID == "" || objectID == "" {
-				log.Printf("[ingest] ⚠️  Skipping relationship: cannot resolve entities (subject='%s'->%s, object='%s'->%s)",
-					rel.Subject, subjectID, rel.Object, objectID)
-				log.Printf("[ingest]   Available entities in map: %v", func() []string {
-					keys := make([]string, 0, len(entityIDMap))
-					for k := range entityIDMap {
-						keys = append(keys, k)
-					}
-					return keys
-				}())
+				logging.Debug("ingest", "Cannot resolve entities for relationship: %s -> %s", rel.Subject, rel.Object)
 				continue
 			}
 
@@ -686,13 +668,13 @@ func main() {
 			// Check for invalidation candidates (existing relations that might be contradicted)
 			candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
 			if err != nil {
-				log.Printf("[ingest] Failed to find invalidation candidates: %v", err)
+				logging.Debug("ingest", "Failed to find invalidation candidates: %v", err)
 			}
 
 			// Add the new relationship first to get its ID
 			newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, msg.ID)
 			if err != nil {
-				log.Printf("[ingest] Failed to store relationship %s->%s: %v", rel.Subject, rel.Object, err)
+				logging.Debug("ingest", "Failed to store relationship: %v", err)
 				continue
 			}
 
@@ -709,13 +691,13 @@ func main() {
 					candidates, entityNames,
 				)
 				if err != nil {
-					log.Printf("[ingest] Invalidation check failed: %v", err)
+					logging.Debug("ingest", "Invalidation check failed: %v", err)
 				} else if len(invResult.InvalidatedIDs) > 0 {
 					for _, oldID := range invResult.InvalidatedIDs {
 						if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
-							log.Printf("[ingest] Failed to invalidate relation %d: %v", oldID, err)
+							logging.Debug("ingest", "Failed to invalidate relation: %v", err)
 						} else {
-							log.Printf("[ingest] Invalidated relation %d (reason: %s)", oldID, invResult.Reason)
+							logging.Debug("ingest", "Invalidated relation %d", oldID)
 						}
 					}
 				}
@@ -723,14 +705,7 @@ func main() {
 		}
 
 		if len(result.Entities) > 0 || len(result.Relationships) > 0 {
-			names := make([]string, len(result.Entities))
-			for i, e := range result.Entities {
-				names[i] = e.Name
-			}
-			log.Printf("[ingest] Stored episode %s with %d entities, %d relationships: %v",
-				msg.ID, len(result.Entities), len(result.Relationships), names)
-		} else {
-			log.Printf("[ingest] Stored episode %s (no entities/relationships extracted)", msg.ID)
+			logging.Debug("ingest", "Stored episode with %d entities, %d relationships", len(result.Entities), len(result.Relationships))
 		}
 
 		// Traces (Tier 3) are created by consolidation, not on ingest.
@@ -767,7 +742,7 @@ func main() {
 
 		// Check for reflex config updates (hot reload)
 		if reloaded := reflexEngine.CheckForUpdates(); reloaded > 0 {
-			log.Printf("[main] Hot-reloaded %d reflex config(s)", reloaded)
+			logging.Debug("main", "Hot-reloaded %d reflex config(s)", reloaded)
 		}
 
 		// Try reflexes first
@@ -779,7 +754,7 @@ func main() {
 			result := results[0]
 			if result.Stopped {
 				intent, _ := result.Output["intent"].(string)
-				log.Printf("[main] Reflex %s passed (gate stopped) - routing to executive", result.ReflexName)
+				logging.Info("main", "Handling via executive (reflex %s passed)", result.ReflexName)
 				activityLog.LogReflexPass(
 					fmt.Sprintf("Not handled by %s, routing to executive", result.ReflexName),
 					intent,
@@ -800,7 +775,7 @@ func main() {
 				// Add to reflex log for short-term context
 				reflexLog.Add(content, response, intent, result.ReflexName)
 
-				log.Printf("[main] Percept %s handled by reflex %s (intent: %s)", percept.ID, result.ReflexName, intent)
+				logging.Info("main", "Handled by reflex %s (%s)", result.ReflexName, intent)
 				return // Reflex handled it
 			}
 		}
@@ -814,11 +789,11 @@ func main() {
 
 			if !isUrgent {
 				if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
-					log.Printf("[main] Autonomous percept blocked from executive: %s", reason)
+					logging.Debug("main", "Autonomous percept blocked: %s", reason)
 					return
 				}
 			} else {
-				log.Printf("[main] High-priority urgent task bypassing budget check")
+				logging.Debug("main", "High-priority urgent task bypassing budget")
 			}
 		}
 
@@ -861,7 +836,7 @@ func main() {
 			return
 		}
 
-		log.Printf("[main] Percept %s added to focus queue (priority: %s)", percept.ID, item.Priority)
+		logging.Info("main", "Handling via executive")
 	}
 
 	// Capture outgoing response helper
@@ -887,16 +862,16 @@ func main() {
 			if err := graphDB.AddEpisode(episode); err != nil {
 				log.Printf("Warning: failed to store Bud episode: %v", err)
 			} else {
-				log.Printf("[main] Stored Bud response as episode for consolidation")
+				logging.Debug("main", "Stored Bud response as episode")
 
 				// Generate episode summaries (async for level 1-2)
 				if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
-					log.Printf("[main] Warning: failed to generate summaries for Bud response: %v", err)
+					logging.Debug("main", "Failed to generate summaries: %v", err)
 				}
 				// Create FOLLOWS edge from previous episode in same channel
 				if prevID, ok := lastEpisodeByChannel[channelID]; ok {
 					if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
-						log.Printf("[main] Failed to add FOLLOWS edge for Bud response: %v", err)
+						logging.Debug("main", "Failed to add FOLLOWS edge: %v", err)
 					}
 				}
 				lastEpisodeByChannel[channelID] = episode.ID
@@ -905,7 +880,7 @@ func main() {
 				go func(episodeID, text string) {
 					result, err := entityExtractor.ExtractAll(text)
 					if err != nil {
-						log.Printf("[ingest-bud] Entity extraction failed: %v", err)
+						logging.Debug("ingest-bud", "Entity extraction failed: %v", err)
 						return
 					}
 
@@ -917,19 +892,18 @@ func main() {
 							continue
 						}
 						if err := graphDB.LinkEpisodeToEntity(episodeID, resolveResult.Entity.ID); err != nil {
-							log.Printf("[ingest-bud] Failed to link episode to entity: %v", err)
+							logging.Debug("ingest-bud", "Failed to link episode to entity: %v", err)
 						}
 						entityIDMap[strings.ToLower(ext.Name)] = resolveResult.Entity.ID
 					}
 					if len(result.Entities) > 0 {
-						log.Printf("[ingest-bud] Extracted %d entities from Bud response", len(result.Entities))
+						logging.Debug("ingest-bud", "Extracted %d entities", len(result.Entities))
 					}
 
 					// Store relationships with temporal invalidation detection
-					log.Printf("[ingest-bud] Processing %d extracted relationships", len(result.Relationships))
+					logging.Debug("ingest-bud", "Processing %d extracted relationships", len(result.Relationships))
 					for _, rel := range result.Relationships {
-						log.Printf("[ingest-bud] Relationship: %s -[%s]-> %s (confidence: %.2f)",
-							rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+						logging.Debug("ingest-bud", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
 
 						subjectID := entityIDMap[strings.ToLower(rel.Subject)]
 						objectID := entityIDMap[strings.ToLower(rel.Object)]
@@ -957,15 +931,7 @@ func main() {
 
 						// Skip if we still don't have both entities
 						if subjectID == "" || objectID == "" {
-							log.Printf("[ingest-bud] ⚠️  Skipping relationship: cannot resolve entities (subject='%s'->%s, object='%s'->%s)",
-								rel.Subject, subjectID, rel.Object, objectID)
-							log.Printf("[ingest-bud]   Available entities in map: %v", func() []string {
-								keys := make([]string, 0, len(entityIDMap))
-								for k := range entityIDMap {
-									keys = append(keys, k)
-								}
-								return keys
-							}())
+							logging.Debug("ingest-bud", "Cannot resolve entities for relationship")
 							continue
 						}
 
@@ -974,13 +940,13 @@ func main() {
 						// Check for invalidation candidates (existing relations that might be contradicted)
 						candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
 						if err != nil {
-							log.Printf("[ingest-bud] Failed to find invalidation candidates: %v", err)
+							logging.Debug("ingest-bud", "Failed to find invalidation candidates: %v", err)
 						}
 
 						// Add the new relationship first to get its ID
 						newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, episodeID)
 						if err != nil {
-							log.Printf("[ingest-bud] Failed to store relationship %s->%s: %v", rel.Subject, rel.Object, err)
+							logging.Debug("ingest-bud", "Failed to store relationship: %v", err)
 							continue
 						}
 
@@ -997,13 +963,13 @@ func main() {
 								candidates, entityNames,
 							)
 							if err != nil {
-								log.Printf("[ingest-bud] Invalidation check failed: %v", err)
+								logging.Debug("ingest-bud", "Invalidation check failed: %v", err)
 							} else if len(invResult.InvalidatedIDs) > 0 {
 								for _, oldID := range invResult.InvalidatedIDs {
 									if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
-										log.Printf("[ingest-bud] Failed to invalidate relation %d: %v", oldID, err)
+										logging.Debug("ingest-bud", "Failed to invalidate relation: %v", err)
 									} else {
-										log.Printf("[ingest-bud] Invalidated relation %d (reason: %s)", oldID, invResult.Reason)
+										logging.Debug("ingest-bud", "Invalidated relation %d", oldID)
 									}
 								}
 							}
@@ -1301,12 +1267,9 @@ func main() {
 				return
 			case <-ticker.C:
 				ctx := context.Background()
-				processed, err := exec.ProcessNext(ctx)
+				_, err := exec.ProcessNext(ctx)
 				if err != nil {
 					log.Printf("[main] Executive error: %v", err)
-				}
-				if processed {
-					log.Printf("[main] Processed item from focus queue")
 				}
 			}
 		}

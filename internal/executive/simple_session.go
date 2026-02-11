@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vthunder/bud2/internal/logging"
 	"github.com/zeebo/blake3"
 )
 
@@ -373,7 +374,7 @@ func (s *SimpleSession) processStreamJSON(r io.Reader) {
 func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 	// Log all events for debugging
 	if event.Type != "content_block_delta" {
-		log.Printf("[simple-session] Event type: %s", event.Type)
+		logging.Debug("simple-session", "Event type: %s", event.Type)
 	}
 
 	switch event.Type {
@@ -393,7 +394,7 @@ func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 			if err := json.Unmarshal(event.Message, &msg); err == nil {
 				for _, block := range msg.Content {
 					if block.Type == "text" && block.Text != "" {
-						log.Printf("[simple-session] Assistant event text (%d chars)", len(block.Text))
+						logging.Debug("simple-session", "Assistant event text (%d chars)", len(block.Text))
 						s.currentPromptHasText = true
 						if s.onOutput != nil {
 							s.onOutput(block.Text)
@@ -405,12 +406,12 @@ func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 
 	case "tool_use":
 		if event.Tool != nil && s.onToolCall != nil {
-			log.Printf("[simple-session] Tool call event: %s (id=%s)", event.Tool.Name, event.Tool.ID)
+			logging.Debug("simple-session", "Tool call: %s", event.Tool.Name)
 			result, err := s.onToolCall(event.Tool.Name, event.Tool.Args)
 			if err != nil {
-				log.Printf("[simple-session] Tool error: %v", err)
+				logging.Debug("simple-session", "Tool error: %v", err)
 			} else {
-				log.Printf("[simple-session] Tool result: %s", truncatePrompt(result, 100))
+				logging.Debug("simple-session", "Tool result: %s", truncatePrompt(result, 100))
 			}
 		}
 
@@ -424,19 +425,19 @@ func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 			var result string
 			if err := json.Unmarshal(event.Result, &result); err == nil {
 				if result != "" {
-					log.Printf("[simple-session] Result event text (%d chars)", len(result))
+					logging.Debug("simple-session", "Result event text (%d chars)", len(result))
 					s.currentPromptHasText = true
 					if s.onOutput != nil {
 						s.onOutput(result)
 					}
 				} else {
-					log.Printf("[simple-session] Result event had empty text")
+					logging.Debug("simple-session", "Result event had empty text")
 				}
 			} else {
-				log.Printf("[simple-session] Result event unmarshal failed: %v", err)
+				logging.Debug("simple-session", "Result event unmarshal failed: %v", err)
 			}
 		} else {
-			log.Printf("[simple-session] Result event had nil Result field")
+			logging.Debug("simple-session", "Result event had nil Result field")
 		}
 
 	case "content_block_delta":
@@ -515,9 +516,7 @@ func (s *SimpleSession) parseResultUsage(raw []byte) {
 	}
 
 	s.lastUsage = usage
-	log.Printf("[simple-session] Usage: input=%d output=%d cache_read=%d cache_create=%d turns=%d duration=%dms",
-		usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens,
-		usage.CacheCreationInputTokens, usage.NumTurns, usage.DurationMs)
+	logging.Info("executive", "Response complete (%ds, %d tokens)", usage.DurationMs/1000, usage.OutputTokens)
 }
 
 // Close is a no-op since there's no persistent process to clean up in -p mode

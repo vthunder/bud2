@@ -3,7 +3,6 @@ package focus
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -53,10 +52,9 @@ func (q *Queue) Add(item *PendingItem) error {
 	// Signal that a new item is available (non-blocking)
 	select {
 	case q.notifyCh <- struct{}{}:
-		log.Printf("[queue] Sent notification for item: %s", item.ID)
+		// Notification sent
 	default:
 		// Channel already has a pending signal, no need to add another
-		log.Printf("[queue] Notification channel already signaled for item: %s", item.ID)
 	}
 
 	return nil

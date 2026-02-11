@@ -2,7 +2,6 @@ package memory
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -96,10 +95,9 @@ func (i *Inbox) Add(msg *InboxMessage) {
 	// Signal that a new message is available (non-blocking)
 	select {
 	case i.notifyCh <- struct{}{}:
-		log.Printf("[inbox] Sent notification for message: %s", msg.ID)
+		// Notification sent
 	default:
 		// Channel already has a pending signal, no need to add another
-		log.Printf("[inbox] Notification channel already signaled for message: %s", msg.ID)
 	}
 }
 

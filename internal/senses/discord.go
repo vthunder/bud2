@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/memory"
 )
 
@@ -175,7 +176,7 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 		Extra:     extra,
 	}
 
-	log.Printf("[discord-sense] Message: %s (from: %s)", truncate(m.Content, 50), m.Author.Username)
+	logging.Info("main", "Message from %s: %s", m.Author.Username, logging.Truncate(m.Content, 50))
 
 	// Write to inbox
 	if d.inbox != nil {

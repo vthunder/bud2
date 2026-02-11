@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -466,10 +467,10 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 
 	go func() {
 		if err := e.getSession().ChannelTyping(channelID); err != nil {
-			log.Printf("[discord-effector] Failed to start typing: %v", err)
+			logging.Debug("discord-effector", "Failed to start typing: %v", err)
 			return
 		}
-		log.Printf("[discord-effector] Started typing in channel %s", channelID)
+		logging.Debug("discord-effector", "Started typing")
 
 		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
@@ -477,11 +478,11 @@ func (e *DiscordEffector) StartTyping(channelID string) {
 		for {
 			select {
 			case <-stopChan:
-				log.Printf("[discord-effector] Stopped typing in channel %s", channelID)
+				logging.Debug("discord-effector", "Stopped typing")
 				return
 			case <-ticker.C:
 				if err := e.getSession().ChannelTyping(channelID); err != nil {
-					log.Printf("[discord-effector] Failed to refresh typing: %v", err)
+					logging.Debug("discord-effector", "Failed to refresh typing: %v", err)
 					return
 				}
 			}
@@ -509,9 +510,8 @@ func (e *DiscordEffector) StopAllTyping() {
 	e.typingMu.Lock()
 	defer e.typingMu.Unlock()
 
-	for channelID, stopChan := range e.typingChans {
+	for _, stopChan := range e.typingChans {
 		close(stopChan)
-		delete(e.typingChans, channelID)
-		log.Printf("[discord-effector] Stopped typing in channel %s (shutdown)", channelID)
 	}
+	e.typingChans = make(map[string]chan struct{})
 }

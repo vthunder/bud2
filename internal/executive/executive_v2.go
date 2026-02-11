@@ -13,6 +13,7 @@ import (
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
+	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/reflex"
 )
 
@@ -186,8 +187,7 @@ func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) 
 
 // processItem handles a single focus item
 func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) error {
-	log.Printf("[executive-v2] Processing item: id=%s, type=%s, priority=%s",
-		item.ID, item.Type, item.Priority)
+	logging.Debug("executive", "Processing item: %s (%s)", item.ID, item.Priority)
 
 	// Get channel ID for typing indicator
 	channelID := item.ChannelID
@@ -295,11 +295,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	if output.Len() > 0 {
-		log.Printf("[executive-v2] Output: %s", truncate(output.String(), 200))
+		logging.Debug("executive", "Output: %s", truncate(output.String(), 100))
 
 		// Extract memory evaluation from Claude's output
 		if eval := extractMemoryEval(output.String()); eval != "" {
-			log.Printf("[executive-v2] Memory eval: %s", eval)
+			logging.Debug("executive", "Memory eval: %s", eval)
 			if e.config.OnMemoryEval != nil {
 				e.config.OnMemoryEval(eval)
 			}
@@ -312,11 +312,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	mcpResponseSent := e.mcpToolCalled["talk_to_user"] || e.mcpToolCalled["discord_react"]
 	isUserMessage := item.Priority == focus.P1UserInput || item.Source == "discord" || item.Source == "inbox"
 	if isUserMessage && !userGotResponse && !mcpResponseSent {
-		log.Printf("[executive-v2] ERROR: User message completed without response (no talk_to_user or emoji reaction)")
-		log.Printf("[executive-v2]   Item ID: %s", item.ID)
-		log.Printf("[executive-v2]   Content: %s", truncate(item.Content, 100))
-		log.Printf("[executive-v2]   Output length: %d", output.Len())
-		log.Printf("[executive-v2]   MCP tools called: %v", e.mcpToolCalled)
+		log.Printf("[executive] ERROR: User message completed without response")
+		logging.Debug("executive", "Item: %s, Content: %s", item.ID, truncate(item.Content, 50))
+		logging.Debug("executive", "Output length: %d, MCP tools: %v", output.Len(), e.mcpToolCalled)
 
 		// Build fallback message - use Claude's output or generic error
 		fallbackMsg := strings.TrimSpace(output.String())
@@ -327,12 +325,12 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		// Send via fallback callback (bypassing MCP since that's what failed)
 		if e.config.SendMessageFallback != nil {
 			if err := e.config.SendMessageFallback(channelID, fallbackMsg); err != nil {
-				log.Printf("[executive-v2] ERROR: Fallback send failed: %v", err)
+				log.Printf("[executive] ERROR: Fallback send failed: %v", err)
 			} else {
-				log.Printf("[executive-v2] Sent fallback message via effector")
+				logging.Info("executive", "Sent fallback message")
 			}
 		} else {
-			log.Printf("[executive-v2] ERROR: No SendMessageFallback configured, message lost")
+			log.Printf("[executive] ERROR: No SendMessageFallback configured")
 		}
 	}
 

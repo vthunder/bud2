@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/vthunder/bud2/internal/logging"
 )
 
 // Server implements an MCP server over stdio
@@ -219,8 +221,7 @@ func (s *Server) handleInitialize(req jsonRPCRequest) *jsonRPCResponse {
 		json.Unmarshal(req.Params, &params)
 	}
 
-	log.Printf("[mcp] Initialize from %s %s (protocol %s)",
-		params.ClientInfo.Name, params.ClientInfo.Version, params.ProtocolVersion)
+	logging.Debug("mcp", "Initialize from %s %s", params.ClientInfo.Name, params.ClientInfo.Version)
 
 	return &jsonRPCResponse{
 		JSONRPC: "2.0",
@@ -280,7 +281,7 @@ func (s *Server) handleToolsCall(req jsonRPCRequest) *jsonRPCResponse {
 		}
 	}
 
-	log.Printf("[mcp] %s", params.Name)
+	logging.Debug("mcp", "Tool call: %s", params.Name)
 
 	handler, ok := s.handlers[params.Name]
 	if !ok {
