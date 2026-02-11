@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -55,13 +56,20 @@ func NewInboxMessageFromImpulse(impulse *types.Impulse) *InboxMessage {
 type Inbox struct {
 	mu       sync.RWMutex
 	messages map[string]*InboxMessage
+	notifyCh chan struct{} // Signal when new messages arrive
 }
 
 // NewInbox creates a new inbox
 func NewInbox() *Inbox {
 	return &Inbox{
 		messages: make(map[string]*InboxMessage),
+		notifyCh: make(chan struct{}, 1), // Buffered to prevent blocking
 	}
+}
+
+// NotifyChannel returns the channel that signals when new messages arrive
+func (i *Inbox) NotifyChannel() <-chan struct{} {
+	return i.notifyCh
 }
 
 // Add queues a new message (only if not already present)
@@ -84,6 +92,15 @@ func (i *Inbox) Add(msg *InboxMessage) {
 	}
 	msg.Status = "pending"
 	i.messages[msg.ID] = msg
+
+	// Signal that a new message is available (non-blocking)
+	select {
+	case i.notifyCh <- struct{}{}:
+		log.Printf("[inbox] Sent notification for message: %s", msg.ID)
+	default:
+		// Channel already has a pending signal, no need to add another
+		log.Printf("[inbox] Notification channel already signaled for message: %s", msg.ID)
+	}
 }
 
 // GetPending returns all pending messages

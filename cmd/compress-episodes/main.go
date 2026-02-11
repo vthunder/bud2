@@ -18,6 +18,7 @@ func main() {
 	stateDir := flag.String("state", "state", "Path to state directory")
 	workers := flag.Int("workers", 4, "Number of parallel workers")
 	dryRun := flag.Bool("dry-run", false, "Print stats without compressing")
+	wipe := flag.Bool("wipe", false, "Wipe all existing summaries and rebuild from scratch")
 	flag.Parse()
 
 	// Open database
@@ -30,10 +31,14 @@ func main() {
 
 	log.Printf("Database: %s", dbPath)
 
-	// Wipe existing summaries for fresh start
-	log.Println("Wiping existing summaries...")
-	if err := db.DeleteAllEpisodeSummaries(); err != nil {
-		log.Fatalf("Failed to delete existing summaries: %v", err)
+	// Wipe existing summaries if requested, otherwise resume
+	if *wipe {
+		log.Println("Wiping all existing summaries...")
+		if err := db.DeleteAllEpisodeSummaries(); err != nil {
+			log.Fatalf("Failed to delete existing summaries: %v", err)
+		}
+	} else {
+		log.Println("Resume mode: checking for missing compression levels...")
 	}
 
 	// Count episodes
@@ -82,8 +87,8 @@ func main() {
 			log.Printf("[worker %d] Started", workerID)
 			for ep := range episodeChan {
 				log.Printf("[worker %d] Processing episode %s", workerID, ep.ShortID)
-				// Compress this episode to all levels
-				counts, err := compressEpisode(db, ep, ollamaClient)
+				// Compress this episode to all levels (or just missing levels in resume mode)
+				counts, err := compressEpisode(db, ep, ollamaClient, !*wipe)
 				if err != nil {
 					log.Printf("[worker %d] Failed to compress episode %s: %v", workerID, ep.ShortID, err)
 				} else {
@@ -171,69 +176,105 @@ func getUncompressedEpisodes(db *graph.DB) ([]*graph.Episode, error) {
 	return uncompressed, nil
 }
 
-func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compressor) (compressionCounts, error) {
+func compressEpisode(db *graph.DB, ep *graph.Episode, compressor graph.Compressor, resumeMode bool) (compressionCounts, error) {
 	var counts compressionCounts
 
 	// Generate all compression levels (verbatim if already below target)
 	wordCount := estimateWordCount(ep.Content)
 	log.Printf("  Episode %s has %d words", ep.ShortID, wordCount)
 
+	// In resume mode, check which levels are missing and only compress those
+	missingLevels := make(map[int]bool)
+	if resumeMode {
+		for _, level := range []int{graph.CompressionLevel64, graph.CompressionLevel32, graph.CompressionLevel16, graph.CompressionLevel8, graph.CompressionLevel4} {
+			summary, err := db.GetEpisodeSummary(ep.ID, level)
+			if err != nil {
+				return counts, fmt.Errorf("failed to check L%d: %w", level, err)
+			}
+			if summary == nil {
+				missingLevels[level] = true
+			}
+		}
+		if len(missingLevels) == 0 {
+			log.Printf("  Episode %s has all compression levels, skipping", ep.ShortID)
+			return counts, nil
+		}
+		log.Printf("  Episode %s missing levels: %v", ep.ShortID, missingLevels)
+	} else {
+		// Not in resume mode, compress all levels
+		missingLevels[graph.CompressionLevel64] = true
+		missingLevels[graph.CompressionLevel32] = true
+		missingLevels[graph.CompressionLevel16] = true
+		missingLevels[graph.CompressionLevel8] = true
+		missingLevels[graph.CompressionLevel4] = true
+	}
+
 	// L64: ~64 words max
-	log.Printf("  Compressing %s to L64...", ep.ShortID)
-	summary, err := compressToTarget(ep, compressor, 64, wordCount)
-	if err != nil {
-		return counts, fmt.Errorf("L64 compression failed: %w", err)
+	if missingLevels[graph.CompressionLevel64] {
+		log.Printf("  Compressing %s to L64...", ep.ShortID)
+		summary, err := compressToTarget(ep, compressor, 64, wordCount)
+		if err != nil {
+			return counts, fmt.Errorf("L64 compression failed: %w", err)
+		}
+		tokens := estimateTokens(summary)
+		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel64, summary, tokens); err != nil {
+			return counts, fmt.Errorf("failed to store L64 summary: %w", err)
+		}
+		counts.L64 = true
+		log.Printf("  ✓ L64 done for %s", ep.ShortID)
 	}
-	tokens := estimateTokens(summary)
-	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel64, summary, tokens); err != nil {
-		return counts, fmt.Errorf("failed to store L64 summary: %w", err)
-	}
-	counts.L64 = true
-	log.Printf("  ✓ L64 done for %s", ep.ShortID)
 
 	// L32: ~32 words max
-	summary, err = compressToTarget(ep, compressor, 32, wordCount)
-	if err != nil {
-		return counts, fmt.Errorf("L32 compression failed: %w", err)
+	if missingLevels[graph.CompressionLevel32] {
+		summary, err := compressToTarget(ep, compressor, 32, wordCount)
+		if err != nil {
+			return counts, fmt.Errorf("L32 compression failed: %w", err)
+		}
+		tokens := estimateTokens(summary)
+		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel32, summary, tokens); err != nil {
+			return counts, fmt.Errorf("failed to store L32 summary: %w", err)
+		}
+		counts.L32 = true
 	}
-	tokens = estimateTokens(summary)
-	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel32, summary, tokens); err != nil {
-		return counts, fmt.Errorf("failed to store L32 summary: %w", err)
-	}
-	counts.L32 = true
 
 	// L16: ~16 words max
-	summary, err = compressToTarget(ep, compressor, 16, wordCount)
-	if err != nil {
-		return counts, fmt.Errorf("L16 compression failed: %w", err)
+	if missingLevels[graph.CompressionLevel16] {
+		summary, err := compressToTarget(ep, compressor, 16, wordCount)
+		if err != nil {
+			return counts, fmt.Errorf("L16 compression failed: %w", err)
+		}
+		tokens := estimateTokens(summary)
+		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel16, summary, tokens); err != nil {
+			return counts, fmt.Errorf("failed to store L16 summary: %w", err)
+		}
+		counts.L16 = true
 	}
-	tokens = estimateTokens(summary)
-	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel16, summary, tokens); err != nil {
-		return counts, fmt.Errorf("failed to store L16 summary: %w", err)
-	}
-	counts.L16 = true
 
 	// L8: ~8 words max
-	summary, err = compressToTarget(ep, compressor, 8, wordCount)
-	if err != nil {
-		return counts, fmt.Errorf("L8 compression failed: %w", err)
+	if missingLevels[graph.CompressionLevel8] {
+		summary, err := compressToTarget(ep, compressor, 8, wordCount)
+		if err != nil {
+			return counts, fmt.Errorf("L8 compression failed: %w", err)
+		}
+		tokens := estimateTokens(summary)
+		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel8, summary, tokens); err != nil {
+			return counts, fmt.Errorf("failed to store L8 summary: %w", err)
+		}
+		counts.L8 = true
 	}
-	tokens = estimateTokens(summary)
-	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel8, summary, tokens); err != nil {
-		return counts, fmt.Errorf("failed to store L8 summary: %w", err)
-	}
-	counts.L8 = true
 
 	// L4: ~4 words max
-	summary, err = compressToTarget(ep, compressor, 4, wordCount)
-	if err != nil {
-		return counts, fmt.Errorf("L4 compression failed: %w", err)
+	if missingLevels[graph.CompressionLevel4] {
+		summary, err := compressToTarget(ep, compressor, 4, wordCount)
+		if err != nil {
+			return counts, fmt.Errorf("L4 compression failed: %w", err)
+		}
+		tokens := estimateTokens(summary)
+		if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel4, summary, tokens); err != nil {
+			return counts, fmt.Errorf("failed to store L4 summary: %w", err)
+		}
+		counts.L4 = true
 	}
-	tokens = estimateTokens(summary)
-	if err := db.AddEpisodeSummary(ep.ID, graph.CompressionLevel4, summary, tokens); err != nil {
-		return counts, fmt.Errorf("failed to store L4 summary: %w", err)
-	}
-	counts.L4 = true
 
 	return counts, nil
 }

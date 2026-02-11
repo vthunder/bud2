@@ -86,7 +86,7 @@ func (i *Inspector) Summary() (*StateSummary, error) {
 
 	// Count JSONL files
 	summary.Activity = i.countJSONL("system/activity.jsonl")
-	summary.Inbox = i.countJSONL("system/queues/inbox.jsonl")
+	summary.Inbox = 0 // Inbox is now in-memory only, not a file
 	summary.Outbox = i.countJSONL("system/queues/outbox.jsonl")
 	summary.Signals = i.countJSONL("system/queues/signals.jsonl")
 
@@ -131,7 +131,6 @@ func (i *Inspector) Health() (*HealthReport, error) {
 type TraceSummary struct {
 	ID        string    `json:"id"`
 	Content   string    `json:"content"`
-	IsCore    bool      `json:"is_core"`
 	Strength  int       `json:"strength"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -156,7 +155,6 @@ func (i *Inspector) ListTraces() ([]TraceSummary, error) {
 		result = append(result, TraceSummary{
 			ID:        t.ID,
 			Content:   content,
-			IsCore:    t.IsCore,
 			Strength:  t.Strength,
 			CreatedAt: t.CreatedAt,
 		})
@@ -185,7 +183,6 @@ func (i *Inspector) GetTrace(id string) (*types.Trace, error) {
 		Embedding:  gt.Embedding,
 		Activation: gt.Activation,
 		Strength:   gt.Strength,
-		IsCore:     gt.IsCore,
 		CreatedAt:  gt.CreatedAt,
 		LastAccess: gt.LastAccessed,
 	}, nil
@@ -662,7 +659,7 @@ type QueuesSummary struct {
 // ListQueues returns queue entry counts
 func (i *Inspector) ListQueues() (*QueuesSummary, error) {
 	return &QueuesSummary{
-		Inbox:   i.countJSONL("system/queues/inbox.jsonl"),
+		Inbox:   0, // Inbox is now in-memory only, not a file
 		Outbox:  i.countJSONL("system/queues/outbox.jsonl"),
 		Signals: i.countJSONL("system/queues/signals.jsonl"),
 	}, nil
@@ -671,7 +668,8 @@ func (i *Inspector) ListQueues() (*QueuesSummary, error) {
 // ClearQueues clears all queue files
 func (i *Inspector) ClearQueues() error {
 	queuesPath := filepath.Join(i.statePath, "system", "queues")
-	for _, name := range []string{"inbox.jsonl", "outbox.jsonl", "signals.jsonl"} {
+	// Note: inbox.jsonl removed - inbox is now in-memory only
+	for _, name := range []string{"outbox.jsonl", "signals.jsonl"} {
 		path := filepath.Join(queuesPath, name)
 		if err := os.WriteFile(path, []byte{}, 0644); err != nil {
 			return fmt.Errorf("failed to clear %s: %w", name, err)
@@ -788,7 +786,6 @@ func (i *Inspector) RegenCore(seedPath string) (int, error) {
 			Summary:      content, // Still set for backwards compat, but won't be persisted
 			Activation:   1.0,
 			Strength:     100,
-			IsCore:       true,
 			CreatedAt:    time.Now(),
 			LastAccessed: time.Now(),
 		}
@@ -814,7 +811,6 @@ type SearchResult struct {
 	Summary    string    `json:"summary"`
 	Activation float64   `json:"activation"`
 	CreatedAt  time.Time `json:"created_at"`
-	IsCore     bool      `json:"is_core,omitempty"`
 }
 
 // SearchMemory searches long-term memory for traces matching the query.
@@ -886,7 +882,6 @@ func (i *Inspector) SearchMemoryWithContext(query string, limit int, useContext 
 			Summary:    t.Summary,
 			Activation: t.Activation,
 			CreatedAt:  t.CreatedAt,
-			IsCore:     t.IsCore,
 		})
 	}
 
@@ -919,7 +914,6 @@ func (i *Inspector) GetTraceContext(traceID string) (*TraceContext, error) {
 		Trace: TraceSummary{
 			ID:        trace.ID,
 			Content:   trace.Summary,
-			IsCore:    trace.IsCore,
 			Strength:  trace.Strength,
 			CreatedAt: trace.CreatedAt,
 		},

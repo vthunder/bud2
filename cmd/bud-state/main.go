@@ -242,11 +242,7 @@ func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 	fmt.Printf("Traces (%d total)\n", len(traces))
 	fmt.Println("================")
 	for _, t := range traces {
-		coreMarker := ""
-		if t.IsCore {
-			coreMarker = " [CORE]"
-		}
-		fmt.Printf("%s%s (strength=%d)\n  %s\n\n", t.ID, coreMarker, t.Strength, t.Content)
+		fmt.Printf("%s (strength=%d)\n  %s\n\n", t.ID, t.Strength, t.Content)
 	}
 }
 
@@ -389,8 +385,8 @@ func handleGraph(inspector *state.Inspector, args []string) {
 	case "trace":
 		if trace, ok := info.Data.(*graph.Trace); ok {
 			fmt.Printf("Summary: %s\n", trace.Summary)
-			fmt.Printf("Core: %v, Strength: %d, Activation: %.2f\n",
-				trace.IsCore, trace.Strength, trace.Activation)
+			fmt.Printf("Strength: %d, Activation: %.2f\n",
+				trace.Strength, trace.Activation)
 		}
 	case "episode":
 		if ep, ok := info.Data.(*graph.Episode); ok {

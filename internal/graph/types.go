@@ -127,12 +127,12 @@ const (
 // Trace represents a consolidated memory (Tier 3)
 type Trace struct {
 	ID           string    `json:"id"`
+	ShortID      string    `json:"short_id"`
 	Summary      string    `json:"summary"`
 	Topic        string    `json:"topic,omitempty"`
 	TraceType    TraceType `json:"trace_type,omitempty"`
 	Activation   float64   `json:"activation"`
 	Strength     int       `json:"strength"`
-	IsCore       bool      `json:"is_core"`
 	Embedding    []float64 `json:"embedding,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	LastAccessed time.Time `json:"last_accessed"`

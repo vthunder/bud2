@@ -12,6 +12,15 @@ type ClaudeConfig struct {
 	Model string
 	// Working directory for Claude
 	WorkDir string
+
+	// PromptMode controls how the prompt is constructed
+	// "bud" (default): Full Bud system prompt with identity, memories, tools
+	// "custom": Use CustomSystemPrompt verbatim, skip Bud-specific additions
+	PromptMode string
+
+	// CustomSystemPrompt for custom mode (ignored in bud mode)
+	// If set in custom mode, replaces the entire system prompt
+	CustomSystemPrompt string
 }
 
 // SessionUsage holds token usage metrics from a Claude session

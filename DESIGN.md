@@ -113,11 +113,10 @@ Traces are consolidated memories - the output of processing percepts into durabl
 | **Activation** | Current relevance (0-1, decays over time) |
 | **Strength** | How reinforced (count of source percepts) |
 | **Sources** | Percept IDs this trace was created from |
-| **IsCore** | Identity trace (always loaded in context) |
 | **IsLabile** | Recently created, subject to reconsolidation |
 | **Inhibits** | Trace IDs this trace supersedes |
 
-**Core Traces**: Bootstrapped from `seed/core_seed.md` on first run. Define identity, values, and system knowledge. Always included in executive context.
+**Core Identity**: Loaded from `state/system/core.md` at startup. Defines identity, values, and system knowledge. Always included in executive context as part of the system prompt, not stored as traces in the database.
 
 ## Memory Model
 

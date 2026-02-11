@@ -12,8 +12,12 @@ import (
 
 var (
 	// Regex patterns for post-processing
-	emailRegex = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
-	moneyRegex = regexp.MustCompile(`\$[\d,]+(?:\.\d{2})?[kKmMbB]?|\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:dollars?|USD|EUR|GBP)`)
+	emailRegex         = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	calendarIDRegex    = regexp.MustCompile(`@(?:group|resource)\.calendar\.google\.com$`)
+	fileExtensionRegex = regexp.MustCompile(`\.[a-zA-Z0-9]{2,6}$`)
+	hyphenatedIDRegex  = regexp.MustCompile(`^[a-z]+(-[a-z]+)+$`)
+	underscoredIDRegex = regexp.MustCompile(`^[a-z]+(_[a-z]+)+$`)
+	moneyRegex         = regexp.MustCompile(`\$[\d,]+(?:\.\d{2})?[kKmMbB]?|\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:dollars?|USD|EUR|GBP)`)
 
 	// Noise entities to filter out (system artifacts, pronouns, conversational fragments)
 	noiseEntities = map[string]bool{
@@ -208,9 +212,21 @@ func (e *DeepExtractor) ExtractAll(text string) (*ExtractionResult, error) {
 	}
 	result.Entities = entities
 
-	// Pass 2: Extract relationships (only if we found entities)
-	if len(entities) > 0 {
-		rels, err := e.ExtractRelationships(text, entities)
+	// Pass 2: Extract relationships (only if we found real entities AFTER filtering)
+	// Filter out garbage entities (e.g., "none" with type OTHER from LLM when it finds nothing)
+	realEntities := make([]ExtractedEntity, 0, len(entities))
+	for _, ent := range entities {
+		// Skip garbage entities
+		if strings.ToLower(ent.Name) == "none" || ent.Type == graph.EntityOther {
+			continue
+		}
+		realEntities = append(realEntities, ent)
+	}
+
+	// IMPORTANT: Skip Pass 2 entirely if we have zero useful entities
+	// This prevents LLM hallucinations for technical/meta content
+	if len(realEntities) > 0 {
+		rels, err := e.ExtractRelationships(text, realEntities)
 		if err != nil {
 			// Non-fatal: return entities without relationships
 			log.Printf("[extract] ⚠️  Relationship extraction failed: %v", err)
@@ -359,6 +375,7 @@ func postProcessEntityList(text string, entities []ExtractedEntity) []ExtractedE
 	for _, e := range entities {
 		nameLower := strings.ToLower(e.Name)
 
+		// Filter noise entities
 		if noiseEntities[nameLower] {
 			continue
 		}
@@ -368,12 +385,34 @@ func postProcessEntityList(text string, entities []ExtractedEntity) []ExtractedE
 		if len(e.Name) <= 2 {
 			continue
 		}
+
+		// Detect email addresses first (before file extension check, since .com matches both)
+		isEmail := emailRegex.MatchString(e.Name)
+
+		// Filter calendar IDs (e.g., c_*@group.calendar.google.com)
+		if isEmail && calendarIDRegex.MatchString(e.Name) {
+			log.Printf("[extract] Filtered calendar ID: %s", e.Name)
+			continue
+		}
+
+		// Filter technical artifacts (file names, hyphenated/underscored identifiers)
+		// BUT: don't filter emails that happen to end in .com/.org/etc
+		if !isEmail && fileExtensionRegex.MatchString(e.Name) {
+			log.Printf("[extract] Filtered file name: %s (type: %s)", e.Name, e.Type)
+			continue
+		}
+		if hyphenatedIDRegex.MatchString(e.Name) || underscoredIDRegex.MatchString(e.Name) {
+			log.Printf("[extract] Filtered technical identifier: %s (type: %s)", e.Name, e.Type)
+			continue
+		}
+
+		// Filter generic product names
 		if e.Type == graph.EntityProduct && isGenericProductName(e.Name) {
 			continue
 		}
 
 		// Fix misclassified types based on content
-		if emailRegex.MatchString(e.Name) {
+		if isEmail {
 			e.Type = graph.EntityEmail
 		} else if moneyRegex.MatchString(e.Name) {
 			e.Type = graph.EntityMoney
@@ -385,9 +424,15 @@ func postProcessEntityList(text string, entities []ExtractedEntity) []ExtractedE
 		}
 	}
 
-	// Add emails found by regex that LLM missed
+	// Add emails found by regex that LLM missed (but skip calendar IDs)
 	for _, match := range emailRegex.FindAllString(text, -1) {
 		nameLower := strings.ToLower(match)
+
+		// Skip calendar IDs
+		if calendarIDRegex.MatchString(match) {
+			continue
+		}
+
 		if !seenNames[nameLower] {
 			seenNames[nameLower] = true
 			filtered = append(filtered, ExtractedEntity{

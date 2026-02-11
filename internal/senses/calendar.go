@@ -37,6 +37,7 @@ type CalendarSense struct {
 	// Control
 	stopChan chan struct{}
 	stopped  bool
+	started  bool
 
 	// Callbacks
 	onError func(err error)
@@ -83,6 +84,15 @@ func NewCalendarSense(cfg CalendarConfig, inbox *memory.Inbox) *CalendarSense {
 
 // Start begins polling the calendar
 func (c *CalendarSense) Start() error {
+	c.mu.Lock()
+	if c.started {
+		c.mu.Unlock()
+		log.Printf("[calendar-sense] Already started, ignoring duplicate Start() call")
+		return nil
+	}
+	c.started = true
+	c.mu.Unlock()
+
 	log.Printf("[calendar-sense] Starting with poll interval %v, reminder before %v",
 		c.pollInterval, c.reminderBefore)
 

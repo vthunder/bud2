@@ -51,11 +51,11 @@ Me: [deletes the 3 test traces]
 - `state_percepts(action="clear")` - percepts are transient by design
 - `state_queues(action="clear")` - operational, not memory
 - `state_sessions(action="clear")` - just tracking data
-- **Core identity**: Now stored in `state/core.md` (file-based, not database). Edit the file directly to update core identity.
+- **Core identity**: Stored in `state/system/core.md` (file-based, not database). Edit the file directly to update core identity. Loaded at startup.
 
 ### Careful (check first)
 - `state_traces(action="delete", id="...")` - may lose learned information
-- `state_traces(action="clear")` - clears all non-core traces
+- `state_traces(action="clear")` - clears all traces
 - `state_threads(action="clear")` - may lose conversation context
 - `state_logs(action="truncate")` - loses audit trail
 
@@ -86,8 +86,7 @@ Me: [deletes the 3 test traces]
 
 ### "Start fresh with identity"
 ```
-1. Confirm with user this will clear learned memories
-2. state_traces(action="clear", clear_core=true) - clear core
-3. state_regen_core() - regenerate from core_seed.md
-4. Optionally: state_traces(action="clear") - clear non-core too
+1. Edit state/system/core.md directly to update core identity
+2. Restart bud to reload the core identity from file
+3. Optionally: state_traces(action="clear") - clear learned memories
 ```

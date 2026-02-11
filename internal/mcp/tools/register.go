@@ -227,7 +227,6 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 			result = append(result, map[string]any{
 				"id":       t.ID,
 				"content":  truncate(t.Summary, 100),
-				"is_core":  t.IsCore,
 				"strength": t.Strength,
 			})
 		}
@@ -236,42 +235,25 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		return string(data), nil
 	})
 
-	// mark_core
+	// mark_core - DEPRECATED: IsCore field removed in v14
+	// Keeping stub for backwards compatibility
 	server.RegisterTool("mark_core", mcp.ToolDef{
-		Description: "Mark a memory trace as core (part of identity) or remove core status. Core traces are always included in prompts and define Bud's identity.",
+		Description: "DEPRECATED: Core memory system removed. This tool is a no-op.",
 		Properties: map[string]mcp.PropDef{
-			"trace_id": {Type: "string", Description: "The ID of the trace to mark as core"},
-			"is_core":  {Type: "boolean", Description: "Whether to mark as core (true) or remove core status (false). Defaults to true."},
+			"trace_id": {Type: "string", Description: "The ID of the trace"},
+			"is_core":  {Type: "boolean", Description: "Ignored"},
 		},
 		Required: []string{"trace_id"},
 	}, func(ctx any, args map[string]any) (string, error) {
-		traceID, ok := args["trace_id"].(string)
-		if !ok {
-			return "", fmt.Errorf("trace_id is required")
-		}
-
-		isCore := true
-		if val, ok := args["is_core"].(bool); ok {
-			isCore = val
-		}
-
-		if err := deps.GraphDB.SetTraceCore(traceID, isCore); err != nil {
-			return "", err
-		}
-
-		action := "marked as core"
-		if !isCore {
-			action = "unmarked as core"
-		}
-		log.Printf("Trace %s %s", traceID, action)
-		return fmt.Sprintf("Trace %s %s.", traceID, action), nil
+		return "Note: Core memory system has been deprecated. Traces are now managed via activation and strength.", nil
 	})
 
-	// create_core
+	// create_core - DEPRECATED: IsCore field removed in v14
+	// Keeping stub for backwards compatibility
 	server.RegisterTool("create_core", mcp.ToolDef{
-		Description: "Create a new core identity trace directly. Use this to add new identity information that should always be present.",
+		Description: "DEPRECATED: Core memory system removed. Use save_thought instead.",
 		Properties: map[string]mcp.PropDef{
-			"content": {Type: "string", Description: "The content of the core trace (e.g., 'I am Bud, a helpful assistant')"},
+			"content": {Type: "string", Description: "The content to save"},
 		},
 		Required: []string{"content"},
 	}, func(ctx any, args map[string]any) (string, error) {
@@ -281,11 +263,10 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		}
 
 		trace := &graph.Trace{
-			ID:           fmt.Sprintf("core-%d", time.Now().UnixNano()),
+			ID:           fmt.Sprintf("trace-%d", time.Now().UnixNano()),
 			Summary:      content,
 			Activation:   1.0,
 			Strength:     100,
-			IsCore:       true,
 			CreatedAt:    time.Now(),
 			LastAccessed: time.Now(),
 		}

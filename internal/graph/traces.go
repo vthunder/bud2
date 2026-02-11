@@ -15,6 +15,11 @@ func (g *DB) AddTrace(tr *Trace) error {
 		return fmt.Errorf("trace ID is required")
 	}
 
+	// Generate short ID if not set
+	if tr.ShortID == "" {
+		tr.ShortID = generateShortID(tr.ID)
+	}
+
 	embeddingBytes, err := json.Marshal(tr.Embedding)
 	if err != nil {
 		embeddingBytes = nil
@@ -33,10 +38,11 @@ func (g *DB) AddTrace(tr *Trace) error {
 	}
 
 	_, err = g.db.Exec(`
-		INSERT INTO traces (id, topic, trace_type, activation, strength, is_core,
+		INSERT INTO traces (id, short_id, topic, trace_type, activation, strength,
 			embedding, created_at, last_accessed, labile_until)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			short_id = excluded.short_id,
 			trace_type = excluded.trace_type,
 			activation = excluded.activation,
 			strength = excluded.strength,
@@ -44,7 +50,7 @@ func (g *DB) AddTrace(tr *Trace) error {
 			last_accessed = excluded.last_accessed,
 			labile_until = excluded.labile_until
 	`,
-		tr.ID, tr.Topic, string(traceType), tr.Activation, tr.Strength, tr.IsCore,
+		tr.ID, tr.ShortID, tr.Topic, string(traceType), tr.Activation, tr.Strength,
 		embeddingBytes, tr.CreatedAt, tr.LastAccessed, nullableTime(tr.LabileUntil),
 	)
 
@@ -61,7 +67,7 @@ func (g *DB) AddTrace(tr *Trace) error {
 func (g *DB) GetTrace(id string) (*Trace, error) {
 	// Try to get summary with fallback across compression levels
 	row := g.db.QueryRow(`
-		SELECT t.id,
+		SELECT t.id, t.short_id,
 			COALESCE(
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
@@ -71,7 +77,7 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		WHERE t.id = ?
 	`, id)
@@ -79,30 +85,10 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 	return scanTrace(row)
 }
 
-// GetCoreTraces retrieves all core identity traces
-func (g *DB) GetCoreTraces() ([]*Trace, error) {
-	// Use verbatim (level 0) content from trace_summaries, fall back to empty string if not available
-	rows, err := g.db.Query(`
-		SELECT t.id, COALESCE(ts.summary, ''), t.topic, t.trace_type,
-			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
-		FROM traces t
-		LEFT JOIN trace_summaries ts ON t.id = ts.trace_id AND ts.compression_level = 0
-		WHERE t.is_core = TRUE
-		ORDER BY t.created_at ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query core traces: %w", err)
-	}
-	defer rows.Close()
-
-	return scanTraceRows(rows)
-}
-
-// GetActivatedTraces retrieves traces with activation above threshold
-// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
-func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
-	rows, err := g.db.Query(`
-		SELECT t.id,
+// GetTraceByShortID retrieves a trace by its short ID
+func (g *DB) GetTraceByShortID(shortID string) (*Trace, error) {
+	row := g.db.QueryRow(`
+		SELECT t.id, t.short_id,
 			COALESCE(
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
@@ -112,9 +98,37 @@ func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) 
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
-		WHERE t.activation >= ? AND t.is_core = FALSE
+		WHERE t.short_id = ?
+	`, shortID)
+
+	return scanTrace(row)
+}
+
+// GetCoreTraces retrieves all core identity traces
+func (g *DB) GetCoreTraces() ([]*Trace, error) {
+	// Deprecated: Core identity now loaded from state/system/core.md
+	return []*Trace{}, nil
+}
+
+// GetActivatedTraces retrieves traces with activation above threshold
+// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
+func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
+	rows, err := g.db.Query(`
+		SELECT t.id, t.short_id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.activation >= ?
 		ORDER BY t.activation DESC
 		LIMIT ?
 	`, threshold, limit)
@@ -172,7 +186,7 @@ func (g *DB) ReinforceTrace(id string, newEmbedding []float64, alpha float64) er
 // DecayActivation decays all trace activations by the given factor
 func (g *DB) DecayActivation(factor float64) error {
 	_, err := g.db.Exec(`
-		UPDATE traces SET activation = activation * ? WHERE is_core = FALSE
+		UPDATE traces SET activation = activation * ?
 	`, factor)
 	return err
 }
@@ -187,7 +201,7 @@ func (g *DB) DecayActivationByAge(lambda float64, floor float64) (int, error) {
 
 	rows, err := g.db.Query(`
 		SELECT id, activation, last_accessed, COALESCE(trace_type, 'knowledge')
-		FROM traces WHERE is_core = FALSE AND activation > ?
+		FROM traces WHERE activation > ?
 	`, floor)
 	if err != nil {
 		return 0, err
@@ -446,7 +460,7 @@ func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 // Falls back to empty string if no summary is available
 func (g *DB) GetAllTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
-		SELECT t.id,
+		SELECT t.id, t.short_id,
 			COALESCE(
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
@@ -456,7 +470,7 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.is_core, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		ORDER BY t.created_at DESC
 	`)
@@ -468,20 +482,6 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 	return scanTraceRows(rows)
 }
 
-// SetTraceCore updates the is_core flag of a trace
-func (g *DB) SetTraceCore(id string, isCore bool) error {
-	result, err := g.db.Exec(`
-		UPDATE traces SET is_core = ? WHERE id = ?
-	`, isCore, id)
-	if err != nil {
-		return fmt.Errorf("failed to update trace: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("trace not found: %s", id)
-	}
-	return nil
-}
 
 // DeleteTrace deletes a trace by ID
 func (g *DB) DeleteTrace(id string) error {
@@ -508,9 +508,9 @@ func (g *DB) ClearTraces(coreOnly bool) (int, error) {
 	var rows *sql.Rows
 	var err error
 	if coreOnly {
-		rows, err = g.db.Query(`SELECT id FROM traces WHERE is_core = TRUE`)
+		rows, err = g.db.Query(`SELECT id FROM traces`)
 	} else {
-		rows, err = g.db.Query(`SELECT id FROM traces WHERE is_core = FALSE`)
+		rows, err = g.db.Query(`SELECT id FROM traces`)
 	}
 	if err != nil {
 		return 0, err
@@ -539,11 +539,7 @@ func (g *DB) CountTraces() (total int, core int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	err = g.db.QueryRow(`SELECT COUNT(*) FROM traces WHERE is_core = TRUE`).Scan(&core)
-	if err != nil {
-		return total, 0, err
-	}
-	return total, core, nil
+	return total, 0, nil
 }
 
 // scanTrace scans a single row into a Trace
@@ -556,7 +552,7 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	var labileUntil sql.NullTime
 
 	err := row.Scan(
-		&tr.ID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
+		&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 		&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 	)
 	if err != nil {
@@ -595,7 +591,7 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		var labileUntil sql.NullTime
 
 		err := rows.Scan(
-			&tr.ID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength, &tr.IsCore,
+			&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 			&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
 		)
 		if err != nil {

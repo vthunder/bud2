@@ -347,6 +347,39 @@ func (g *DB) GetTraceSummary(traceID string, level int) (*TraceSummary, error) {
 	return nil, nil
 }
 
+// GenerateTraceSummaryLevel generates a single compression level for a trace.
+// This is faster than GenerateTracePyramid when only one level is needed (e.g., during consolidation).
+// Use compress-traces to backfill the full pyramid later.
+func (g *DB) GenerateTraceSummaryLevel(traceID string, level int, sourceEpisodes []*Episode, compressor Compressor) error {
+	if compressor == nil || len(sourceEpisodes) == 0 {
+		return fmt.Errorf("compressor and source episodes required")
+	}
+
+	// Build context from source episodes
+	var contextParts []string
+	for _, ep := range sourceEpisodes {
+		contextParts = append(contextParts, fmt.Sprintf("[%s] %s", ep.Author, ep.Content))
+	}
+	sourceContext := strings.Join(contextParts, "\n")
+	wordCount := estimateWordCount(sourceContext)
+
+	// Determine target words for this level
+	targetWords := level // e.g., CompressionLevel8 = 8 words
+
+	// Generate summary
+	summary, err := compressTraceToTarget(sourceContext, compressor, targetWords, wordCount)
+	if err != nil {
+		return fmt.Errorf("L%d compression failed: %w", level, err)
+	}
+
+	// Store summary
+	if err := g.AddTraceSummary(traceID, level, summary, estimateTokens(summary)); err != nil {
+		return fmt.Errorf("failed to store L%d summary: %w", level, err)
+	}
+
+	return nil
+}
+
 // GenerateTracePyramid creates cascading summaries (L64→L32→L16→L8→L4) for a trace
 // from its source episodes. Uses cascading approach for consistency.
 func (g *DB) GenerateTracePyramid(traceID string, sourceEpisodes []*Episode, compressor Compressor) error {

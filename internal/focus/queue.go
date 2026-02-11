@@ -3,6 +3,7 @@ package focus
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,19 +12,26 @@ import (
 
 // Queue manages the pending items queue with persistence
 type Queue struct {
-	mu      sync.RWMutex
-	items   []*PendingItem
-	path    string
-	maxSize int
+	mu       sync.RWMutex
+	items    []*PendingItem
+	path     string
+	maxSize  int
+	notifyCh chan struct{} // Signal when new items are added
 }
 
 // NewQueue creates a new pending items queue
 func NewQueue(statePath string, maxSize int) *Queue {
 	return &Queue{
-		items:   make([]*PendingItem, 0),
-		path:    statePath,
-		maxSize: maxSize,
+		items:    make([]*PendingItem, 0),
+		path:     statePath,
+		maxSize:  maxSize,
+		notifyCh: make(chan struct{}, 1), // Buffered to prevent blocking
 	}
+}
+
+// NotifyChannel returns the channel that signals when new items are added
+func (q *Queue) NotifyChannel() <-chan struct{} {
+	return q.notifyCh
 }
 
 // Add adds an item to the queue
@@ -40,6 +48,15 @@ func (q *Queue) Add(item *PendingItem) error {
 	// Trim if over capacity (remove oldest, lowest priority)
 	if len(q.items) > q.maxSize {
 		q.trim()
+	}
+
+	// Signal that a new item is available (non-blocking)
+	select {
+	case q.notifyCh <- struct{}{}:
+		log.Printf("[queue] Sent notification for item: %s", item.ID)
+	default:
+		// Channel already has a pending signal, no need to add another
+		log.Printf("[queue] Notification channel already signaled for item: %s", item.ID)
 	}
 
 	return nil

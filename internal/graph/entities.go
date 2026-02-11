@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+// EntityExists checks if an entity with the given ID exists
+func (g *DB) EntityExists(id string) (bool, error) {
+	var count int
+	err := g.db.QueryRow("SELECT COUNT(*) FROM entities WHERE id = ?", id).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // AddEntity adds a new entity to the graph
 func (g *DB) AddEntity(e *Entity) error {
 	if e.ID == "" {

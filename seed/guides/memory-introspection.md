@@ -61,7 +61,7 @@ sqlite3 ... "SELECT id, author, substr(content, 1, 60) as content, l1, l2 FROM e
 
 **Safe to auto-delete:**
 - PRODUCT entities that are function names (`talk_to_user`, `notion_push`)
-- File paths (`~/src/...`, `seed/core_seed.md`)
+- File paths (`~/src/...`, `state/system/core.md`)
 - Code expressions (`hash(owner, token, amount, nonce)`)
 - Conversation snippets (`ok let's try it!`, `the token`)
 

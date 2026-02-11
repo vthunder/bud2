@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -439,11 +440,13 @@ func (c *Client) ListEvents(ctx context.Context, params ListEventsParams) ([]Eve
 		data, err := c.request(ctx, "GET", path, nil)
 		if err != nil {
 			// Log but continue with other calendars
+			log.Printf("[calendar] Failed to fetch events from calendar %s: %v", calendarID, err)
 			continue
 		}
 
 		var resp eventsResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
+			log.Printf("[calendar] Failed to parse events response from calendar %s: %v", calendarID, err)
 			continue
 		}
 
@@ -690,6 +693,50 @@ func (c *Client) CreateEvent(ctx context.Context, params CreateEventParams) (*Ev
 
 	result.CalendarID = calendarID
 	return &result, nil
+}
+
+// CalendarInfo represents a calendar in the user's calendar list
+type CalendarInfo struct {
+	ID          string `json:"id"`
+	Summary     string `json:"summary"`
+	Description string `json:"description,omitempty"`
+	Primary     bool   `json:"primary,omitempty"`
+	AccessRole  string `json:"access_role"` // owner, writer, reader, freeBusyReader
+}
+
+// ListCalendars retrieves all calendars accessible to the service account
+func (c *Client) ListCalendars(ctx context.Context) ([]CalendarInfo, error) {
+	data, err := c.request(ctx, "GET", "/users/me/calendarList", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list calendars: %w", err)
+	}
+
+	var resp struct {
+		Items []struct {
+			ID          string `json:"id"`
+			Summary     string `json:"summary"`
+			Description string `json:"description"`
+			Primary     bool   `json:"primary"`
+			AccessRole  string `json:"accessRole"`
+		} `json:"items"`
+	}
+
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse calendar list: %w", err)
+	}
+
+	calendars := make([]CalendarInfo, len(resp.Items))
+	for i, item := range resp.Items {
+		calendars[i] = CalendarInfo{
+			ID:          item.ID,
+			Summary:     item.Summary,
+			Description: item.Description,
+			Primary:     item.Primary,
+			AccessRole:  item.AccessRole,
+		}
+	}
+
+	return calendars, nil
 }
 
 // CalendarIDs returns all configured calendar IDs
