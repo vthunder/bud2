@@ -187,7 +187,19 @@ func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) 
 
 // processItem handles a single focus item
 func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) error {
-	logging.Debug("executive", "Processing item: %s (%s)", item.ID, item.Priority)
+	// Get author for logging
+	author := ""
+	if a, ok := item.Data["author"].(string); ok {
+		author = a
+	}
+
+	// Log consolidated message with session ID (first 8 chars)
+	sessionID := e.session.SessionID()[:8]
+	if author != "" {
+		logging.Info("main", "Message from %s: %s → handler: executive (%s)", author, logging.Truncate(item.Content, 40), sessionID)
+	} else {
+		logging.Info("main", "Processing: %s → handler: executive (%s)", logging.Truncate(item.Content, 40), sessionID)
+	}
 
 	// Get channel ID for typing indicator
 	channelID := item.ChannelID
@@ -228,9 +240,6 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		log.Printf("[executive-v2] Empty prompt, skipping item %s", item.ID)
 		return nil
 	}
-
-	// Log prompt to debug directory for debugging wrong responses
-	e.logPromptToDebug(item.ID, prompt)
 
 	// Track whether user got a response (for validation)
 	// This needs to capture both direct tool calls AND MCP tool calls
@@ -772,33 +781,4 @@ func extractMemoryEval(text string) string {
 	return strings.TrimSpace(text[evalStart:endIdx])
 }
 
-// logPromptToDebug saves the full prompt to state/debug/prompts/<focus_id>.txt
-// This helps debug wrong responses by letting us inspect what context was sent to Claude
-func (e *ExecutiveV2) logPromptToDebug(focusID, prompt string) {
-	// Skip if no work dir configured
-	if e.config.WorkDir == "" {
-		return
-	}
-
-	debugDir := filepath.Join(e.config.WorkDir, "state", "debug", "prompts")
-
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(debugDir, 0755); err != nil {
-		log.Printf("[executive-v2] Warning: failed to create debug dir: %v", err)
-		return
-	}
-
-	// Sanitize focus ID for filename (replace slashes and colons)
-	sanitized := strings.ReplaceAll(focusID, "/", "_")
-	sanitized = strings.ReplaceAll(sanitized, ":", "_")
-	filename := filepath.Join(debugDir, fmt.Sprintf("%s.txt", sanitized))
-
-	// Write prompt to file
-	if err := os.WriteFile(filename, []byte(prompt), 0644); err != nil {
-		log.Printf("[executive-v2] Warning: failed to write debug prompt: %v", err)
-		return
-	}
-
-	log.Printf("[executive-v2] Prompt logged to %s", filename)
-}
 

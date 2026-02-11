@@ -516,7 +516,8 @@ func (s *SimpleSession) parseResultUsage(raw []byte) {
 	}
 
 	s.lastUsage = usage
-	logging.Info("executive", "Response complete (%ds, %d tokens)", usage.DurationMs/1000, usage.OutputTokens)
+	logging.Debug("simple-session", "Usage: input=%d output=%d cache_read=%d turns=%d duration=%dms",
+		usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.NumTurns, usage.DurationMs)
 }
 
 // Close is a no-op since there's no persistent process to clean up in -p mode

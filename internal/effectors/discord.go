@@ -188,7 +188,7 @@ func (e *DiscordEffector) processActions() {
 
 		// Success
 		e.clearRetryState(action.ID)
-		log.Printf("[discord-effector] Completed action %s (%s)", action.ID, action.Type)
+		logging.Debug("discord-effector", "Completed action %s (%s)", action.ID, action.Type)
 	}
 
 	// Put back actions that need retry

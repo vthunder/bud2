@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -202,7 +202,7 @@ func main() {
 	// Seed guides (how-to docs) from defaults if missing
 	seedGuides(statePath)
 
-	// Generate .mcp.json with HTTP MCP server configuration
+	// Generate .mcp.json in state/ directory for Claude MCP tools
 	if err := writeMCPConfig(statePath, mcpHTTPPort); err != nil {
 		log.Printf("Warning: failed to write .mcp.json: %v", err)
 	}
@@ -438,8 +438,8 @@ func main() {
 		systemPath,       // Pass state/system so core.md can be found at system/core.md
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
-			WorkDir:   ".",
-			BotAuthor: "Bud", // Kept for compatibility, but no longer used
+			WorkDir:   statePath, // Run Claude from state/ to pick up .mcp.json
+			BotAuthor: "Bud",     // Kept for compatibility, but no longer used
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
 			SendMessageFallback: func(channelID, message string) error {
@@ -502,7 +502,15 @@ func main() {
 						extraData = map[string]any{"memory_eval": memoryEval}
 					}
 					activityLog.LogExecDone(msg.Content, "", session.DurationSec, source, extraData)
-					log.Printf("[main] Signal: session %s completed via %s (%.1f sec)", sessionID, source, session.DurationSec)
+
+					// Format memory eval for display
+					evalStr := ""
+					if memoryEval != nil && len(memoryEval) > 0 {
+						evalStr = fmt.Sprintf(" Memory eval: %v", memoryEval)
+					}
+
+					logging.Info("executive", "Done: %s in %.0fs, %d tokens.%s",
+						msg.Content, session.DurationSec, session.OutputTokens, evalStr)
 				}
 			}
 			// Log memory eval separately for easier querying
@@ -754,7 +762,7 @@ func main() {
 			result := results[0]
 			if result.Stopped {
 				intent, _ := result.Output["intent"].(string)
-				logging.Info("main", "Handling via executive (reflex %s passed)", result.ReflexName)
+				// Will be logged when routed to executive
 				activityLog.LogReflexPass(
 					fmt.Sprintf("Not handled by %s, routing to executive", result.ReflexName),
 					intent,
@@ -775,7 +783,7 @@ func main() {
 				// Add to reflex log for short-term context
 				reflexLog.Add(content, response, intent, result.ReflexName)
 
-				logging.Info("main", "Handled by reflex %s (%s)", result.ReflexName, intent)
+				logging.Info("main", "Message from %s: %s → handler: reflex %s", author, logging.Truncate(content, 40), result.ReflexName)
 				return // Reflex handled it
 			}
 		}
@@ -836,7 +844,7 @@ func main() {
 			return
 		}
 
-		logging.Info("main", "Handling via executive")
+		// Will be logged by executive when it starts processing
 	}
 
 	// Capture outgoing response helper
@@ -1075,7 +1083,7 @@ func main() {
 
 		// Wire MCP talk_to_user to effector directly (bypasses outbox file)
 		mcpSendMessage = func(channelID, message string) error {
-			log.Printf("[mcp] Sending message to channel %s: %s", channelID, truncate(message, 50))
+			logging.Info("main", "Sending message: %s", logging.Truncate(message, 50))
 			action := &types.Action{
 				ID:       fmt.Sprintf("mcp-reply-%d", time.Now().UnixNano()),
 				Type:     "send_message",
@@ -1150,7 +1158,7 @@ func main() {
 
 		// Wire MCP callbacks to test effector
 		mcpSendMessage = func(channelID, message string) error {
-			log.Printf("[mcp-test] Sending message to channel %s: %s", channelID, truncate(message, 50))
+			logging.Info("main", "Sending message (test): %s", logging.Truncate(message, 50))
 			action := &types.Action{
 				ID:       fmt.Sprintf("mcp-reply-%d", time.Now().UnixNano()),
 				Type:     "send_message",
@@ -1441,14 +1449,6 @@ func main() {
 		calendarSense.Stop()
 	}
 
-	// Run final consolidation before shutdown
-	log.Println("[main] Running final memory consolidation...")
-	if count, err := memoryConsolidator.Run(); err != nil {
-		log.Printf("Warning: final consolidation failed: %v", err)
-	} else {
-		log.Printf("[main] Final consolidation created %d traces", count)
-	}
-
 	// Persist state
 	if err := exec.GetQueue().Save(); err != nil {
 		log.Printf("Warning: failed to save focus queue: %v", err)
@@ -1510,12 +1510,14 @@ func seedGuides(statePath string) {
 	}
 }
 
-// writeMCPConfig ensures .mcp.json has the bud2 server configured, preserving other servers
-// Uses HTTP transport pointing to the embedded MCP server
+// writeMCPConfig writes .mcp.json to the state directory with HTTP MCP server configuration
+// This allows Claude sessions to discover and use the MCP tools
 func writeMCPConfig(statePath, httpPort string) error {
+	mcpConfigPath := filepath.Join(statePath, ".mcp.json")
+
 	// Read existing config if present
 	config := map[string]any{}
-	if data, err := os.ReadFile(".mcp.json"); err == nil {
+	if data, err := os.ReadFile(mcpConfigPath); err == nil {
 		if err := json.Unmarshal(data, &config); err != nil {
 			log.Printf("[main] Warning: existing .mcp.json invalid, will overwrite: %v", err)
 			config = map[string]any{}
@@ -1545,10 +1547,10 @@ func writeMCPConfig(statePath, httpPort string) error {
 		return err
 	}
 
-	if err := os.WriteFile(".mcp.json", buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(mcpConfigPath, buf.Bytes(), 0644); err != nil {
 		return err
 	}
 
-	log.Printf("[main] Updated .mcp.json with HTTP MCP server at port %s (preserved %d other servers)", httpPort, len(servers)-1)
+	log.Printf("[main] Wrote %s with HTTP MCP server at port %s", mcpConfigPath, httpPort)
 	return nil
 }

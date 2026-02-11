@@ -196,7 +196,7 @@ func (s *Server) handleRequest(req jsonRPCRequest) *jsonRPCResponse {
 		// Notification, no response needed
 		// Both forms are valid - "initialized" per original spec,
 		// "notifications/initialized" per newer MCP implementations
-		log.Println("[mcp] Client initialized")
+		logging.Debug("mcp", "Client initialized")
 		return nil
 	case "tools/list":
 		return s.handleToolsList(req)

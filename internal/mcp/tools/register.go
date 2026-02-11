@@ -70,8 +70,6 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("channel_id required (none provided and DISCORD_CHANNEL_ID not set)")
 		}
 
-		log.Printf("talk_to_user: channel=%s message=%s", channelID, truncate(message, 50))
-
 		// Notify that this MCP tool was called (for user response detection)
 		if deps.OnMCPToolCall != nil {
 			deps.OnMCPToolCall("talk_to_user")
@@ -177,11 +175,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("failed to write signal: %w", err)
 		}
 
-		if len(memoryEval) > 0 {
-			log.Printf("Session done signal: session=%s summary=%s memory_eval=%v", sessionID, truncate(summary, 50), memoryEval)
-		} else {
-			log.Printf("Session done signal: session=%s summary=%s", sessionID, truncate(summary, 50))
-		}
+		// Signal will be processed and logged by main.go handleSignal
 		return "Done signal recorded. Ready for new prompts.", nil
 	})
 

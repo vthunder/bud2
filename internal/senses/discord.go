@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/memory"
 )
 
@@ -176,7 +175,7 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 		Extra:     extra,
 	}
 
-	logging.Info("main", "Message from %s: %s", m.Author.Username, logging.Truncate(m.Content, 50))
+	// Message logged when it's routed to executive (see main.go processPercept)
 
 	// Write to inbox
 	if d.inbox != nil {
