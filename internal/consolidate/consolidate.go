@@ -38,6 +38,9 @@ type Consolidator struct {
 	// Episode-episode sliding window configuration
 	episodeBatchSize    int     // Batch size for sliding window (default 20)
 	episodeBatchOverlap float64 // Overlap ratio for sliding window (default 0.5 = 50%)
+
+	// Incremental mode: only infer edges for windows with new episodes
+	IncrementalMode bool
 }
 
 // NewConsolidator creates a new consolidator
@@ -83,52 +86,74 @@ func (c *Consolidator) Run() (int, error) {
 			return totalCreated, nil
 		}
 
-		log.Printf("Found %d unconsolidated episodes", len(episodes))
+		// Track which episodes are unconsolidated for incremental mode
+		unconsolidatedIDs := make(map[string]bool)
+		for _, ep := range episodes {
+			unconsolidatedIDs[ep.ID] = true
+		}
 
 		ctx := context.Background()
 
 		// Phase 0: Detect near-duplicate episodes using C16 summary similarity
-		log.Printf("Phase 0: Detecting near-duplicate episodes...")
 		duplicateEdges := c.detectDuplicateEpisodes(episodes)
-		log.Printf("Found %d duplicate episode pairs", len(duplicateEdges))
 
-		// Phase 1: Claude infers episode-episode relationships
-		log.Printf("Phase 1: Claude inference for episode-episode relationships...")
-		episodeEdges, err := c.inferEpisodeEpisodeLinks(ctx, episodes)
-		if err != nil {
-			log.Printf("Failed to infer episode edges: %v", err)
-			// Continue anyway - we can still try clustering with no edges
+		// Phase 1: Load existing episode-episode edges or infer new ones
+		existingEdges := c.loadExistingEdges(episodes)
+		var episodeEdges []EpisodeEdge
+
+		if c.IncrementalMode && len(existingEdges) > 0 {
+			// Incremental mode: skip inference for fully-consolidated batches
+			// All episodes in this batch already have edges, so use existing ones
+			episodeEdges = existingEdges
+			log.Printf("[consolidate] Using %d existing edges (incremental mode)", len(existingEdges))
+		} else if len(existingEdges) > 0 {
+			// Non-incremental: use existing edges if available
+			log.Printf("[consolidate] Using %d existing episode edges (skip inference with --wipe-edges to re-detect)", len(existingEdges))
+			episodeEdges = existingEdges
+		} else {
+			// No existing edges - infer new ones
+			var err error
+			episodeEdges, err = c.inferEpisodeEpisodeLinks(ctx, episodes)
+			if err != nil {
+				log.Printf("[consolidate] Failed to infer episode edges: %v", err)
+				// Continue anyway - we can still try clustering with no edges
+			}
 		}
-
-		log.Printf("Inferred %d episode-episode edges", len(episodeEdges))
 
 		// Merge duplicate edges with inferred edges
 		episodeEdges = append(duplicateEdges, episodeEdges...)
-		log.Printf("Total edges (duplicates + inferred): %d", len(episodeEdges))
+
+		// Deduplicate edges (same from/to/relationship)
+		episodeEdges = deduplicateEdges(episodeEdges)
 
 		// Print edge summaries in verbose mode
 		if c.claude != nil && c.claude.verbose {
 			c.printEdgeSummaries(episodes, episodeEdges)
 		}
 
-		// Store edges in database
+		// Store edges in database (only if both episodes exist)
+		episodeIDs := make(map[string]bool)
+		for _, ep := range episodes {
+			episodeIDs[ep.ID] = true
+		}
 		for _, edge := range episodeEdges {
+			// Skip edges where either endpoint doesn't exist in this batch
+			if !episodeIDs[edge.FromID] || !episodeIDs[edge.ToID] {
+				continue
+			}
 			if err := c.graph.AddEpisodeEpisodeEdge(edge.FromID, edge.ToID, "RELATED_TO", edge.Relationship, edge.Confidence); err != nil {
-				log.Printf("Failed to add episode edge: %v", err)
+				log.Printf("[consolidate] Failed to add episode edge %s -> %s: %v", edge.FromID, edge.ToID, err)
 			}
 		}
 
 		// Phase 2: Graph clustering using Claude-inferred edges
-		log.Printf("Phase 2: Clustering episodes using inferred edges...")
 		groups := c.clusterEpisodesByEdges(episodes, episodeEdges)
-		log.Printf("Formed %d clusters", len(groups))
 
 		// Phase 3: Create traces from clustered groups
-		log.Printf("Phase 3: Creating traces from clusters...")
 		created := 0
 		for i, group := range groups {
 			if err := c.consolidateGroup(group, i); err != nil {
-				log.Printf("Failed to consolidate group %d: %v", i, err)
+				log.Printf("[consolidate] Failed to consolidate group %d: %v", i, err)
 				continue
 			}
 			created++
@@ -237,7 +262,7 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 	if c.llm != nil {
 		summary, err = c.llm.Summarize(fragments)
 		if err != nil {
-			log.Printf("Summarization failed, using truncation: %v", err)
+			// Summarization failed, fall back to truncation
 			summary = truncate(strings.Join(fragments, " "), 300)
 		}
 	} else {
@@ -253,8 +278,7 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		for _, ep := range group.episodes {
 			c.graph.LinkTraceToSource("_ephemeral", ep.ID)
 		}
-		log.Printf("Skipped low-value content (%d episodes): %s",
-			len(group.episodes), truncate(summary, 80))
+		// Skipped low-value content
 		return nil
 	}
 
@@ -283,7 +307,7 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		Summary:    summary,
 		Topic:      "conversation",
 		TraceType:  traceType,
-		Activation: 0.1, // Start at floor, let spreading activation boost if relevant
+		Activation: 0.5, // Neutral starting activation (schema default), decay will lower over time
 		Strength:   len(group.episodes), // Strength based on number of source episodes
 		Embedding:  embedding,
 		CreatedAt:  time.Now(),
@@ -300,38 +324,31 @@ func (c *Consolidator) consolidateGroup(group *episodeGroup, index int) error {
 		}
 	}
 
-	// Link trace to all entities
+	// Link trace to all entities (only if entity exists)
 	for entityID := range group.entityIDs {
+		// Check if entity exists before attempting to link
+		if exists, _ := c.graph.EntityExists(entityID); !exists {
+			continue // Skip orphaned entity references
+		}
 		if err := c.graph.LinkTraceToEntity(traceID, entityID); err != nil {
 			log.Printf("Failed to link trace to entity %s: %v", entityID, err)
 		}
 	}
 
-	// Generate pyramid summaries (L64→L32→L16→L8→L4) from source episodes
+	// Generate C8 summary only (for verbose display and basic retrieval)
+	// Full pyramid (L64→L32→L16→L8→L4) should be backfilled by compress-traces later
 	if c.llm != nil {
-		log.Printf("DEBUG: Generating pyramid summaries for trace %s from %d episodes", trace.ShortID, len(group.episodes))
-		if err := c.graph.GenerateTracePyramid(traceID, group.episodes, c.llm); err != nil {
-			log.Printf("Failed to generate pyramid summaries for trace %s: %v", trace.ShortID, err)
-		} else {
-			log.Printf("DEBUG: Successfully generated pyramid summaries for trace %s", trace.ShortID)
+		if err := c.graph.GenerateTraceSummaryLevel(traceID, graph.CompressionLevel8, group.episodes, c.llm); err != nil {
+			log.Printf("Failed to generate C8 summary for trace %s: %v", trace.ShortID, err)
 		}
-	} else {
-		log.Printf("DEBUG: Skipping pyramid generation for trace %s - c.llm is nil", trace.ShortID)
 	}
 
 	// Link to similar traces (>0.85 similarity)
 	if len(embedding) > 0 {
-		if linked := c.linkToSimilarTraces(traceID, embedding, 0.85); linked > 0 {
-			log.Printf("Linked trace %s to %d similar traces", trace.ShortID, linked)
-		}
+		c.linkToSimilarTraces(traceID, embedding, 0.85)
 	}
 
-	typeLabel := ""
-	if traceType == graph.TraceTypeOperational {
-		typeLabel = " [operational]"
-	}
-	log.Printf("Created trace %s from %d episodes%s: %s",
-		trace.ShortID, len(group.episodes), typeLabel, truncate(summary, 80))
+	// Operational traces are logged if verbose mode is enabled
 
 	return nil
 }
@@ -553,6 +570,41 @@ func cosineSimilarity(a, b []float64) float64 {
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
+// loadExistingEdges loads episode-episode edges from the database for the given episodes
+func (c *Consolidator) loadExistingEdges(episodes []*graph.Episode) []EpisodeEdge {
+	if len(episodes) == 0 {
+		return nil
+	}
+
+	// Build episode ID set
+	episodeIDs := make(map[string]bool)
+	for _, ep := range episodes {
+		episodeIDs[ep.ID] = true
+	}
+
+	// Query edges directly from database to avoid direction issues
+	// GetEpisodeNeighbors returns bidirectional, but we want to preserve original direction
+	rows, err := c.graph.QueryEpisodeEdges(episodeIDs)
+	if err != nil {
+		return nil
+	}
+
+	var edges []EpisodeEdge
+	for _, row := range rows {
+		// Only include edges where both endpoints are in the current batch
+		if episodeIDs[row.FromID] && episodeIDs[row.ToID] {
+			edges = append(edges, EpisodeEdge{
+				FromID:       row.FromID,
+				ToID:         row.ToID,
+				Relationship: row.Relationship,
+				Confidence:   row.Confidence,
+			})
+		}
+	}
+
+	return edges
+}
+
 // detectDuplicateEpisodes finds near-duplicate episodes using C16 summary similarity.
 // Returns high-confidence edges (1.0) for episodes with similarity > 0.95.
 // This catches obvious duplicates that Claude inference might miss.
@@ -682,7 +734,7 @@ func (c *Consolidator) inferEpisodeEpisodeLinks(ctx context.Context, episodes []
 	}
 
 	if len(withSummaries) == 0 {
-		log.Printf("No episodes with C16 summaries available, skipping edge inference")
+		// No episodes with C16 summaries available, skipping edge inference
 		return nil, nil
 	}
 
@@ -692,9 +744,6 @@ func (c *Consolidator) inferEpisodeEpisodeLinks(ctx context.Context, episodes []
 	if stepSize < 1 {
 		stepSize = 1
 	}
-
-	log.Printf("Using sliding window: batch_size=%d, step_size=%d, total_episodes=%d",
-		batchSize, stepSize, len(withSummaries))
 
 	// Process episodes in sliding windows
 	var allEdges []EpisodeEdge
@@ -718,8 +767,7 @@ func (c *Consolidator) inferEpisodeEpisodeLinks(ctx context.Context, episodes []
 			}
 		}
 
-		log.Printf("Processing batch %d-%d (%d episodes)",
-			start, end-1, len(episodesForInference))
+		// Processing batch for edge inference
 
 		// Infer edges for this batch using Claude
 		edges, err := c.claude.InferEpisodeEdges(ctx, episodesForInference)
@@ -750,6 +798,10 @@ func (e *episodeWithSummary) GetID() string {
 	return e.Episode.ID
 }
 
+func (e *episodeWithSummary) GetShortID() string {
+	return e.Episode.ShortID
+}
+
 func (e *episodeWithSummary) GetAuthor() string {
 	return e.Episode.Author
 }
@@ -760,6 +812,25 @@ func (e *episodeWithSummary) GetTimestamp() time.Time {
 
 func (e *episodeWithSummary) GetSummaryC16() string {
 	return e.summaryC16
+}
+
+// deduplicateEdges removes duplicate edges (same from/to/relationship)
+// NOTE: Multiple different relationships between the same pair are kept intentionally,
+// as they represent different semantic connections (e.g., "answers" + "elaborates on")
+func deduplicateEdges(edges []EpisodeEdge) []EpisodeEdge {
+	seen := make(map[string]bool)
+	var unique []EpisodeEdge
+
+	for _, edge := range edges {
+		// Create key from fromID, toID, and relationship
+		key := edge.FromID + "|" + edge.ToID + "|" + edge.Relationship
+		if !seen[key] {
+			seen[key] = true
+			unique = append(unique, edge)
+		}
+	}
+
+	return unique
 }
 
 // printEdgeSummaries prints episode edge summaries in verbose mode
@@ -791,12 +862,17 @@ func (c *Consolidator) printEdgeSummaries(episodes []*graph.Episode, edges []Epi
 
 	log.Printf("\n=== Episode Edge Summary ===")
 
+	// Build shortID map for target episodes
+	targetShortIDs := make(map[string]string)
+	for _, edge := range edges {
+		if ep, ok := episodeMap[edge.ToID]; ok {
+			targetShortIDs[edge.ToID] = ep.ShortID
+		}
+	}
+
 	// Print each episode and its outgoing edges
 	for _, ep := range episodes {
-		shortID := ep.ID
-		if len(shortID) > 5 {
-			shortID = shortID[len(shortID)-5:]
-		}
+		shortID := ep.ShortID
 
 		// Get C8 summary (8 words) for display
 		summary := ep.Content
@@ -823,9 +899,13 @@ func (c *Consolidator) printEdgeSummaries(episodes []*graph.Episode, edges []Epi
 		} else {
 			// Print with edges
 			for i, edge := range outEdges {
-				targetShortID := edge.ToID
-				if len(targetShortID) > 5 {
-					targetShortID = targetShortID[len(targetShortID)-5:]
+				targetShortID := targetShortIDs[edge.ToID]
+				if targetShortID == "" {
+					// Fallback if target not in current batch
+					targetShortID = edge.ToID
+					if len(targetShortID) > 5 {
+						targetShortID = targetShortID[:5]
+					}
 				}
 
 				if i == 0 {

@@ -49,6 +49,9 @@ type SimpleSession struct {
 	// Usage from last completed prompt
 	lastUsage *SessionUsage
 
+	// Track if we've received text output for current prompt (to avoid duplicates)
+	currentPromptHasText bool
+
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
 	onOutput   func(text string)
@@ -258,6 +261,9 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Reset text output tracking for new prompt
+	s.currentPromptHasText = false
+
 	args := []string{
 		"--print",
 		"--dangerously-skip-permissions",
@@ -296,7 +302,7 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
-	log.Printf("[simple-session] Starting print mode with prompt: %s", truncatePrompt(prompt, 100))
+	// Starting print mode - log removed for cleaner output
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
@@ -365,14 +371,41 @@ func (s *SimpleSession) processStreamJSON(r io.Reader) {
 }
 
 func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
+	// Log all events for debugging
+	if event.Type != "content_block_delta" {
+		log.Printf("[simple-session] Event type: %s", event.Type)
+	}
+
 	switch event.Type {
 	case "assistant":
-		// Skip - text output is handled by "result" event to avoid duplication
-		// (both events fire for text-only responses, causing double output)
+		// Process text from assistant event as fallback
+		// Skip if we've already received text (to avoid duplicates with result event)
+		if s.currentPromptHasText {
+			return
+		}
+		if event.Message != nil {
+			var msg struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(event.Message, &msg); err == nil {
+				for _, block := range msg.Content {
+					if block.Type == "text" && block.Text != "" {
+						log.Printf("[simple-session] Assistant event text (%d chars)", len(block.Text))
+						s.currentPromptHasText = true
+						if s.onOutput != nil {
+							s.onOutput(block.Text)
+						}
+					}
+				}
+			}
+		}
 
 	case "tool_use":
 		if event.Tool != nil && s.onToolCall != nil {
-			log.Printf("[simple-session] Tool call: %s", event.Tool.Name)
+			log.Printf("[simple-session] Tool call event: %s (id=%s)", event.Tool.Name, event.Tool.ID)
 			result, err := s.onToolCall(event.Tool.Name, event.Tool.Args)
 			if err != nil {
 				log.Printf("[simple-session] Tool error: %v", err)
@@ -382,11 +415,28 @@ func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 		}
 
 	case "result":
+		// Process result event WITH ANTI-DUPLICATION GUARD
+		// Skip if we already got text from assistant event (prevents duplicate fallback)
+		if s.currentPromptHasText {
+			return
+		}
 		if event.Result != nil {
 			var result string
-			if err := json.Unmarshal(event.Result, &result); err == nil && result != "" && s.onOutput != nil {
-				s.onOutput(result)
+			if err := json.Unmarshal(event.Result, &result); err == nil {
+				if result != "" {
+					log.Printf("[simple-session] Result event text (%d chars)", len(result))
+					s.currentPromptHasText = true
+					if s.onOutput != nil {
+						s.onOutput(result)
+					}
+				} else {
+					log.Printf("[simple-session] Result event had empty text")
+				}
+			} else {
+				log.Printf("[simple-session] Result event unmarshal failed: %v", err)
 			}
+		} else {
+			log.Printf("[simple-session] Result event had nil Result field")
 		}
 
 	case "content_block_delta":
@@ -396,8 +446,11 @@ func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal(event.Content, &delta); err == nil {
-			if delta.Delta.Text != "" && s.onOutput != nil {
-				s.onOutput(delta.Delta.Text)
+			if delta.Delta.Text != "" {
+				s.currentPromptHasText = true
+				if s.onOutput != nil {
+					s.onOutput(delta.Delta.Text)
+				}
 			}
 		}
 	}
