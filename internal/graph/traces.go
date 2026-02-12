@@ -62,13 +62,14 @@ func (g *DB) AddTrace(tr *Trace) error {
 }
 
 // GetTrace retrieves a trace by ID
-// Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
+// Tries compression levels preferring higher detail: 0 (verbatim), 64, 32, 16, 8, 4 (most→least detail)
 // Falls back to empty string if no summary is available
 func (g *DB) GetTrace(id string) (*Trace, error) {
 	// Try to get summary with fallback across compression levels
 	row := g.db.QueryRow(`
 		SELECT t.id, t.short_id,
 			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
@@ -90,6 +91,7 @@ func (g *DB) GetTraceByShortID(shortID string) (*Trace, error) {
 	row := g.db.QueryRow(`
 		SELECT t.id, t.short_id,
 			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
@@ -434,6 +436,27 @@ func (g *DB) GetTraceEntities(traceID string) ([]string, error) {
 	return ids, nil
 }
 
+// GetEpisodeTraces returns the trace IDs that contain the given episode
+func (g *DB) GetEpisodeTraces(episodeID string) ([]string, error) {
+	rows, err := g.db.Query(`
+		SELECT trace_id FROM trace_sources WHERE episode_id = ?
+	`, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traceIDs []string
+	for rows.Next() {
+		var traceID string
+		if err := rows.Scan(&traceID); err != nil {
+			continue
+		}
+		traceIDs = append(traceIDs, traceID)
+	}
+	return traceIDs, nil
+}
+
 // GetTraceSources returns the source episode IDs for a trace
 func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 	rows, err := g.db.Query(`
@@ -462,6 +485,7 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
 		SELECT t.id, t.short_id,
 			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
@@ -501,45 +525,13 @@ func (g *DB) DeleteTrace(id string) error {
 	return nil
 }
 
-// ClearTraces deletes traces. If coreOnly is true, only clears core traces.
-// If coreOnly is false, clears non-core traces.
-func (g *DB) ClearTraces(coreOnly bool) (int, error) {
-	// Get IDs to delete
-	var rows *sql.Rows
-	var err error
-	if coreOnly {
-		rows, err = g.db.Query(`SELECT id FROM traces`)
-	} else {
-		rows, err = g.db.Query(`SELECT id FROM traces`)
-	}
+// CountTraces returns the count of traces
+func (g *DB) CountTraces() (total int, err error) {
+	err = g.db.QueryRow(`SELECT COUNT(*) FROM traces`).Scan(&total)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-
-	// Delete each trace (handles related data)
-	for _, id := range ids {
-		g.DeleteTrace(id)
-	}
-
-	return len(ids), nil
-}
-
-// CountTraces returns the count of traces (total and core)
-func (g *DB) CountTraces() (total int, core int, err error) {
-	err = g.db.QueryRow(`SELECT COUNT(*) FROM traces`).Scan(&total)
-	if err != nil {
-		return 0, 0, err
-	}
-	return total, 0, nil
+	return total, nil
 }
 
 // scanTrace scans a single row into a Trace
@@ -623,4 +615,51 @@ func nullableTime(t time.Time) sql.NullTime {
 		return sql.NullTime{Valid: false}
 	}
 	return sql.NullTime{Time: t, Valid: true}
+}
+
+// MarkTraceForReconsolidation marks a trace as needing reconsolidation
+// after new episodes are added to its source set
+func (g *DB) MarkTraceForReconsolidation(traceID string) error {
+	_, err := g.db.Exec(`UPDATE traces SET needs_reconsolidation = 1 WHERE id = ?`, traceID)
+	return err
+}
+
+// GetTracesNeedingReconsolidation returns all traces marked for reconsolidation
+func (g *DB) GetTracesNeedingReconsolidation() ([]string, error) {
+	rows, err := g.db.Query(`SELECT id FROM traces WHERE needs_reconsolidation = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traceIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		traceIDs = append(traceIDs, id)
+	}
+	return traceIDs, rows.Err()
+}
+
+// ClearReconsolidationFlag removes the needs_reconsolidation flag from a trace
+func (g *DB) ClearReconsolidationFlag(traceID string) error {
+	_, err := g.db.Exec(`UPDATE traces SET needs_reconsolidation = 0 WHERE id = ?`, traceID)
+	return err
+}
+
+// UpdateTrace updates a trace's summary, embedding, type, and strength after reconsolidation
+func (g *DB) UpdateTrace(traceID, summary string, embedding []float64, traceType TraceType, strength int) error {
+	embeddingJSON, err := json.Marshal(embedding)
+	if err != nil {
+		return fmt.Errorf("failed to marshal embedding: %w", err)
+	}
+
+	_, err = g.db.Exec(`
+		UPDATE traces
+		SET summary = ?, embedding = ?, trace_type = ?, strength = ?, last_accessed = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, summary, embeddingJSON, traceType, strength, traceID)
+	return err
 }

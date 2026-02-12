@@ -579,6 +579,17 @@ func (g *DB) runMigrations() error {
 		log.Println("[graph] Migration to v14 completed successfully")
 	}
 
+	// Migration v15: Add needs_reconsolidation flag for incremental clustering
+	if version < 15 {
+		_, err := g.db.Exec(`ALTER TABLE traces ADD COLUMN needs_reconsolidation BOOLEAN DEFAULT 0`)
+		if err != nil {
+			// Ignore errors for columns that already exist
+			g.db.Exec("ALTER TABLE traces ADD COLUMN needs_reconsolidation BOOLEAN DEFAULT 0")
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (15)")
+		log.Println("[graph] Migration to v15 completed successfully")
+	}
+
 	return nil
 }
 

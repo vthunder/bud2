@@ -47,6 +47,8 @@ type Dependencies struct {
 	AddReaction func(channelID, messageID, emoji string) error
 	// If set, save_thought will use this instead of writing to file
 	AddThought func(content string) error
+	// If set, signal_done will use this to send completion signals
+	SendSignal func(signalType, content string, extra map[string]any) error
 	// If set, MCP tools will call this to notify that they've been executed
 	// Used to detect user responses (talk_to_user, discord_react) for validation
 	OnMCPToolCall func(toolName string)

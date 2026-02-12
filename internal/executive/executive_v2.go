@@ -105,13 +105,35 @@ func NewExecutiveV2(
 		config:         cfg,
 	}
 
-	// Load core identity from state/core.md
-	coreFile := filepath.Join(statePath, "core.md")
-	if coreContent, err := os.ReadFile(coreFile); err != nil {
+	// Load core identity from state/system/core.md
+	// If it doesn't exist, copy from seed/system/core.md
+	coreFile := filepath.Join(statePath, "system", "core.md")
+	coreContent, err := os.ReadFile(coreFile)
+	if os.IsNotExist(err) {
+		// Try to copy from seed
+		seedFile := filepath.Join(filepath.Dir(statePath), "seed", "system", "core.md")
+		seedContent, seedErr := os.ReadFile(seedFile)
+		if seedErr != nil {
+			log.Printf("[executive-v2] Warning: core.md not found in state or seed: state=%v seed=%v", err, seedErr)
+		} else {
+			// Ensure directory exists
+			if mkdirErr := os.MkdirAll(filepath.Dir(coreFile), 0755); mkdirErr != nil {
+				log.Printf("[executive-v2] Warning: failed to create directory for core.md: %v", mkdirErr)
+			} else if writeErr := os.WriteFile(coreFile, seedContent, 0644); writeErr != nil {
+				log.Printf("[executive-v2] Warning: failed to write core.md: %v", writeErr)
+			} else {
+				coreContent = seedContent
+				log.Printf("[executive-v2] Copied core.md from seed (%d bytes)", len(seedContent))
+			}
+		}
+	} else if err != nil {
 		log.Printf("[executive-v2] Warning: failed to load core identity from %s: %v", coreFile, err)
 	} else {
+		log.Printf("[executive-v2] Loaded core identity from %s (%d bytes)", coreFile, len(coreContent))
+	}
+
+	if len(coreContent) > 0 {
 		exec.coreIdentity = string(coreContent)
-		log.Printf("[executive-v2] Loaded core identity (%d bytes)", len(coreContent))
 	}
 
 	return exec
@@ -193,13 +215,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		author = a
 	}
 
-	// Log consolidated message with session ID (first 8 chars)
-	sessionID := e.session.SessionID()[:8]
+	// Log consolidated message on separate lines
+	fullSessionID := e.session.SessionID()
 	if author != "" {
-		logging.Info("main", "Message from %s: %s → handler: executive (%s)", author, logging.Truncate(item.Content, 40), sessionID)
+		logging.Info("main", "Message from %s: %s", author, logging.Truncate(item.Content, 40))
 	} else {
-		logging.Info("main", "Processing: %s → handler: executive (%s)", logging.Truncate(item.Content, 40), sessionID)
+		logging.Info("main", "Processing: %s", logging.Truncate(item.Content, 40))
 	}
+	logging.Info("main", "Handler: Claude session: %s", fullSessionID)
 
 	// Get channel ID for typing indicator
 	channelID := item.ChannelID
@@ -522,7 +545,14 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
 				if entryHasAuth {
 					hasAuth = true
-					log.Printf("[executive] Authorization detected in episode: %s", truncate(ep.Content, 50))
+					// Try to get C8 summary, fallback to truncated content without newlines
+					logContent := ep.Content
+					if summary, err := e.graph.GetEpisodeSummary(ep.ID, 8); err == nil && summary != nil {
+						logContent = summary.Summary
+					} else {
+						logContent = strings.ReplaceAll(truncate(logContent, 80), "\n", " ")
+					}
+					log.Printf("[executive] Authorization detected in episode: %s", logContent)
 				}
 			}
 

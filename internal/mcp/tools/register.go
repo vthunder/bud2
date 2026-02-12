@@ -153,30 +153,13 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 			extra["memory_eval"] = memoryEval
 		}
 
-		msg := map[string]any{
-			"id":        fmt.Sprintf("signal-%d", time.Now().UnixNano()),
-			"type":      "signal",
-			"subtype":   "done",
-			"content":   summary,
-			"timestamp": time.Now().Format(time.RFC3339),
-			"status":    "pending",
-			"extra":     extra,
+		// Use callback for direct signal delivery (no queueing)
+		if deps.SendSignal != nil {
+			return "Done signal recorded. Ready for new prompts.", deps.SendSignal("done", summary, extra)
 		}
 
-		inboxPath := filepath.Join(deps.QueuesPath, "inbox.jsonl")
-		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to open inbox file: %w", err)
-		}
-		defer f.Close()
-
-		data, _ := json.Marshal(msg)
-		if _, err := f.WriteString(string(data) + "\n"); err != nil {
-			return "", fmt.Errorf("failed to write signal: %w", err)
-		}
-
-		// Signal will be processed and logged by main.go handleSignal
-		return "Done signal recorded. Ready for new prompts.", nil
+		// Fallback: should never happen in normal operation
+		return "", fmt.Errorf("SendSignal callback not configured")
 	})
 
 	// save_thought - adds to in-memory inbox (gets stored to memory graph via normal processing)
@@ -200,7 +183,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("failed to save thought: %w", err)
 		}
 
-		log.Printf("Saved thought to inbox: %s", truncate(content, 50))
+		log.Printf("Saved thought: %s", truncate(content, 50))
 		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
 	})
 }
@@ -208,7 +191,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 	// list_traces
 	server.RegisterTool("list_traces", mcp.ToolDef{
-		Description: "List all memory traces with their IDs, content preview, and core status. Use this to discover trace IDs before marking them as core.",
+		Description: "List all memory traces with their IDs and content preview.",
 		Properties:  map[string]mcp.PropDef{},
 	}, func(ctx any, args map[string]any) (string, error) {
 		traces, err := deps.GraphDB.GetAllTraces()
@@ -229,49 +212,6 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		return string(data), nil
 	})
 
-	// mark_core - DEPRECATED: IsCore field removed in v14
-	// Keeping stub for backwards compatibility
-	server.RegisterTool("mark_core", mcp.ToolDef{
-		Description: "DEPRECATED: Core memory system removed. This tool is a no-op.",
-		Properties: map[string]mcp.PropDef{
-			"trace_id": {Type: "string", Description: "The ID of the trace"},
-			"is_core":  {Type: "boolean", Description: "Ignored"},
-		},
-		Required: []string{"trace_id"},
-	}, func(ctx any, args map[string]any) (string, error) {
-		return "Note: Core memory system has been deprecated. Traces are now managed via activation and strength.", nil
-	})
-
-	// create_core - DEPRECATED: IsCore field removed in v14
-	// Keeping stub for backwards compatibility
-	server.RegisterTool("create_core", mcp.ToolDef{
-		Description: "DEPRECATED: Core memory system removed. Use save_thought instead.",
-		Properties: map[string]mcp.PropDef{
-			"content": {Type: "string", Description: "The content to save"},
-		},
-		Required: []string{"content"},
-	}, func(ctx any, args map[string]any) (string, error) {
-		content, ok := args["content"].(string)
-		if !ok || content == "" {
-			return "", fmt.Errorf("content is required")
-		}
-
-		trace := &graph.Trace{
-			ID:           fmt.Sprintf("trace-%d", time.Now().UnixNano()),
-			Summary:      content,
-			Activation:   1.0,
-			Strength:     100,
-			CreatedAt:    time.Now(),
-			LastAccessed: time.Now(),
-		}
-
-		if err := deps.GraphDB.AddTrace(trace); err != nil {
-			return "", fmt.Errorf("failed to create trace: %w", err)
-		}
-
-		log.Printf("Created core trace: %s", truncate(content, 50))
-		return fmt.Sprintf("Created core trace %s.", trace.ID), nil
-	})
 
 	// search_memory (if embedder is available)
 	if deps.StateInspector != nil && deps.Embedder != nil {
@@ -796,11 +736,10 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 
 	// state_traces
 	server.RegisterTool("state_traces", mcp.ToolDef{
-		Description: "Manage memory traces. Actions: list, show, delete, clear, regen_core.",
+		Description: "Manage memory traces. Actions: list, show, delete.",
 		Properties: map[string]mcp.PropDef{
-			"action":     {Type: "string", Description: "Action: list (default), show, delete, clear, regen_core"},
-			"id":         {Type: "string", Description: "Trace ID (for show/delete)"},
-			"clear_core": {Type: "boolean", Description: "If true with clear action, clears core traces instead of non-core"},
+			"action": {Type: "string", Description: "Action: list (default), show, delete"},
+			"id":     {Type: "string", Description: "Trace ID (for show/delete)"},
 		},
 	}, func(ctx any, args map[string]any) (string, error) {
 		action, _ := args["action"].(string)
@@ -839,25 +778,6 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			}
 			return fmt.Sprintf("Deleted trace: %s", id), nil
 
-		case "clear":
-			clearCore, _ := args["clear_core"].(bool)
-			count, err := deps.StateInspector.ClearTraces(clearCore)
-			if err != nil {
-				return "", err
-			}
-			if clearCore {
-				return fmt.Sprintf("Cleared %d core traces", count), nil
-			}
-			return fmt.Sprintf("Cleared %d non-core traces", count), nil
-
-		case "regen_core":
-			seedPath := filepath.Join(deps.StatePath, "system", "core.md")
-			count, err := deps.StateInspector.RegenCore(seedPath)
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("Regenerated %d core traces", count), nil
-
 		default:
 			return "", fmt.Errorf("unknown action: %s", action)
 		}
@@ -895,18 +815,6 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		}
 	})
 
-	// state_regen_core
-	server.RegisterTool("state_regen_core", mcp.ToolDef{
-		Description: "Regenerate core identity traces from core.md. Clears existing core traces first.",
-		Properties:  map[string]mcp.PropDef{},
-	}, func(ctx any, args map[string]any) (string, error) {
-		seedPath := filepath.Join(deps.StatePath, "system", "core.md")
-		count, err := deps.StateInspector.RegenCore(seedPath)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Regenerated %d core traces from %s", count, seedPath), nil
-	})
 
 	// memory_flush
 	server.RegisterTool("memory_flush", mcp.ToolDef{
@@ -956,26 +864,13 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("failed to clear buffer: %w", err)
 		}
 
-		// Signal session reset via inbox
-		msg := map[string]any{
-			"id":        fmt.Sprintf("reset-%d", time.Now().UnixNano()),
-			"type":      "signal",
-			"subtype":   "reset_session",
-			"content":   "Memory reset requested",
-			"timestamp": time.Now().Format(time.RFC3339),
-			"status":    "pending",
-		}
-
-		inboxPath := filepath.Join(deps.QueuesPath, "inbox.jsonl")
-		f, err := os.OpenFile(inboxPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to open inbox: %w", err)
-		}
-		defer f.Close()
-
-		data, _ := json.Marshal(msg)
-		if _, err := f.WriteString(string(data) + "\n"); err != nil {
-			return "", fmt.Errorf("failed to write reset signal: %w", err)
+		// Signal session reset via callback (no queueing)
+		if deps.SendSignal != nil {
+			if err := deps.SendSignal("reset_session", "Memory reset requested", nil); err != nil {
+				return "", fmt.Errorf("failed to send reset signal: %w", err)
+			}
+		} else {
+			return "", fmt.Errorf("SendSignal callback not configured")
 		}
 
 		log.Printf("Memory reset: buffer cleared, reset signal sent")

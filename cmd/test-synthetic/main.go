@@ -203,11 +203,9 @@ func runScenario(scenario *Scenario) bool {
 			// Clear per-session state but keep memory (v2 architecture)
 			// - buffers.json: conversation buffer (should be cleared for new session)
 			// - pending_queue.json: focus queue (should be cleared)
-			// - inbox.jsonl: message queue (should be cleared)
 			// - memory.db: keep! This is the long-term memory we're testing
 			os.Remove(filepath.Join(statePath, "system", "buffers.json"))
 			os.Remove(filepath.Join(statePath, "system", "pending_queue.json"))
-			os.Remove(filepath.Join(statePath, "system", "queues", "inbox.jsonl"))
 			lastOutboxOffset = 0
 
 			if err := startBud(); err != nil {

@@ -137,7 +137,7 @@ func handleSummary(inspector *state.Inspector) {
 	fmt.Println("Memory Graph:")
 	fmt.Printf("  Episodes:  %d (Tier 1: raw messages)\n", episodeCount)
 	fmt.Printf("  Entities:  %d (Tier 2: extracted names)\n", entityCount)
-	fmt.Printf("  Traces:    %d total, %d core (Tier 3: memories)\n", summary.Traces.Total, summary.Traces.Core)
+	fmt.Printf("  Traces:    %d (Tier 3: memories)\n", summary.Traces.Total)
 	fmt.Println()
 	fmt.Println("Working Memory:")
 	fmt.Printf("  Percepts:  %d\n", summary.Percepts.Total)
@@ -175,41 +175,7 @@ func handleHealth(inspector *state.Inspector) {
 func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 	fs := flag.NewFlagSet("traces", flag.ExitOnError)
 	deleteID := fs.String("d", "", "Delete trace by ID")
-	clear := fs.Bool("clear", false, "Clear all non-core traces")
-	clearCore := fs.Bool("clear-core", false, "Clear core traces")
-	regenCore := fs.Bool("regen-core", false, "Regenerate core from seed")
 	fs.Parse(args)
-
-	if *regenCore {
-		seedPath := filepath.Join(statePath, "system", "core.md")
-		count, err := inspector.RegenCore(seedPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Regenerated %d core traces from %s\n", count, seedPath)
-		return
-	}
-
-	if *clearCore {
-		count, err := inspector.ClearTraces(true)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Cleared %d core traces\n", count)
-		return
-	}
-
-	if *clear {
-		count, err := inspector.ClearTraces(false)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Cleared %d non-core traces\n", count)
-		return
-	}
 
 	if *deleteID != "" {
 		if err := inspector.DeleteTrace(*deleteID); err != nil {

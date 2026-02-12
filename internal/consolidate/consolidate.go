@@ -147,11 +147,26 @@ func (c *Consolidator) Run() (int, error) {
 		}
 
 		// Phase 2: Graph clustering using Claude-inferred edges
-		groups := c.clusterEpisodesByEdges(episodes, episodeEdges)
+		// Returns: new groups (to be consolidated) and existing traces with new episodes
+		newGroups, existingTracesWithNewEpisodes := c.clusterEpisodesByEdges(episodes, episodeEdges)
 
-		// Phase 3: Create traces from clustered groups
+		// Phase 3a: Add new episodes to existing traces and mark for reconsolidation
+		for traceID, newEpisodes := range existingTracesWithNewEpisodes {
+			for _, ep := range newEpisodes {
+				if err := c.graph.LinkTraceToSource(traceID, ep.ID); err != nil {
+					log.Printf("[consolidate] Failed to link episode %s to existing trace %s: %v", ep.ShortID, traceID, err)
+					continue
+				}
+			}
+			// Mark trace for reconsolidation
+			if err := c.graph.MarkTraceForReconsolidation(traceID); err != nil {
+				log.Printf("[consolidate] Failed to mark trace %s for reconsolidation: %v", traceID, err)
+			}
+		}
+
+		// Phase 3b: Create traces from new clustered groups
 		created := 0
-		for i, group := range groups {
+		for i, group := range newGroups {
 			if err := c.consolidateGroup(group, i); err != nil {
 				log.Printf("[consolidate] Failed to consolidate group %d: %v", i, err)
 				continue
@@ -160,6 +175,19 @@ func (c *Consolidator) Run() (int, error) {
 		}
 
 		totalCreated += created
+
+		// Phase 4: Batch reconsolidation of traces with new episodes
+		tracesNeedingRecon, err := c.graph.GetTracesNeedingReconsolidation()
+		if err != nil {
+			log.Printf("[consolidate] Failed to get traces needing reconsolidation: %v", err)
+		} else if len(tracesNeedingRecon) > 0 {
+			log.Printf("[consolidate] Reconsolidating %d traces with new episodes", len(tracesNeedingRecon))
+			for _, traceID := range tracesNeedingRecon {
+				if err := c.reconsolidateTrace(traceID); err != nil {
+					log.Printf("[consolidate] Failed to reconsolidate trace %s: %v", traceID, err)
+				}
+			}
+		}
 
 		// If we processed fewer than 500 episodes, we're done
 		if len(episodes) < 500 {
@@ -170,15 +198,26 @@ func (c *Consolidator) Run() (int, error) {
 
 // clusterEpisodesByEdges uses Claude-inferred edges to cluster episodes into groups.
 // Uses a simple connected components algorithm on high-confidence edges.
-func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges []EpisodeEdge) []*episodeGroup {
+// Returns: new groups to consolidate, and existing traces with new episodes to add.
+func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges []EpisodeEdge) ([]*episodeGroup, map[string][]*graph.Episode) {
 	if len(episodes) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Build episode ID -> episode map
 	episodeMap := make(map[string]*graph.Episode)
 	for _, ep := range episodes {
 		episodeMap[ep.ID] = ep
+	}
+
+	// Check which episodes are already part of existing traces
+	episodeToTrace := make(map[string]string) // episode ID -> trace ID
+	for _, ep := range episodes {
+		traces, err := c.graph.GetEpisodeTraces(ep.ID)
+		if err == nil && len(traces) > 0 {
+			// Episode already belongs to a trace (should only be one, but take the first)
+			episodeToTrace[ep.ID] = traces[0]
+		}
 	}
 
 	// Build adjacency list from high-confidence edges (confidence >= 0.7)
@@ -192,10 +231,11 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 
 	// Find connected components using DFS
 	visited := make(map[string]bool)
-	var groups []*episodeGroup
+	var newGroups []*episodeGroup
+	existingTracesWithNewEpisodes := make(map[string][]*graph.Episode)
 
-	var dfs func(episodeID string, group *episodeGroup)
-	dfs = func(episodeID string, group *episodeGroup) {
+	var dfs func(episodeID string, group *episodeGroup, existingTraceID *string)
+	dfs = func(episodeID string, group *episodeGroup, existingTraceID *string) {
 		if visited[episodeID] {
 			return
 		}
@@ -206,11 +246,23 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 			return
 		}
 
+		// Check if this episode belongs to an existing trace
+		if traceID, ok := episodeToTrace[ep.ID]; ok {
+			// Episode is already in a trace - mark this cluster as belonging to that trace
+			if *existingTraceID == "" {
+				*existingTraceID = traceID
+			} else if *existingTraceID != traceID {
+				// Conflict: cluster spans multiple existing traces
+				// For now, prefer the first trace encountered
+				log.Printf("[consolidate] Warning: episode cluster spans multiple traces (%s, %s)", *existingTraceID, traceID)
+			}
+		}
+
 		group.episodes = append(group.episodes, ep)
 
 		// Visit neighbors
 		for _, neighborID := range adjacency[episodeID] {
-			dfs(neighborID, group)
+			dfs(neighborID, group, existingTraceID)
 		}
 	}
 
@@ -224,8 +276,9 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 			episodes:  []*graph.Episode{},
 			entityIDs: make(map[string]bool),
 		}
+		existingTraceID := ""
 
-		dfs(ep.ID, group)
+		dfs(ep.ID, group, &existingTraceID)
 
 		// Collect entities from all episodes in group
 		for _, e := range group.episodes {
@@ -235,12 +288,96 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 			}
 		}
 
-		if len(group.episodes) >= c.MinGroupSize {
-			groups = append(groups, group)
+		if len(group.episodes) < c.MinGroupSize {
+			continue
+		}
+
+		if existingTraceID != "" {
+			// This cluster belongs to an existing trace
+			// Find episodes that aren't already in the trace
+			for _, e := range group.episodes {
+				if episodeToTrace[e.ID] == "" {
+					// New episode for this trace
+					existingTracesWithNewEpisodes[existingTraceID] = append(existingTracesWithNewEpisodes[existingTraceID], e)
+				}
+			}
+		} else {
+			// New cluster - create a new trace
+			newGroups = append(newGroups, group)
 		}
 	}
 
-	return groups
+	return newGroups, existingTracesWithNewEpisodes
+}
+
+// reconsolidateTrace regenerates a trace's summary and metadata after new episodes are added
+func (c *Consolidator) reconsolidateTrace(traceID string) error {
+	// Get all source episodes for this trace
+	sourceEpisodes, err := c.graph.GetTraceSourceEpisodes(traceID)
+	if err != nil {
+		return fmt.Errorf("failed to get source episodes: %w", err)
+	}
+
+	if len(sourceEpisodes) == 0 {
+		return fmt.Errorf("trace has no source episodes")
+	}
+
+	// Build fragments for summarization
+	var fragments []string
+	episodePtrs := make([]*graph.Episode, len(sourceEpisodes))
+	for i, ep := range sourceEpisodes {
+		episodePtrs[i] = &ep
+		prefix := ""
+		if ep.Author != "" {
+			prefix = ep.Author + ": "
+		}
+		fragments = append(fragments, prefix+ep.Content)
+	}
+
+	// Generate new summary
+	var summary string
+	if c.llm != nil {
+		summary, err = c.llm.Summarize(fragments)
+		if err != nil {
+			summary = truncate(strings.Join(fragments, " "), 300)
+		}
+	} else {
+		summary = truncate(strings.Join(fragments, " "), 300)
+	}
+
+	summary = strings.TrimPrefix(summary, "[Past] ")
+
+	// Calculate new embedding
+	var embedding []float64
+	if c.llm != nil {
+		embedding, _ = c.llm.Embed(summary)
+	}
+	if len(embedding) == 0 {
+		embedding = calculateCentroid(episodePtrs)
+	}
+
+	// Reclassify trace type
+	traceType := classifyTraceType(summary, episodePtrs)
+
+	// Update trace
+	if err := c.graph.UpdateTrace(traceID, summary, embedding, traceType, len(sourceEpisodes)); err != nil {
+		return fmt.Errorf("failed to update trace: %w", err)
+	}
+
+	// Regenerate C8 summary
+	if c.llm != nil {
+		if err := c.graph.GenerateTraceSummaryLevel(traceID, graph.CompressionLevel8, episodePtrs, c.llm); err != nil {
+			log.Printf("Failed to regenerate C8 summary for trace: %v", err)
+		}
+	}
+
+	// Clear reconsolidation flag
+	if err := c.graph.ClearReconsolidationFlag(traceID); err != nil {
+		return fmt.Errorf("failed to clear reconsolidation flag: %w", err)
+	}
+
+	log.Printf("[consolidate] Reconsolidated trace with %d episodes", len(sourceEpisodes))
+	return nil
 }
 
 // consolidateGroup creates a trace from a group of episodes

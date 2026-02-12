@@ -2,13 +2,12 @@ package memory
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/vthunder/bud2/internal/types"
 )
 
-// InboxMessage represents a message in the unified inbox queue.
+// InboxMessage represents a message passed from senses to the processing pipeline.
 // Types:
 //   - "message" (default): External input from Discord, synthetic, etc.
 //   - "signal": Control signals (session done, etc.) - not converted to percepts
@@ -48,80 +47,6 @@ func NewInboxMessageFromImpulse(impulse *types.Impulse) *InboxMessage {
 			"intensity":    impulse.Intensity,
 			"data":         impulse.Data,
 		},
-	}
-}
-
-// Inbox manages incoming messages from senses (in-memory only)
-type Inbox struct {
-	mu       sync.RWMutex
-	messages map[string]*InboxMessage
-	notifyCh chan struct{} // Signal when new messages arrive
-}
-
-// NewInbox creates a new inbox
-func NewInbox() *Inbox {
-	return &Inbox{
-		messages: make(map[string]*InboxMessage),
-		notifyCh: make(chan struct{}, 1), // Buffered to prevent blocking
-	}
-}
-
-// NotifyChannel returns the channel that signals when new messages arrive
-func (i *Inbox) NotifyChannel() <-chan struct{} {
-	return i.notifyCh
-}
-
-// Add queues a new message (only if not already present)
-func (i *Inbox) Add(msg *InboxMessage) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	if msg.ID == "" {
-		msg.ID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
-	}
-
-	// Don't overwrite existing messages - prevents duplicate processing
-	// if Discord delivers the same message multiple times
-	if _, exists := i.messages[msg.ID]; exists {
-		return
-	}
-
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = time.Now()
-	}
-	msg.Status = "pending"
-	i.messages[msg.ID] = msg
-
-	// Signal that a new message is available (non-blocking)
-	select {
-	case i.notifyCh <- struct{}{}:
-		// Notification sent
-	default:
-		// Channel already has a pending signal, no need to add another
-	}
-}
-
-// GetPending returns all pending messages
-func (i *Inbox) GetPending() []*InboxMessage {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
-	result := make([]*InboxMessage, 0)
-	for _, msg := range i.messages {
-		if msg.Status == "pending" {
-			result = append(result, msg)
-		}
-	}
-	return result
-}
-
-// MarkProcessed marks a message as processed
-func (i *Inbox) MarkProcessed(id string) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	if msg, ok := i.messages[id]; ok {
-		msg.Status = "processed"
 	}
 }
 
@@ -233,20 +158,4 @@ func (msg *InboxMessage) impulseToPercept() *types.Percept {
 		Tags:      []string{"internal", msg.Subtype},
 		Data:      data,
 	}
-}
-
-// CleanupProcessed removes processed messages older than maxAge
-func (i *Inbox) CleanupProcessed(maxAge time.Duration) int {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	cutoff := time.Now().Add(-maxAge)
-	cleaned := 0
-	for id, msg := range i.messages {
-		if msg.Status == "processed" && msg.Timestamp.Before(cutoff) {
-			delete(i.messages, id)
-			cleaned++
-		}
-	}
-	return cleaned
 }

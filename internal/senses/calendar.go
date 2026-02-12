@@ -22,7 +22,7 @@ const DefaultMeetingReminderBefore = 15 * time.Minute
 // CalendarSense monitors Google Calendar and produces percepts for events
 type CalendarSense struct {
 	client         *calendar.Client
-	inbox          *memory.Inbox
+	onMessage      func(*memory.InboxMessage) // direct callback for message processing
 	pollInterval   time.Duration
 	reminderBefore time.Duration
 	timezone       *time.Location // User's timezone for daily agenda timing
@@ -59,7 +59,7 @@ type CalendarConfig struct {
 }
 
 // NewCalendarSense creates a new calendar sense
-func NewCalendarSense(cfg CalendarConfig, inbox *memory.Inbox) *CalendarSense {
+func NewCalendarSense(cfg CalendarConfig, onMessage func(*memory.InboxMessage)) *CalendarSense {
 	if cfg.PollInterval == 0 {
 		cfg.PollInterval = DefaultCalendarPollInterval
 	}
@@ -72,7 +72,7 @@ func NewCalendarSense(cfg CalendarConfig, inbox *memory.Inbox) *CalendarSense {
 
 	return &CalendarSense{
 		client:         cfg.Client,
-		inbox:          inbox,
+		onMessage:      onMessage,
 		pollInterval:   cfg.PollInterval,
 		reminderBefore: cfg.ReminderBefore,
 		timezone:       cfg.Timezone,
@@ -221,7 +221,10 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 		},
 	}
 
-	c.inbox.Add(msg)
+	// Call callback directly (no queueing)
+	if c.onMessage != nil {
+		c.onMessage(msg)
+	}
 
 	c.mu.Lock()
 	c.lastDailyAgenda = nowUTC
@@ -349,7 +352,10 @@ func (c *CalendarSense) sendMeetingReminder(event calendar.Event, timeUntil time
 		},
 	}
 
-	c.inbox.Add(msg)
+	// Call callback directly (no queueing)
+	if c.onMessage != nil {
+		c.onMessage(msg)
+	}
 	log.Printf("[calendar-sense] Sent meeting reminder: %s (in %s)", event.Summary, formatDuration(timeUntil))
 }
 

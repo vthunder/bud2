@@ -38,7 +38,6 @@ func (i *Inspector) SetEmbedder(e Embedder) {
 // ComponentSummary holds summary for one state component
 type ComponentSummary struct {
 	Total int `json:"total"`
-	Core  int `json:"core,omitempty"` // for traces
 }
 
 // StateSummary holds summary of all state
@@ -65,10 +64,9 @@ func (i *Inspector) Summary() (*StateSummary, error) {
 
 	// Count traces from graph DB
 	if i.graphDB != nil {
-		total, core, err := i.graphDB.CountTraces()
+		total, err := i.graphDB.CountTraces()
 		if err == nil {
 			summary.Traces.Total = total
-			summary.Traces.Core = core
 		}
 	}
 
@@ -102,17 +100,12 @@ func (i *Inspector) Health() (*HealthReport, error) {
 	// Check for potential issues
 	if summary.Traces.Total > 1000 {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("High trace count: %d", summary.Traces.Total))
-		report.Recommendations = append(report.Recommendations, "Consider pruning old non-core traces")
+		report.Recommendations = append(report.Recommendations, "Consider pruning old traces")
 	}
 
 	if summary.Percepts.Total > 100 {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("High percept count: %d", summary.Percepts.Total))
 		report.Recommendations = append(report.Recommendations, "Percepts should decay; check consolidation")
-	}
-
-	if summary.Traces.Core == 0 {
-		report.Warnings = append(report.Warnings, "No core traces found")
-		report.Recommendations = append(report.Recommendations, "Run --regen-core to bootstrap from core_seed.md")
 	}
 
 	if summary.Activity > 10000 {
@@ -194,14 +187,6 @@ func (i *Inspector) DeleteTrace(id string) error {
 		return fmt.Errorf("graph database not initialized")
 	}
 	return i.graphDB.DeleteTrace(id)
-}
-
-// ClearTraces clears traces based on filter
-func (i *Inspector) ClearTraces(clearCore bool) (int, error) {
-	if i.graphDB == nil {
-		return 0, fmt.Errorf("graph database not initialized")
-	}
-	return i.graphDB.ClearTraces(clearCore)
 }
 
 // EpisodeSummary is a condensed view of an episode
@@ -721,89 +706,6 @@ func (i *Inspector) ClearSessions() error {
 	return os.WriteFile(path, []byte("{}"), 0644)
 }
 
-// RegenCore regenerates core traces from seed file
-func (i *Inspector) RegenCore(seedPath string) (int, error) {
-	if i.graphDB == nil {
-		return 0, fmt.Errorf("graph database not initialized")
-	}
-
-	// First clear existing core traces
-	cleared, err := i.ClearTraces(true) // clearCore=true
-	if err != nil {
-		return 0, fmt.Errorf("failed to clear core traces: %w", err)
-	}
-	_ = cleared // We don't report cleared count, just the new count
-
-	// Read seed file
-	file, err := os.Open(seedPath)
-	if os.IsNotExist(err) {
-		return 0, fmt.Errorf("seed file not found: %s", seedPath)
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	// Parse entries separated by "---"
-	// Lines starting with # are section headers (for human readability) and are stripped
-	var entries []string
-	var current strings.Builder
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "---" {
-			if current.Len() > 0 {
-				entries = append(entries, strings.TrimSpace(current.String()))
-				current.Reset()
-			}
-		} else if strings.HasPrefix(trimmed, "#") {
-			// Skip markdown headers - they're for human readability only
-			continue
-		} else {
-			current.WriteString(line)
-			current.WriteString("\n")
-		}
-	}
-	if current.Len() > 0 {
-		entries = append(entries, strings.TrimSpace(current.String()))
-	}
-
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-
-	// Create new core traces
-	count := 0
-	for idx, content := range entries {
-		if content == "" {
-			continue
-		}
-		traceID := fmt.Sprintf("core-%d-%d", time.Now().UnixNano(), idx)
-		trace := &graph.Trace{
-			ID:           traceID,
-			Summary:      content, // Still set for backwards compat, but won't be persisted
-			Activation:   1.0,
-			Strength:     100,
-			CreatedAt:    time.Now(),
-			LastAccessed: time.Now(),
-		}
-		if err := i.graphDB.AddTrace(trace); err != nil {
-			return count, fmt.Errorf("failed to add trace: %w", err)
-		}
-
-		// Store verbatim content in trace_summaries at level 0
-		tokens := len(content) / 4 // rough estimate
-		if err := i.graphDB.AddTraceSummary(traceID, graph.CompressionLevelVerbatim, content, tokens); err != nil {
-			return count, fmt.Errorf("failed to add trace summary: %w", err)
-		}
-
-		count++
-	}
-
-	return count, nil
-}
 
 // SearchResult represents a memory search result
 type SearchResult struct {

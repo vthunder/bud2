@@ -252,9 +252,6 @@ func main() {
 
 	log.Println("[main] Memory consolidator initialized with Claude inference")
 
-	// Keep inbox for message queue
-	inbox := memory.NewInbox() // in-memory only, no persistence
-
 	// Ensure core.md exists in state/system directory (copy from seed if missing)
 	coreFile := filepath.Join(systemPath, "core.md")
 	if _, err := os.Stat(coreFile); os.IsNotExist(err) {
@@ -386,17 +383,7 @@ func main() {
 			}
 			return fmt.Errorf("Discord effector not yet initialized")
 		},
-		AddThought: func(content string) error {
-			msg := &memory.InboxMessage{
-				ID:        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
-				Subtype:   "thought",
-				Content:   content,
-				Timestamp: time.Now(),
-				Status:    "pending",
-			}
-			inbox.Add(msg)
-			return nil
-		},
+		AddThought: nil, // Will be set after processInboxMessage is defined
 		OnMCPToolCall: func(toolName string) {
 			if exec != nil {
 				exec.GetMCPToolCallback()(toolName)
@@ -435,7 +422,7 @@ func main() {
 		reflexLog,
 		ollamaClient,     // for query-based memory retrieval
 		authClassifier,   // for detecting stale authorizations on session reset
-		systemPath,       // Pass state/system so core.md can be found at system/core.md
+		statePath,        // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
 			WorkDir:   statePath, // Run Claude from state/ to pick up .mcp.json
@@ -847,6 +834,58 @@ func main() {
 		// Will be logged by executive when it starts processing
 	}
 
+	// processInboxMessage handles incoming messages from senses (Discord, Calendar, etc.)
+	// This is called directly by the senses (no queueing/polling)
+	processInboxMessage := func(msg *memory.InboxMessage) {
+		switch msg.Type {
+		case "signal":
+			handleSignal(msg)
+
+		case "impulse":
+			percept := msg.ToPercept()
+			if percept != nil {
+				processPercept(percept)
+			}
+
+		default: // "message" or empty (backward compat)
+			// Ingest to memory graph (Tier 1: episode, Tier 2: entities)
+			ingestToMemoryGraph(msg)
+
+			percept := msg.ToPercept()
+			if percept != nil {
+				processPercept(percept)
+			}
+		}
+	}
+
+	// Wire AddThought callback now that processInboxMessage is defined
+	mcpDeps.AddThought = func(content string) error {
+		msg := &memory.InboxMessage{
+			ID:        fmt.Sprintf("thought-%d", time.Now().UnixNano()),
+			Subtype:   "thought",
+			Content:   content,
+			Timestamp: time.Now(),
+			Status:    "pending",
+		}
+		processInboxMessage(msg)
+		return nil
+	}
+
+	// Wire SendSignal callback for signal_done and memory_reset
+	mcpDeps.SendSignal = func(signalType, content string, extra map[string]any) error {
+		msg := &memory.InboxMessage{
+			ID:        fmt.Sprintf("signal-%d", time.Now().UnixNano()),
+			Type:      "signal",
+			Subtype:   signalType,
+			Content:   content,
+			Timestamp: time.Now(),
+			Status:    "pending",
+			Extra:     extra,
+		}
+		processInboxMessage(msg)
+		return nil
+	}
+
 	// Capture outgoing response helper
 	captureResponse := func(channelID, content string) {
 		now := time.Now()
@@ -1001,7 +1040,7 @@ func main() {
 			Token:     discordToken,
 			ChannelID: discordChannel,
 			OwnerID:   discordOwner,
-		}, inbox)
+		}, processInboxMessage)
 		if err != nil {
 			log.Fatalf("Failed to create Discord sense: %v", err)
 		}
@@ -1201,7 +1240,7 @@ func main() {
 			Client:    calendarClient,
 			Timezone:  userTimezone,
 			StatePath: filepath.Join(statePath, "calendar_state.json"),
-		}, inbox)
+		}, processInboxMessage)
 
 		// Load persisted state (prevents duplicate notifications across restarts)
 		if err := calendarSense.Load(); err != nil {
@@ -1221,46 +1260,6 @@ func main() {
 		log.Printf("[main] Starting MCP HTTP server on %s", addr)
 		if err := mcpServer.RunHTTP(addr); err != nil {
 			log.Printf("[main] MCP HTTP server error: %v", err)
-		}
-	}()
-
-	// Start inbox processing (unified queue: messages, signals, impulses)
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-ticker.C:
-				// Process all pending items (in-memory only, no file polling)
-				pending := inbox.GetPending()
-				for _, msg := range pending {
-					inbox.MarkProcessed(msg.ID) // Mark BEFORE processing to prevent race
-				}
-				for _, msg := range pending {
-					switch msg.Type {
-					case "signal":
-						handleSignal(msg)
-
-					case "impulse":
-						percept := msg.ToPercept()
-						if percept != nil {
-							processPercept(percept)
-						}
-
-					default: // "message" or empty (backward compat)
-						// Ingest to memory graph (Tier 1: episode, Tier 2: entities)
-						ingestToMemoryGraph(msg)
-
-						percept := msg.ToPercept()
-						if percept != nil {
-							processPercept(percept)
-						}
-					}
-				}
-			}
 		}
 	}()
 
@@ -1307,7 +1306,7 @@ func main() {
 				log.Printf("[autonomous] Queueing task impulse: %s", impulse.Description)
 
 				inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
-				inbox.Add(inboxMsg)
+				processInboxMessage(inboxMsg)
 
 				if impulse.Type == "recurring" {
 					if taskID, ok := impulse.Data["task_id"].(string); ok && taskID != "" {
@@ -1345,7 +1344,7 @@ func main() {
 
 					log.Printf("[autonomous] Queueing periodic wake-up impulse")
 					inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
-					inbox.Add(inboxMsg)
+					processInboxMessage(inboxMsg)
 				}
 			}
 		}()

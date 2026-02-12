@@ -196,8 +196,6 @@ func (e *DeepExtractor) ExtractRelationships(text string, entities []ExtractedEn
 	}
 
 	rels := parseRelationshipJSON(response)
-	log.Printf("[extract] Pass 2 (relationships): entities=%v, raw_response=%q, parsed=%d rels",
-		entityList.String(), response, len(rels))
 	return rels, nil
 }
 
@@ -232,7 +230,6 @@ func (e *DeepExtractor) ExtractAll(text string) (*ExtractionResult, error) {
 			log.Printf("[extract] ⚠️  Relationship extraction failed: %v", err)
 			return result, nil
 		}
-		log.Printf("[extract] Extracted %d relationships from LLM", len(rels))
 		if len(rels) > 0 {
 			for _, rel := range rels {
 				log.Printf("[extract]   %s -[%s]-> %s (%.2f)", rel.Subject, rel.Predicate, rel.Object, rel.Confidence)

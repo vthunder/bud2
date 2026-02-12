@@ -28,7 +28,7 @@ type DiscordSense struct {
 	channelID string
 	ownerID   string
 	botID     string
-	inbox     *memory.Inbox
+	onMessage func(*memory.InboxMessage) // direct callback for message processing
 
 	// Connection health tracking
 	mu               sync.RWMutex
@@ -56,7 +56,7 @@ type DiscordConfig struct {
 }
 
 // NewDiscordSense creates a new Discord sense
-func NewDiscordSense(cfg DiscordConfig, inbox *memory.Inbox) (*DiscordSense, error) {
+func NewDiscordSense(cfg DiscordConfig, onMessage func(*memory.InboxMessage)) (*DiscordSense, error) {
 	session, err := discordgo.New("Bot " + cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
@@ -67,7 +67,7 @@ func NewDiscordSense(cfg DiscordConfig, inbox *memory.Inbox) (*DiscordSense, err
 		token:               cfg.Token,
 		channelID:           cfg.ChannelID,
 		ownerID:             cfg.OwnerID,
-		inbox:               inbox,
+		onMessage:           onMessage,
 		maxDisconnectDur:    DefaultMaxDisconnectDuration,
 		pendingInteractions: make(map[string]*PendingInteraction),
 	}
@@ -177,9 +177,9 @@ func (d *DiscordSense) handleMessage(s *discordgo.Session, m *discordgo.MessageC
 
 	// Message logged when it's routed to executive (see main.go processPercept)
 
-	// Write to inbox
-	if d.inbox != nil {
-		d.inbox.Add(msg)
+	// Call callback directly (no queueing)
+	if d.onMessage != nil {
+		d.onMessage(msg)
 	}
 }
 
@@ -504,9 +504,9 @@ func (d *DiscordSense) handleInteraction(s *discordgo.Session, i *discordgo.Inte
 
 	log.Printf("[discord-sense] Slash command: /%s %s (from: %s)", cmdName, truncate(query, 30), authorName)
 
-	// Write to inbox
-	if d.inbox != nil {
-		d.inbox.Add(msg)
+	// Call callback directly (no queueing)
+	if d.onMessage != nil {
+		d.onMessage(msg)
 	}
 }
 
