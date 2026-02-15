@@ -130,12 +130,47 @@ launchctl start com.bud.daemon
 launchctl unload ~/Library/LaunchAgents/com.bud.daemon.plist
 ```
 
+## Things 3 Integration (Optional)
+
+If you want to use the Things 3 task manager integration:
+
+1. **Build the things-mcp server:**
+   ```bash
+   cd ~/bud2/things-mcp
+   npm install
+   npm run build
+   ```
+
+2. **Grant automation permissions:**
+   ```bash
+   ~/bud2/deploy/grant-things-permissions.sh
+   ```
+
+   This will trigger macOS permission dialogs. Click **Allow** when prompted to let the system control:
+   - Things3
+   - System Events
+
+3. **Verify permissions:**
+   Open **System Settings → Privacy & Security → Automation** and ensure the process running bud (usually shown as "launchd") has checkmarks for:
+   - Things3
+   - System Events
+
+4. **The integration is configured in `.mcp.json`:**
+   The `state/.mcp.json` file should include the things-mcp server configuration.
+
+**Note:** Permissions need to be granted before the launchd service can successfully use Things integration. If bud hangs on startup, it's likely waiting for these permission dialogs.
+
 ## Troubleshooting
 
 **Service won't start:**
 - Check logs: `tail -100 ~/Library/Logs/bud.log`
 - Verify .env exists and has valid tokens
 - Ensure binaries are built: `ls -la ~/bud2/bin/`
+
+**Service hangs on startup with Things integration:**
+- You likely have pending permission dialogs. Run `grant-things-permissions.sh` to trigger them.
+- Check System Settings → Privacy & Security → Automation for pending requests
+- The things-mcp server now starts non-blocking, but initial permissions still need to be granted
 
 **Claude CLI not found:**
 - Ensure PATH includes npm global bin: `npm bin -g`

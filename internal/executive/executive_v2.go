@@ -22,11 +22,6 @@ type Embedder interface {
 	Embed(text string) ([]float64, error)
 }
 
-// AuthClassifier detects authorization patterns in text
-type AuthClassifier interface {
-	AnnotateIfAuthorized(text string) (annotated string, hasAuth bool)
-}
-
 // ExecutiveV2 is the simplified executive using focus-based attention
 // Key simplifications:
 // - Single Claude session (not per-thread sessions)
@@ -43,9 +38,6 @@ type ExecutiveV2 struct {
 	// Memory systems
 	graph    *graph.DB
 	embedder Embedder
-
-	// Authorization classifier for session reset protection
-	authClassifier AuthClassifier
 
 	// Reflex log for context
 	reflexLog *reflex.Log
@@ -89,20 +81,18 @@ func NewExecutiveV2(
 	graph *graph.DB,
 	reflexLog *reflex.Log,
 	embedder Embedder,
-	authClassifier AuthClassifier,
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
 	exec := &ExecutiveV2{
-		session:        NewSimpleSession(statePath),
-		attention:      focus.New(),
-		queue:          focus.NewQueue(statePath, 100),
-		graph:          graph,
-		embedder:       embedder,
-		authClassifier: authClassifier,
-		reflexLog:      reflexLog,
-		mcpToolCalled:  make(map[string]bool),
-		config:         cfg,
+		session:       NewSimpleSession(statePath),
+		attention:     focus.New(),
+		queue:         focus.NewQueue(statePath, 100),
+		graph:         graph,
+		embedder:      embedder,
+		reflexLog:     reflexLog,
+		mcpToolCalled: make(map[string]bool),
+		config:        cfg,
 	}
 
 	// Load core identity from state/system/core.md
@@ -317,6 +307,16 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 				usage.CacheCreationInputTokens, usage.CacheReadInputTokens,
 				usage.NumTurns)
 		}
+	}
+
+	// Log session completion summary with token stats
+	if usage := e.session.LastUsage(); usage != nil {
+		log.Printf("✅ Session complete in %.1fs", duration)
+		log.Printf("   Tokens: input=%d output=%d cache_read=%d cache_create=%d",
+			usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
+	} else {
+		log.Printf("✅ Session complete in %.1fs (no usage data)", duration)
 	}
 
 	// One-shot sessions: no state tracking needed (each prompt is independent)
@@ -540,20 +540,17 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				formatted = fmt.Sprintf("[%s] [%s] %s: %s", ep.ShortID, timeStr, ep.Author, content)
 			}
 
-			// Check for authorization patterns (only in full text to avoid false positives)
-			if tier.level == 0 && e.authClassifier != nil {
-				_, entryHasAuth := e.authClassifier.AnnotateIfAuthorized(formatted)
-				if entryHasAuth {
-					hasAuth = true
-					// Try to get C8 summary, fallback to truncated content without newlines
-					logContent := ep.Content
-					if summary, err := e.graph.GetEpisodeSummary(ep.ID, 8); err == nil && summary != nil {
-						logContent = summary.Summary
-					} else {
-						logContent = strings.ReplaceAll(truncate(logContent, 80), "\n", " ")
-					}
-					log.Printf("[executive] Authorization detected in episode: %s", logContent)
+			// Check DB for authorization (only in full text tier)
+			if tier.level == 0 && ep.HasAuthorization {
+				hasAuth = true
+				// Try to get C8 summary, fallback to truncated content without newlines
+				logContent := ep.Content
+				if summary, err := e.graph.GetEpisodeSummary(ep.ID, 8); err == nil && summary != nil {
+					logContent = summary.Summary
+				} else {
+					logContent = strings.ReplaceAll(truncate(logContent, 80), "\n", " ")
 				}
+				log.Printf("[executive] Authorization detected in episode: %s", logContent)
 			}
 
 			parts = append(parts, formatted)

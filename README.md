@@ -74,6 +74,9 @@ Detailed guides are in `state/system/guides/`:
 - [**observability.md**](state/system/guides/observability.md) - Activity logs and journals
 - [**wellness.md**](state/system/guides/wellness.md) - Daily housekeeping
 
+**Integrations:**
+- [**Things Integration**](docs/things-integration.md) - Use Things 3 as your GTD backend (set `USE_THINGS=true`)
+
 ## Architecture
 
 Bud runs as a macOS launchd service:

@@ -18,6 +18,13 @@ type ClaudeInference struct {
 	model   string // e.g., "claude-sonnet-4-5"
 	workDir string
 	verbose bool
+
+	// Token tracking across all sessions
+	totalInputTokens       int
+	totalOutputTokens      int
+	totalCacheReadTokens   int
+	totalCacheCreateTokens int
+	sessionCount           int
 }
 
 // NewClaudeInference creates a new Claude inference session
@@ -66,6 +73,15 @@ func (c *ClaudeInference) InferEpisodeEdges(ctx context.Context, episodes []Epis
 	result := executive.RunCustomSession(ctx, prompt, cfg)
 	if result.Error != nil {
 		return nil, fmt.Errorf("claude inference failed: %w", result.Error)
+	}
+
+	// Track token usage
+	if result.Usage != nil {
+		c.totalInputTokens += result.Usage.InputTokens
+		c.totalOutputTokens += result.Usage.OutputTokens
+		c.totalCacheReadTokens += result.Usage.CacheReadInputTokens
+		c.totalCacheCreateTokens += result.Usage.CacheCreationInputTokens
+		c.sessionCount++
 	}
 
 	// Parse JSON output
@@ -163,6 +179,15 @@ func (c *ClaudeInference) InferTraceRelationship(ctx context.Context, ep *graph.
 	result := executive.RunCustomSession(ctx, prompt, cfg)
 	if result.Error != nil {
 		return "", 0, fmt.Errorf("claude inference failed: %w", result.Error)
+	}
+
+	// Track token usage
+	if result.Usage != nil {
+		c.totalInputTokens += result.Usage.InputTokens
+		c.totalOutputTokens += result.Usage.OutputTokens
+		c.totalCacheReadTokens += result.Usage.CacheReadInputTokens
+		c.totalCacheCreateTokens += result.Usage.CacheCreationInputTokens
+		c.sessionCount++
 	}
 
 	var response struct {
@@ -308,4 +333,18 @@ func (c *ClaudeInference) truncateSummary(summary string, maxWords int) string {
 		return summary
 	}
 	return strings.Join(words[:maxWords], " ") + "..."
+}
+
+// GetTokenStats returns the total token usage across all Claude sessions
+func (c *ClaudeInference) GetTokenStats() (inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, sessionCount int) {
+	return c.totalInputTokens, c.totalOutputTokens, c.totalCacheReadTokens, c.totalCacheCreateTokens, c.sessionCount
+}
+
+// ResetTokenStats resets the token usage counters
+func (c *ClaudeInference) ResetTokenStats() {
+	c.totalInputTokens = 0
+	c.totalOutputTokens = 0
+	c.totalCacheReadTokens = 0
+	c.totalCacheCreateTokens = 0
+	c.sessionCount = 0
 }

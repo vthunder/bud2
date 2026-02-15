@@ -145,8 +145,18 @@ func main() {
 	}
 
 	duration := time.Since(start)
-	log.Printf("\n✅ Consolidation complete in %v", duration.Round(time.Second))
+
+	// Get token stats from Claude inference
+	inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, sessionCount := claudeInference.GetTokenStats()
+	totalTokens := inputTokens + outputTokens
+
+	log.Printf("\n✅ Session complete in %v", duration.Round(time.Second))
 	log.Printf("   Created %d new traces", created)
+	if sessionCount > 0 {
+		log.Printf("   Claude sessions: %d", sessionCount)
+		log.Printf("   Tokens used: %d (input=%d output=%d cache_read=%d cache_create=%d)",
+			totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens)
+	}
 
 	// Get final stats
 	statsAfter, err := graphDB.Stats()

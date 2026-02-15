@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/vthunder/bud2/internal/embedding"
+	"github.com/vthunder/bud2/internal/logging"
 )
 
 // Classifier detects authorization patterns in text using local Ollama/qwen
@@ -94,4 +95,29 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// GraphDB interface for updating episode authorization
+type GraphDB interface {
+	UpdateEpisodeAuthorization(episodeID string, hasAuth bool) error
+}
+
+// CheckEpisodeAsync asynchronously checks an episode for authorization and stores result in DB
+func (c *Classifier) CheckEpisodeAsync(db GraphDB, episodeID, content string) {
+	go func() {
+		hasAuth, err := c.ClassifyText(content)
+		if err != nil {
+			logging.Debug("authorize", "Failed to classify episode %s: %v", episodeID, err)
+			return
+		}
+
+		if err := db.UpdateEpisodeAuthorization(episodeID, hasAuth); err != nil {
+			logging.Debug("authorize", "Failed to update authorization for episode %s: %v", episodeID, err)
+			return
+		}
+
+		if hasAuth {
+			logging.Debug("authorize", "Authorization detected in episode %s", episodeID[:5])
+		}
+	}()
 }

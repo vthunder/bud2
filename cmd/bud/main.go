@@ -282,8 +282,9 @@ func main() {
 		log.Printf("Warning: failed to load tasks: %v", err)
 	}
 
-	// Initialize GTD store
+	// Initialize GTD store (always using JSON store - Things integration via MCP)
 	gtdStore := gtd.NewGTDStore(statePath)
+
 	if err := gtdStore.Load(); err != nil {
 		log.Printf("Warning: failed to load GTD store: %v", err)
 	}
@@ -420,9 +421,8 @@ func main() {
 	exec = executive.NewExecutiveV2(
 		graphDB,
 		reflexLog,
-		ollamaClient,     // for query-based memory retrieval
-		authClassifier,   // for detecting stale authorizations on session reset
-		statePath,        // Executive will construct paths like state/system/core.md from this
+		ollamaClient, // for query-based memory retrieval
+		statePath,    // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
 			Model:     claudeModel,
 			WorkDir:   statePath, // Run Claude from state/ to pick up .mcp.json
@@ -560,6 +560,11 @@ func main() {
 		if err := graphDB.AddEpisode(episode); err != nil {
 			log.Printf("[ingest] Failed to store episode: %v", err)
 			return
+		}
+
+		// Check for authorization async (user messages only)
+		if msg.Author != "Bud" {
+			authClassifier.CheckEpisodeAsync(graphDB, episode.ID, episode.Content)
 		}
 
 		// Generate episode summaries (async for level 1-2)
@@ -1156,7 +1161,7 @@ func main() {
 
 		// Wire MCP discord_react to effector directly (bypasses outbox file)
 		mcpAddReaction = func(channelID, messageID, emoji string) error {
-			log.Printf("[mcp] Adding reaction to message %s: %s", messageID, emoji)
+			log.Printf("[mcp] Reacting %s", emoji)
 			action := &types.Action{
 				ID:       fmt.Sprintf("mcp-react-%d", time.Now().UnixNano()),
 				Type:     "add_reaction",

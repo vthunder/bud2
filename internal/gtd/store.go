@@ -17,7 +17,7 @@ const storeFilename = "user_tasks.json"
 // GTDStore manages GTD data with thread-safe operations
 type GTDStore struct {
 	path string
-	data Store
+	data StoreData
 	mu   sync.RWMutex
 }
 
@@ -25,7 +25,7 @@ type GTDStore struct {
 func NewGTDStore(statePath string) *GTDStore {
 	return &GTDStore{
 		path: filepath.Join(statePath, storeFilename),
-		data: Store{
+		data: StoreData{
 			Areas:    []Area{},
 			Projects: []Project{},
 			Tasks:    []Task{},
@@ -41,7 +41,7 @@ func (s *GTDStore) Load() error {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
 		// File doesn't exist yet, start with empty store
-		s.data = Store{
+		s.data = StoreData{
 			Areas:    []Area{},
 			Projects: []Project{},
 			Tasks:    []Task{},

@@ -35,7 +35,7 @@ type Dependencies struct {
 
 	// Optional services
 	ReflexEngine   *reflex.Engine
-	GTDStore       *gtd.GTDStore
+	GTDStore       gtd.Store
 	MemoryJudge    *eval.Judge
 	CalendarClient *calendar.Client
 	GitHubClient   *github.Client

@@ -109,6 +109,42 @@ setup_sidecar() {
     fi
 }
 
+# Setup Things integration (optional)
+setup_things() {
+    echo ""
+    read -p "Setup Things 3 integration? [y/N] " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        THINGS_DIR="$BUD_DIR/things-mcp"
+        if [ ! -d "$THINGS_DIR" ]; then
+            echo "  Things MCP directory not found at $THINGS_DIR"
+            return
+        fi
+
+        echo "Building things-mcp server..."
+        cd "$THINGS_DIR"
+        if [ ! -d "node_modules" ]; then
+            echo "  Installing npm dependencies..."
+            npm install
+        fi
+        npm run build
+        echo "  Things MCP server built successfully"
+
+        echo ""
+        echo "Next, you need to grant automation permissions."
+        read -p "Grant permissions now? [y/N] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            "$SCRIPT_DIR/grant-things-permissions.sh"
+        else
+            echo "  You can grant permissions later by running:"
+            echo "  $SCRIPT_DIR/grant-things-permissions.sh"
+        fi
+
+        cd "$BUD_DIR"
+    fi
+}
+
 # Check for .env
 check_env() {
     if [ ! -f "$BUD_DIR/.env" ]; then
@@ -125,6 +161,7 @@ generate_deploy
 generate_plists
 build_bud
 setup_sidecar
+setup_things
 check_env
 install_services
 

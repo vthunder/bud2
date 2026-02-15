@@ -114,7 +114,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		channelID := parts[1]
 		discordMsgID := parts[2]
 
-		log.Printf("discord_react: channel=%s message=%s emoji=%s", channelID, discordMsgID, emoji)
+		log.Printf("Reacting %s", emoji)
 
 		// Notify that this MCP tool was called (for user response detection)
 		if deps.OnMCPToolCall != nil {

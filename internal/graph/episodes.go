@@ -47,17 +47,19 @@ func (g *DB) AddEpisode(ep *Episode) error {
 	_, err = g.db.Exec(`
 		INSERT INTO episodes (id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-			embedding, reply_to, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			embedding, reply_to, authorization_checked, has_authorization, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			content = excluded.content,
 			token_count = excluded.token_count,
 			embedding = excluded.embedding,
-			entropy_score = excluded.entropy_score
+			entropy_score = excluded.entropy_score,
+			authorization_checked = excluded.authorization_checked,
+			has_authorization = excluded.has_authorization
 	`,
 		ep.ID, ep.ShortID, ep.Content, ep.TokenCount, ep.Source, ep.Author, ep.AuthorID, ep.Channel,
 		ep.TimestampEvent, ep.TimestampIngested, ep.DialogueAct, ep.EntropyScore,
-		embeddingBytes, ep.ReplyTo, ep.CreatedAt,
+		embeddingBytes, ep.ReplyTo, ep.AuthorizationChecked, ep.HasAuthorization, ep.CreatedAt,
 	)
 
 	if err != nil {
@@ -84,7 +86,7 @@ func (g *DB) GetAllEpisodes(limit int) ([]*Episode, error) {
 	rows, err := g.db.Query(`
 		SELECT id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-			embedding, reply_to, created_at
+			embedding, reply_to, authorization_checked, has_authorization, created_at
 		FROM episodes
 		ORDER BY timestamp_event DESC
 		LIMIT ?
@@ -118,7 +120,7 @@ func (g *DB) GetEpisode(id string) (*Episode, error) {
 	row := g.db.QueryRow(`
 		SELECT id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-			embedding, reply_to, created_at
+			embedding, reply_to, authorization_checked, has_authorization, created_at
 		FROM episodes WHERE id = ?
 	`, id)
 
@@ -130,7 +132,7 @@ func (g *DB) GetEpisodeByShortID(shortID string) (*Episode, error) {
 	row := g.db.QueryRow(`
 		SELECT id, short_id, content, token_count, source, author, author_id, channel,
 			timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-			embedding, reply_to, created_at
+			embedding, reply_to, authorization_checked, has_authorization, created_at
 		FROM episodes WHERE short_id = ?
 	`, shortID)
 
@@ -146,7 +148,7 @@ func (g *DB) GetEpisodes(ids []string) ([]*Episode, error) {
 	// Build query with placeholders
 	query := `SELECT id, short_id, content, token_count, source, author, author_id, channel,
 		timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-		embedding, reply_to, created_at FROM episodes WHERE id IN (`
+		embedding, reply_to, authorization_checked, has_authorization, created_at FROM episodes WHERE id IN (`
 	args := make([]interface{}, len(ids))
 	for i, id := range ids {
 		if i > 0 {
@@ -189,7 +191,7 @@ func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 		rows, err = g.db.Query(`
 			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-				embedding, reply_to, created_at
+				embedding, reply_to, authorization_checked, has_authorization, created_at
 			FROM episodes
 			WHERE channel = ?
 			ORDER BY timestamp_event DESC
@@ -199,7 +201,7 @@ func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 		rows, err = g.db.Query(`
 			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-				embedding, reply_to, created_at
+				embedding, reply_to, authorization_checked, has_authorization, created_at
 			FROM episodes
 			ORDER BY timestamp_event DESC
 			LIMIT ?
@@ -228,7 +230,7 @@ func (g *DB) GetEpisodeReplies(id string) ([]*Episode, error) {
 	rows, err := g.db.Query(`
 		SELECT e.id, e.short_id, e.content, e.token_count, e.source, e.author, e.author_id, e.channel,
 			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
-			e.embedding, e.reply_to, e.created_at
+			e.embedding, e.reply_to, e.authorization_checked, e.has_authorization, e.created_at
 		FROM episodes e
 		INNER JOIN episode_edges ee ON ee.from_id = e.id
 		WHERE ee.to_id = ? AND ee.edge_type = ?
@@ -298,7 +300,7 @@ func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
 	rows, err := g.db.Query(`
 		SELECT e.id, e.short_id, e.content, e.token_count, e.source, e.author, e.author_id, e.channel,
 			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
-			e.embedding, e.reply_to, e.created_at
+			e.embedding, e.reply_to, e.authorization_checked, e.has_authorization, e.created_at
 		FROM episodes e
 		LEFT JOIN trace_sources ts ON ts.episode_id = e.id
 		WHERE ts.trace_id IS NULL
@@ -320,6 +322,16 @@ func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
 	}
 
 	return episodes, nil
+}
+
+// UpdateEpisodeAuthorization updates the authorization status for an episode
+func (g *DB) UpdateEpisodeAuthorization(episodeID string, hasAuth bool) error {
+	_, err := g.db.Exec(`
+		UPDATE episodes
+		SET authorization_checked = 1, has_authorization = ?
+		WHERE id = ?
+	`, hasAuth, episodeID)
+	return err
 }
 
 // GetEpisodeEntities returns the entity IDs mentioned in an episode
@@ -350,11 +362,12 @@ func scanEpisode(row *sql.Row) (*Episode, error) {
 	var shortID sql.NullString
 	var author, authorID, channel, dialogueAct, replyTo sql.NullString
 	var entropyScore sql.NullFloat64
+	var authChecked, hasAuth sql.NullBool
 
 	err := row.Scan(
 		&ep.ID, &shortID, &ep.Content, &ep.TokenCount, &ep.Source, &author, &authorID, &channel,
 		&ep.TimestampEvent, &ep.TimestampIngested, &dialogueAct, &entropyScore,
-		&embeddingBytes, &replyTo, &ep.CreatedAt,
+		&embeddingBytes, &replyTo, &authChecked, &hasAuth, &ep.CreatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -370,6 +383,8 @@ func scanEpisode(row *sql.Row) (*Episode, error) {
 	ep.DialogueAct = dialogueAct.String
 	ep.ReplyTo = replyTo.String
 	ep.EntropyScore = entropyScore.Float64
+	ep.AuthorizationChecked = authChecked.Bool
+	ep.HasAuthorization = hasAuth.Bool
 
 	if len(embeddingBytes) > 0 {
 		json.Unmarshal(embeddingBytes, &ep.Embedding)
@@ -385,11 +400,12 @@ func scanEpisodeRow(rows *sql.Rows) (*Episode, error) {
 	var shortID sql.NullString
 	var author, authorID, channel, dialogueAct, replyTo sql.NullString
 	var entropyScore sql.NullFloat64
+	var authChecked, hasAuth sql.NullBool
 
 	err := rows.Scan(
 		&ep.ID, &shortID, &ep.Content, &ep.TokenCount, &ep.Source, &author, &authorID, &channel,
 		&ep.TimestampEvent, &ep.TimestampIngested, &dialogueAct, &entropyScore,
-		&embeddingBytes, &replyTo, &ep.CreatedAt,
+		&embeddingBytes, &replyTo, &authChecked, &hasAuth, &ep.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -402,6 +418,8 @@ func scanEpisodeRow(rows *sql.Rows) (*Episode, error) {
 	ep.DialogueAct = dialogueAct.String
 	ep.ReplyTo = replyTo.String
 	ep.EntropyScore = entropyScore.Float64
+	ep.AuthorizationChecked = authChecked.Bool
+	ep.HasAuthorization = hasAuth.Bool
 
 	if len(embeddingBytes) > 0 {
 		json.Unmarshal(embeddingBytes, &ep.Embedding)

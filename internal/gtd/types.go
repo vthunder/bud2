@@ -42,9 +42,29 @@ type Area struct {
 	Title string `json:"title"`
 }
 
-// Store represents the complete GTD data
-type Store struct {
+// StoreData represents the complete GTD data
+type StoreData struct {
 	Areas    []Area    `json:"areas"`
 	Projects []Project `json:"projects"`
 	Tasks    []Task    `json:"tasks"`
+}
+
+// Store is an interface for GTD storage backends (JSON file, Things, etc.)
+type Store interface {
+	Load() error
+	Save() error
+	GetAreas() []Area
+	GetArea(id string) *Area
+	AddArea(area *Area)
+	UpdateArea(area *Area) error
+	GetProjects(when, areaID string) []Project
+	GetProject(id string) *Project
+	AddProject(project *Project)
+	UpdateProject(project *Project) error
+	GetTasks(when, projectID, areaID string) []Task
+	GetTask(id string) *Task
+	AddTask(task *Task)
+	UpdateTask(task *Task) error
+	CompleteTask(id string) error
+	FindTaskByTitle(title string) *Task
 }
