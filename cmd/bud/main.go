@@ -37,7 +37,6 @@ import (
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
-	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/ner"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
@@ -276,12 +275,6 @@ func main() {
 		log.Printf("[main] No wakeup.md found (autonomous wakes will use default prompt)")
 	}
 
-	// Initialize motivation stores (for autonomous impulses)
-	taskStore := motivation.NewTaskStore(statePath)
-	if err := taskStore.Load(); err != nil {
-		log.Printf("Warning: failed to load tasks: %v", err)
-	}
-
 	// Initialize GTD store (always using JSON store - Things integration via MCP)
 	gtdStore := gtd.NewGTDStore(statePath)
 
@@ -307,7 +300,6 @@ func main() {
 		log.Printf("Warning: failed to load reflexes: %v", err)
 	}
 	reflexEngine.SetGTDStore(gtdStore)
-	reflexEngine.SetBudTaskStore(taskStore)
 	reflexEngine.SetDefaultChannel(discordChannel)
 
 	// Initialize calendar client (optional)
@@ -365,8 +357,6 @@ func main() {
 		SystemPath:     systemPath,
 		QueuesPath:     queuesPath,
 		DefaultChannel: discordChannel,
-		TaskStore:      taskStore,
-		IdeaStore:      motivation.NewIdeaStore(statePath),
 		ReflexEngine:   reflexEngine,
 		GTDStore:       gtdStore,
 		MemoryJudge:    memoryJudge,
@@ -390,11 +380,6 @@ func main() {
 				exec.GetMCPToolCallback()(toolName)
 			}
 		},
-	}
-
-	// Load idea store
-	if err := mcpDeps.IdeaStore.Load(); err != nil {
-		log.Printf("Warning: failed to load idea store: %v", err)
 	}
 
 	// Register all MCP tools
@@ -1300,39 +1285,11 @@ func main() {
 
 			time.Sleep(10 * time.Second)
 
-			checkTaskImpulses := func() {
-				taskStore.Load()
-				impulses := taskStore.GenerateImpulses()
-				if len(impulses) == 0 {
-					return
-				}
-
-				impulse := impulses[0]
-				log.Printf("[autonomous] Queueing task impulse: %s", impulse.Description)
-
-				inboxMsg := memory.NewInboxMessageFromImpulse(impulse)
-				processInboxMessage(inboxMsg)
-
-				if impulse.Type == "recurring" {
-					if taskID, ok := impulse.Data["task_id"].(string); ok && taskID != "" {
-						taskStore.Complete(taskID)
-						if err := taskStore.Save(); err != nil {
-							log.Printf("[autonomous] Failed to auto-complete recurring task %s: %v", taskID, err)
-						} else {
-							log.Printf("[autonomous] Auto-completed recurring task: %s", taskID)
-						}
-					}
-				}
-			}
-
-			checkTaskImpulses()
 
 			for {
 				select {
 				case <-stopChan:
 					return
-				case <-taskTicker.C:
-					checkTaskImpulses()
 
 				case <-periodicTicker.C:
 					impulse := &types.Impulse{

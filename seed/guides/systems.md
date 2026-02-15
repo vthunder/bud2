@@ -2,72 +2,39 @@
 
 This documents the internal systems I use to manage my work.
 
-## Tasks (tasks.json)
+**NOTE:** As of Feb 2026, tasks and ideas have been migrated to Things 3 via the Things MCP integration. The old bud_tasks.json and ideas.json files are archived.
 
-Tasks are commitments - things I've promised to do.
+## Tasks (Things 3 "Bud" Area)
 
-```json
-{
-  "id": "task-abc123",
-  "task": "Review PR #42",
-  "due": "2026-01-07T10:00:00Z",
-  "priority": 1,
-  "context": "Promised in conversation",
-  "status": "pending"
-}
-```
+Tasks are commitments - things I've promised to do. They're tracked in Things 3 under the "Bud" area, separately from the user's personal tasks.
 
-**Priority levels:**
-- 1 = highest priority, do first
-- 2 = medium priority (default)
-- 3 = low priority, do when time permits
+**Tools (Things MCP):**
+- `things_add_todo` - create a new task (use `list: "today"` or specific date for scheduling, `area_id: "K2v9QVdae4jBuTy9VSDvYc"` for Bud area)
+- `things_get_list` - see tasks by when (inbox, today, anytime, someday)
+- `things_get_area` - see all tasks in Bud area
+- `things_update_todo` - update or complete a task
 
-**Tools:**
-- `add_bud_task` - create a new task
-- `list_bud_tasks` - see pending tasks
-- `complete_bud_task` - mark done
+Tasks can be organized by schedule (inbox, today, anytime, someday) and can have deadlines, notes, tags, and checklists for complex multi-step work.
 
-Overdue tasks generate high-intensity impulses that wake me up.
-
-## Ideas (ideas.json)
+## Ideas (Things 3 "Bud Ideas" Project)
 
 Ideas are things I want to explore someday - not commitments, just curiosities. They're for learning and exploration. When exploration reveals actionable work, that graduates to a task or beads issue.
 
-```json
-{
-  "id": "idea-xyz789",
-  "idea": "Research biological memory consolidation",
-  "sparked_by": "conversation about memory architecture",
-  "added": "2026-01-06T15:00:00Z",
-  "priority": 1,
-  "explored_at": null,
-  "outcome": null,
-  "follow_up": null
-}
-```
+**Important:** Ideas are for exploration, not execution. When I discover something actionable while exploring an idea, I create a task or beads issue to track the real work.
 
-**Fields:**
-- `explored_at` - timestamp when explored (null = not yet)
-- `outcome` - result of exploration:
-  - `"actionable"` - discovered work to do → create task/issue
-  - `"interesting"` - learned something, no action needed
-  - `"not_useful"` - dead end, can archive
-  - `"deferred"` - worth revisiting later
-- `follow_up` - reference to created task or beads issue (e.g., "BUD-123")
-
-**Tools:**
-- `add_idea` - save an idea for later
-- `list_ideas` - see unexplored ideas
-- `explore_idea` - mark as explored with notes
+**Tools (Things MCP):**
+- `things_add_todo` - save an idea (use `project_id: "Ry155FXbamXMN2AupG1NvH"` for Bud Ideas project)
+- `things_get_project` - see ideas in the project (use `project_id: "Ry155FXbamXMN2AupG1NvH"`)
+- `things_update_todo` - mark as explored, add notes, or mark complete
 
 **Lifecycle:**
-1. Capture idea (add_idea)
+1. Capture idea (things_add_todo with project_id for Bud Ideas)
 2. Explore during idle time (research, think through)
-3. Record outcome (explore_idea with outcome)
-4. If actionable → create task or beads issue, link in follow_up
-5. Track the real work in tasks/beads to completion
+3. Record outcome (things_update_todo with notes)
+4. If actionable → create task in Bud area or beads issue, reference in notes
+5. Mark as complete when exploration is done (things_update_todo with `completed: true`)
 
-Ideas only generate impulses during idle time (low intensity).
+Ideas are typically explored during idle time when no high-priority work is pending.
 
 ## Impulses
 

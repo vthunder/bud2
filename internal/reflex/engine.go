@@ -53,12 +53,6 @@ type Engine struct {
 		FindTaskByTitle(title string) *gtd.Task
 	}
 
-	// Bud task store for complete_bud_task action
-	budTaskStore interface {
-		Complete(id string)
-		Save() error
-	}
-
 	// Calendar client for calendar_* actions
 	calendarClient *calendar.Client
 }
@@ -105,14 +99,6 @@ func (e *Engine) SetGTDStore(store interface {
 	FindTaskByTitle(title string) *gtd.Task
 }) {
 	e.gtdStore = store
-}
-
-// SetBudTaskStore sets the bud task store for complete_bud_task action
-func (e *Engine) SetBudTaskStore(store interface {
-	Complete(id string)
-	Save() error
-}) {
-	e.budTaskStore = store
 }
 
 // SetCalendarClient sets the calendar client for calendar_* actions
@@ -977,34 +963,7 @@ func (e *Engine) createGTDActions() {
 		}
 	}))
 
-	// Bud task actions
-	e.actions.Register("complete_bud_task", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.budTaskStore == nil {
-			return nil, fmt.Errorf("bud task store not configured")
-		}
-
-		// Get task_id from params or vars (impulse data has task_id)
-		taskID := resolveVar(params, vars, "task_id")
-		if taskID == "" {
-			// Try to get from impulse data
-			if impulse, ok := vars["impulse"].(map[string]any); ok {
-				if id, ok := impulse["task_id"].(string); ok {
-					taskID = id
-				}
-			}
-		}
-
-		if taskID == "" {
-			return nil, fmt.Errorf("task_id is required")
-		}
-
-		e.budTaskStore.Complete(taskID)
-		if err := e.budTaskStore.Save(); err != nil {
-			return nil, fmt.Errorf("failed to save: %w", err)
-		}
-
-		return fmt.Sprintf("Completed bud task '%s'", taskID), nil
-	}))
+	// Bud task actions have been migrated to Things MCP integration
 }
 
 // createCalendarActions registers calendar-related actions

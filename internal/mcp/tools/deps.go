@@ -9,7 +9,6 @@ import (
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
-	"github.com/vthunder/bud2/internal/motivation"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/state"
 )
@@ -28,10 +27,6 @@ type Dependencies struct {
 	SystemPath     string
 	QueuesPath     string
 	DefaultChannel string // Discord channel ID
-
-	// Motivation stores
-	TaskStore *motivation.TaskStore
-	IdeaStore *motivation.IdeaStore
 
 	// Optional services
 	ReflexEngine   *reflex.Engine
