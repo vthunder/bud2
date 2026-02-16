@@ -155,33 +155,25 @@ func (c *Client) Summarize(fragments []string) (string, error) {
 		return "", fmt.Errorf("no fragments to summarize")
 	}
 
-	// Build prompt with Bud's perspective
+	// Build prompt for memory summarization
 	// Always summarize, even for short messages, to convert raw text to memory format
-	prompt := `You are Bud, an AI assistant. Convert this into a memory from your perspective.
+	prompt := `Convert this conversation fragment into a concise memory trace.
 
 Guidelines:
-- Refer to the human as "the user" or "the owner"
-- Use first person for your own perspective
-- Capture: facts, decisions, observations, insights, not just what was said
+- Capture facts, decisions, observations, insights — not just what was said
 - Be concise (1-2 sentences max)
+- Use past tense
 - Output ONLY the memory, no commentary
 
-Examples - User statements:
+Examples:
 Input: "My favorite coffee shop is Blue Bottle on Market Street"
 Memory: The user's favorite coffee shop is Blue Bottle on Market Street.
 
 Input: "Sarah is my cofounder, she handles product"
 Memory: Sarah is the user's cofounder who handles product.
 
-Examples - Bud's observations and decisions:
-Input: "Bud: I implemented dual-trigger seeding combining semantic embeddings and keyword matching for better memory retrieval."
-Memory: I implemented dual-trigger seeding for memory retrieval, combining semantic and lexical matching.
-
-Input: "Bud: Looking at the code, the issue is that consolidation only runs on user messages - my responses aren't stored as episodes."
-Memory: I discovered that consolidation only ran on user messages; my responses were not being stored as episodes.
-
-Input: "Bud: The API returns 429 errors under load. I added exponential backoff with jitter to handle rate limiting."
-Memory: I noticed the API was rate-limited and added exponential backoff with jitter.
+Input: "The API returns 429 errors under load. Added exponential backoff with jitter."
+Memory: The API was rate-limited; exponential backoff with jitter was added.
 
 Input:
 `

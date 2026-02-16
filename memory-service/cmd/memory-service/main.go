@@ -1,4 +1,4 @@
-// memory-service is a standalone HTTP API for the Bud memory system.
+// memory-service is a standalone HTTP API for the memory graph system.
 //
 // It exposes endpoints for ingesting episodes, recalling memories via
 // spreading activation, and assembling compressed context windows.

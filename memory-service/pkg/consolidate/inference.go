@@ -2,7 +2,7 @@
 // into consolidated traces with LLM-generated summaries.
 //
 // This file provides the LLM inference interface for episode edge detection.
-// Unlike Bud's built-in consolidation which uses Claude directly, this standalone
+// Unlike the original consolidation which used Claude directly, this standalone
 // version accepts any LLM that implements the InferenceClient interface.
 package consolidate
 
