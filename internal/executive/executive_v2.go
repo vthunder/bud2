@@ -14,6 +14,7 @@ import (
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/logging"
+	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/reflex"
 )
 
@@ -199,6 +200,9 @@ func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) 
 
 // processItem handles a single focus item
 func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) error {
+	// L1: Overall executive processing
+	defer profiling.Get().Start(item.ID, "executive.total")()
+
 	// Get author for logging
 	author := ""
 	if a, ok := item.Data["author"].(string); ok {
@@ -238,7 +242,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	// Build context bundle (one-shot sessions: no reset logic needed)
-	bundle := e.buildContext(item)
+	var bundle *focus.ContextBundle
+	func() {
+		defer profiling.Get().Start(item.ID, "executive.context_build")()
+		bundle = e.buildContext(item)
+	}()
 
 	// Collect memory IDs to mark as seen after prompt is sent
 	var memoryIDs []string
@@ -247,7 +255,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	// Build prompt from context
-	prompt := e.buildPrompt(bundle)
+	var prompt string
+	func() {
+		defer profiling.Get().Start(item.ID, "executive.prompt_build")()
+		prompt = e.buildPrompt(bundle)
+	}()
 
 	if strings.TrimSpace(prompt) == "" {
 		log.Printf("[executive-v2] Empty prompt, skipping item %s", item.ID)
@@ -291,8 +303,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
 	}
 
-	if err := e.session.SendPrompt(ctx, prompt, claudeCfg); err != nil {
-		return fmt.Errorf("prompt failed: %w", err)
+	var sendErr error
+	func() {
+		defer profiling.Get().Start(item.ID, "executive.claude_api")()
+		sendErr = e.session.SendPrompt(ctx, prompt, claudeCfg)
+	}()
+	if sendErr != nil {
+		return fmt.Errorf("prompt failed: %w", sendErr)
 	}
 
 	duration := time.Since(startTime).Seconds()
@@ -382,7 +399,12 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 	// Get recent conversation from episodes (last 20 episodes within 10 minutes)
 	if e.graph != nil && item.ChannelID != "" {
-		content, hasAuth := e.buildRecentConversation(item.ChannelID, item.ID)
+		var content string
+		var hasAuth bool
+		func() {
+			defer profiling.Get().Start(item.ID, "context.conversation_load")()
+			content, hasAuth = e.buildRecentConversation(item.ChannelID, item.ID)
+		}()
 		if content != "" {
 			bundle.BufferContent = content
 			bundle.HasAuthorizations = hasAuth
@@ -415,36 +437,39 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 	if e.graph != nil && e.embedder != nil && item.Content != "" {
 		var allMemories []focus.MemorySummary
 
-		// Generate embedding for the query
-		queryEmb, err := e.embedder.Embed(item.Content)
-		if err == nil && len(queryEmb) > 0 {
-			// Use dual-trigger spreading activation (semantic + lexical)
-			result, err := e.graph.Retrieve(queryEmb, item.Content, memoryLimit)
-			if err == nil && result != nil {
-				for _, t := range result.Traces {
-					allMemories = append(allMemories, focus.MemorySummary{
-						ID:        t.ID,
-						Summary:   t.Summary,
-						Relevance: t.Activation,
-						Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
-					})
+		func() {
+			defer profiling.Get().Start(item.ID, "context.memory_retrieval")()
+			// Generate embedding for the query
+			queryEmb, err := e.embedder.Embed(item.Content)
+			if err == nil && len(queryEmb) > 0 {
+				// Use dual-trigger spreading activation (semantic + lexical)
+				result, err := e.graph.Retrieve(queryEmb, item.Content, memoryLimit)
+				if err == nil && result != nil {
+					for _, t := range result.Traces {
+						allMemories = append(allMemories, focus.MemorySummary{
+							ID:        t.ID,
+							Summary:   t.Summary,
+							Relevance: t.Activation,
+							Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
+						})
+					}
 				}
 			}
-		}
-		// Fallback: if embedding fails, use activation-based retrieval
-		if len(allMemories) == 0 {
-			traces, err := e.graph.GetActivatedTraces(0.1, memoryLimit)
-			if err == nil {
-				for _, t := range traces {
-					allMemories = append(allMemories, focus.MemorySummary{
-						ID:        t.ID,
-						Summary:   t.Summary,
-						Relevance: t.Activation,
-						Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
-					})
+			// Fallback: if embedding fails, use activation-based retrieval
+			if len(allMemories) == 0 {
+				traces, err := e.graph.GetActivatedTraces(0.1, memoryLimit)
+				if err == nil {
+					for _, t := range traces {
+						allMemories = append(allMemories, focus.MemorySummary{
+							ID:        t.ID,
+							Summary:   t.Summary,
+							Relevance: t.Activation,
+							Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
+						})
+					}
 				}
 			}
-		}
+		}()
 
 		// One-shot sessions: include all retrieved memories (no deduplication needed)
 		bundle.Memories = allMemories

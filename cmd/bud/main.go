@@ -38,6 +38,7 @@ import (
 	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
 	"github.com/vthunder/bud2/internal/ner"
+	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/state"
@@ -197,6 +198,25 @@ func main() {
 
 	// Ensure state directory exists
 	os.MkdirAll(statePath, 0755)
+
+	// Initialize profiler
+	profileLevel := profiling.LevelOff
+	if pl := os.Getenv("BUD_PROFILE"); pl != "" {
+		switch pl {
+		case "minimal":
+			profileLevel = profiling.LevelMinimal
+		case "detailed":
+			profileLevel = profiling.LevelDetailed
+		case "trace":
+			profileLevel = profiling.LevelTrace
+		}
+	}
+	if err := profiling.Init(profileLevel, filepath.Join(statePath, "system", "profiling.jsonl")); err != nil {
+		log.Printf("Warning: failed to initialize profiler: %v", err)
+	} else if profileLevel != profiling.LevelOff {
+		log.Printf("[profiling] Enabled at level: %s", profileLevel)
+		defer profiling.Get().Close()
+	}
 
 	// Seed guides (how-to docs) from defaults if missing
 	seedGuides(statePath)
@@ -514,6 +534,9 @@ func main() {
 
 	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
 	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
+		// L1: Overall ingestion time
+		defer profiling.Get().Start(msg.ID, "ingest.total")()
+
 		if msg == nil || msg.Content == "" {
 			return
 		}
@@ -542,8 +565,13 @@ func main() {
 		}
 
 		// Always store episodes — episode creation is decoupled from extraction
-		if err := graphDB.AddEpisode(episode); err != nil {
-			log.Printf("[ingest] Failed to store episode: %v", err)
+		var addErr error
+		func() {
+			defer profiling.Get().Start(msg.ID, "ingest.episode_store")()
+			addErr = graphDB.AddEpisode(episode)
+		}()
+		if addErr != nil {
+			log.Printf("[ingest] Failed to store episode: %v", addErr)
 			return
 		}
 
@@ -553,9 +581,12 @@ func main() {
 		}
 
 		// Generate episode summaries (async for level 1-2)
-		if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
-			log.Printf("[ingest] Warning: failed to generate summaries for episode: %v", err)
-		}
+		func() {
+			defer profiling.Get().Start(msg.ID, "ingest.summary_gen")()
+			if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
+				log.Printf("[ingest] Warning: failed to generate summaries for episode: %v", err)
+			}
+		}()
 
 		// Create FOLLOWS edge from previous episode in same channel
 		if prevID, ok := lastEpisodeByChannel[msg.ChannelID]; ok {
@@ -567,7 +598,12 @@ func main() {
 
 		// Fast NER pre-check: use spaCy sidecar to detect entities (~10ms)
 		// If no entities found, skip the expensive Ollama extraction (~6s)
-		nerResult, nerErr := nerClient.Extract(msg.Content)
+		var nerResult *ner.ExtractResponse
+		var nerErr error
+		func() {
+			defer profiling.Get().Start(msg.ID, "ingest.ner_check")()
+			nerResult, nerErr = nerClient.Extract(msg.Content)
+		}()
 		if nerErr != nil {
 			// NER sidecar down — fall back to always running Ollama extraction
 			logging.Debug("ingest", "NER sidecar unavailable, falling back to Ollama")
@@ -579,7 +615,12 @@ func main() {
 		}
 
 		// Extract entities and relationships via Ollama (Tier 2 — full LLM extraction)
-		result, err := entityExtractor.ExtractAll(msg.Content)
+		var result *extract.ExtractionResult
+		var err error
+		func() {
+			defer profiling.Get().Start(msg.ID, "ingest.entity_extract")()
+			result, err = entityExtractor.ExtractAll(msg.Content)
+		}()
 		if err != nil {
 			log.Printf("[ingest] Entity extraction failed: %v", err)
 			result = &extract.ExtractionResult{} // empty result
@@ -700,6 +741,10 @@ func main() {
 
 	// Process percept helper - checks reflexes first, then routes to focus queue
 	processPercept := func(percept *types.Percept) {
+		// L1: Overall percept processing
+		perceptID := fmt.Sprintf("percept-%d", time.Now().UnixNano())
+		defer profiling.Get().Start(perceptID, "percept.total")()
+
 		// Extract content for reflex matching
 		content := ""
 		if c, ok := percept.Data["content"].(string); ok {
@@ -731,9 +776,14 @@ func main() {
 		}
 
 		// Try reflexes first
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		handled, results := reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
+		var handled bool
+		var results []*reflex.ReflexResult
+		func() {
+			defer profiling.Get().Start(perceptID, "percept.reflex_check")()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			handled, results = reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
+		}()
 
 		if handled && len(results) > 0 {
 			result := results[0]
@@ -816,10 +866,12 @@ func main() {
 			Data:      percept.Data,
 		}
 
-		if err := exec.AddPending(item); err != nil {
-			log.Printf("[main] Failed to add to focus queue: %v", err)
-			return
-		}
+		func() {
+			defer profiling.Get().Start(perceptID, "percept.queue_add")()
+			if err := exec.AddPending(item); err != nil {
+				log.Printf("[main] Failed to add to focus queue: %v", err)
+			}
+		}()
 
 		// Will be logged by executive when it starts processing
 	}
@@ -827,6 +879,9 @@ func main() {
 	// processInboxMessage handles incoming messages from senses (Discord, Calendar, etc.)
 	// This is called directly by the senses (no queueing/polling)
 	processInboxMessage := func(msg *memory.InboxMessage) {
+		// L1: Overall message processing
+		defer profiling.Get().Start(msg.ID, "processInboxMessage")()
+
 		switch msg.Type {
 		case "signal":
 			handleSignal(msg)
