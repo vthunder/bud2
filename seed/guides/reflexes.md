@@ -111,14 +111,14 @@ pipeline:
 | `github_api` | GitHub API call |
 | `reply` | Send Discord message |
 | `react` | Add emoji reaction |
-| `add_bud_task` | Add to tasks.json |
-| `add_idea` | Add to ideas.json |
 | `log` | Write to journal |
 | `gate` | Conditionally stop pipeline |
 | `gtd_list` | List GTD tasks |
 | `gtd_add` | Add task to inbox |
 | `gtd_complete` | Complete a task |
 | `gtd_dispatch` | Route by intent |
+
+**Note**: For Bud's own tasks and ideas, use the Things MCP integration instead (see system/guides/systems.md). The `add_idea` action has been removed - ideas are now managed in the Things "Ideas" project.
 
 ## GTD Actions
 

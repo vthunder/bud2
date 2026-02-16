@@ -67,6 +67,56 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 
+## Building and Deployment
+
+### Building Binaries
+
+**ALWAYS use the build script**:
+```bash
+~/src/bud2/scripts/build.sh
+```
+
+This builds all binaries:
+- `bin/bud` - main daemon
+- `bin/bud-state` - state management server
+- `bin/efficient-notion-mcp` - Notion MCP server
+- `bin/compress-episodes` - episode compression
+- `bin/compress-traces` - trace compression
+- `bin/consolidate` - memory consolidation
+
+**Never guess build commands** - always use `scripts/build.sh`.
+
+### Restarting the Daemon
+
+Bud runs as a launchd service. After rebuilding:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.bud.daemon
+```
+
+Or the shorthand:
+```bash
+launchctl kickstart -k gui/501/com.bud.daemon
+```
+
+**Why this matters**: Changes to the daemon code only take effect after restart. The running daemon won't see code changes until it's restarted.
+
+### Deployment Workflow
+
+1. **Make code changes** in `~/src/bud2`
+2. **Build**: `~/src/bud2/scripts/build.sh`
+3. **Restart**: `launchctl kickstart -k gui/501/com.bud.daemon`
+4. **Verify**: Check logs at `~/Library/Logs/bud.log`
+
+### Launchd Configuration
+
+The daemon runs via launchd plist at:
+- `~/Library/LaunchAgents/com.bud.daemon.plist`
+- Executes `/Users/thunder/src/bud2/deploy/run-bud.sh`
+- Runs at startup (`RunAtLoad`)
+- Keeps alive on crash (`KeepAlive`)
+- Logs to `~/Library/Logs/bud.log`
+
 ## MCP Server Changes
 
 When modifying MCP server code (e.g., `efficient-notion-mcp`):
@@ -74,8 +124,8 @@ When modifying MCP server code (e.g., `efficient-notion-mcp`):
 1. **Make changes** in the source repo
 2. **Commit and push** to remote
 3. **Update dependency** in bud2: `go get github.com/vthunder/efficient-notion-mcp@latest`
-4. **Rebuild**: `./scripts/build.sh`
-5. **Restart bud** - MCP servers are spawned at startup, so changes won't take effect until restart
+4. **Rebuild**: `~/src/bud2/scripts/build.sh`
+5. **Restart bud**: `launchctl kickstart -k gui/501/com.bud.daemon`
 
 **Common mistake**: Forgetting step 5. The MCP server binary is rebuilt, but the running instance is still the old code. Always restart after MCP changes.
 

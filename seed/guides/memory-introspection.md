@@ -12,8 +12,7 @@ Daily procedure to maintain memory quality and identify system improvements.
 - **This guide**: `state/system/guides/memory-introspection.md`
 - **Health report & insights**: `state/notes/memory-health.md`
 - **Memory database**: `state/system/memory.db`
-- **Prompt logs**: `state/debug/prompts/<focus_id>.txt` (for debugging wrong responses)
-- **Task**: `task-memory-introspection-daily`
+- **Task**: Daily introspection task in Things Bud area (recurring daily)
 
 ## Daily Procedure
 
@@ -42,20 +41,16 @@ SELECT ROUND(activation, 1) as bucket, COUNT(*) FROM traces GROUP BY bucket ORDE
 # New PRODUCT entities (check for false positives)
 sqlite3 ... "SELECT name FROM entities WHERE type = 'PRODUCT' ORDER BY rowid DESC LIMIT 10;"
 
-# Recent traces (check for quality issues) - now showing stable IDs
-sqlite3 ... "SELECT id, summary FROM traces ORDER BY created_at DESC LIMIT 10;"
+# Recent traces (check for quality issues)
+# NOTE: traces.summary is always empty - summaries stored in trace_summaries table
+sqlite3 ... "SELECT t.id, ts.summary FROM traces t
+JOIN trace_summaries ts ON t.id = ts.trace_id
+WHERE ts.compression_level = 8
+ORDER BY t.created_at DESC LIMIT 10;"
 
 # PERSON entities (are names being captured?)
 sqlite3 ... "SELECT name FROM entities WHERE type = 'PERSON';"
-
-# Check episode compression quality (pyramid summaries)
-sqlite3 ... "SELECT id, author, substr(content, 1, 60) as content, l1, l2 FROM episodes ORDER BY timestamp_event DESC LIMIT 5;"
 ```
-
-**Note on stable IDs**: Episodes and traces now have 5-character IDs (e.g., `a3f9c`, `tr_68730`) derived from blake3 hashes. These IDs are stable across database rebuilds and can be used with MCP tools:
-- `query_trace(trace_id)` - Get full details
-- `query_episode(id)` - Get specific episode
-- `get_trace_context(trace_id)` - Get context with entities
 
 ### Step 4: Auto-Prune Obviously Wrong Data
 
@@ -77,7 +72,7 @@ Update `state/notes/memory-health.md`:
 3. Update **Known Issues** / **Resolved Issues** as appropriate
 
 ### Step 6: Create Tracking Items
-- **Bugs found** → `add_bud_task` with context
+- **Bugs found** → `things_add_todo` in Bud area with context in notes
 - **System improvements** → `add_idea` for later exploration
 - **Root causes** → Document in Dated Insights
 
@@ -89,6 +84,7 @@ SELECT COUNT(*) FROM episodes;
 SELECT COUNT(*) FROM entities;
 SELECT COUNT(*) FROM traces;
 SELECT COUNT(*) FROM episode_edges;
+SELECT COUNT(*) FROM trace_summaries;
 
 -- Entity type distribution
 SELECT type, COUNT(*) FROM entities GROUP BY type ORDER BY COUNT(*) DESC;
@@ -96,8 +92,8 @@ SELECT type, COUNT(*) FROM entities GROUP BY type ORDER BY COUNT(*) DESC;
 -- Trace activation distribution
 SELECT ROUND(activation, 1) as bucket, COUNT(*) FROM traces GROUP BY bucket ORDER BY bucket DESC;
 
--- Dead traces
-SELECT COUNT(*) FROM traces WHERE activation = 0;
+-- Dead traces (activation near zero)
+SELECT COUNT(*) FROM traces WHERE activation < 0.05;
 
 -- Sample PRODUCT entities
 SELECT name FROM entities WHERE type = 'PRODUCT' LIMIT 20;
@@ -105,47 +101,30 @@ SELECT name FROM entities WHERE type = 'PRODUCT' LIMIT 20;
 -- Sample PERSON entities
 SELECT name FROM entities WHERE type = 'PERSON';
 
--- Recent traces with stable IDs
-SELECT id, summary FROM traces ORDER BY created_at DESC LIMIT 10;
+-- Recent traces (summaries stored in trace_summaries table)
+-- L1 summary (64 tokens, most readable for quality checks)
+SELECT t.id, ts.summary
+FROM traces t
+JOIN trace_summaries ts ON t.id = ts.trace_id
+WHERE ts.compression_level = 8
+ORDER BY t.created_at DESC
+LIMIT 10;
 
--- Check pyramid summary quality
-SELECT id, author, substr(content, 1, 60) as content, l1, l2, l3
-FROM episodes
-ORDER BY timestamp_event DESC LIMIT 10;
+-- Trace summary coverage
+SELECT COUNT(DISTINCT trace_id) as traces_with_summaries,
+       COUNT(*) as total_summaries,
+       COUNT(DISTINCT compression_level) as compression_levels
+FROM trace_summaries;
 
--- Find episode by short ID
-SELECT id, author, content, l4, l5 FROM episodes WHERE id LIKE 'a3f9c%';
-
--- Check token counts (for context budget)
-SELECT AVG(token_count) as avg_tokens, MAX(token_count) as max_tokens
-FROM episodes;
-```
-
-## Debugging Wrong Responses
-
-If you notice you answered the wrong question or responded to something not in the conversation:
-
-1. **Find the session/focus ID** - Check recent activity log with `activity_recent`
-2. **Read the prompt** - The full prompt sent to Claude is saved to `state/debug/prompts/<focus_id>.txt`
-3. **Check what went wrong**:
-   - Wrong memories retrieved? (Check "Recalled Memories" section)
-   - Wrong conversation history? (Check "Recent Conversation" section)
-   - Wrong focus item? (Check "Current Focus" section)
-4. **Create task to fix root cause** - Don't just note the symptom, fix the bug
-
-Example:
-```bash
-# Find the problematic session
-activity_recent count=10 | grep executive_wake
-
-# Read the prompt that was sent
-cat state/debug/prompts/inbox-discord-1454634002290970761-1470068982118613002.txt
-
-# Look for what context was wrong and file a bug
+-- Compression level distribution
+SELECT compression_level, COUNT(*)
+FROM trace_summaries
+GROUP BY compression_level
+ORDER BY compression_level;
 ```
 
 ## Time & Frequency
 
 - **Time estimate**: 5-10 minutes routine, longer if issues found
 - **Frequency**: Daily, during idle periods
-- **Task ID**: `task-memory-introspection-daily`
+- **Task**: Daily introspection recurring task in Things Bud area

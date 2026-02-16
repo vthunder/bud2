@@ -18,14 +18,9 @@ This guide helps me (Bud) inspect and manage my own internal state.
 | Health check | `state_health()` |
 | List memories | `state_traces(action="list")` |
 | Show specific memory | `state_traces(action="show", id="...")` |
-| Query trace details | `query_trace(trace_id="tr_xxxxx")` - gets source episodes with L1 summaries |
-| Query episode | `query_episode(id="xxxxx")` - gets full episode by short ID |
-| Get trace context | `get_trace_context(trace_id="tr_xxxxx")` - gets detailed context with entities |
 | List percepts | `state_percepts(action="list")` |
 | Recent activity | `state_logs(action="tail")` |
 | Queue status | `state_queues(action="list")` |
-
-**Note on stable IDs**: Episodes and traces have 5-character IDs (e.g., `a3f9c`, `tr_68730`) derived from content hashes. These IDs are stable across database rebuilds.
 
 ## Cleanup Protocol
 
@@ -51,11 +46,10 @@ Me: [deletes the 3 test traces]
 - `state_percepts(action="clear")` - percepts are transient by design
 - `state_queues(action="clear")` - operational, not memory
 - `state_sessions(action="clear")` - just tracking data
-- **Core identity**: Stored in `state/system/core.md` (file-based, not database). Edit the file directly to update core identity. Loaded at startup.
+- **Core identity**: Stored in `state/system/core.md` (file-based, not database). Edit the file directly to update core identity. Loaded at startup and included verbatim in the Claude prompt. If missing, automatically copied from `seed/system/core.md`.
 
 ### Careful (check first)
 - `state_traces(action="delete", id="...")` - may lose learned information
-- `state_traces(action="clear")` - clears all traces
 - `state_threads(action="clear")` - may lose conversation context
 - `state_logs(action="truncate")` - loses audit trail
 
@@ -65,8 +59,7 @@ Me: [deletes the 3 test traces]
 ```
 1. state_logs(action="tail", count=50) - check recent activity
 2. state_traces(action="list") - scan for relevant memories
-3. If trace ID found, query_trace(trace_id="...") for full details
-4. Report findings to user with specific episode references
+3. Report findings to user
 ```
 
 ### "Something seems off with your memory"
@@ -88,5 +81,4 @@ Me: [deletes the 3 test traces]
 ```
 1. Edit state/system/core.md directly to update core identity
 2. Restart bud to reload the core identity from file
-3. Optionally: state_traces(action="clear") - clear learned memories
 ```

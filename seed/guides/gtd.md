@@ -1,6 +1,18 @@
 # GTD System
 
-The GTD (Getting Things Done) system manages the owner's personal tasks. This is separate from Bud's own task queue (tasks.json/ideas.json). Data lives in `state/user_tasks.json`.
+The GTD (Getting Things Done) system manages the owner's personal tasks via Things 3 MCP integration. This is separate from Bud's own task queue, which also lives in Things 3 under the "Bud" area:
+
+**User's GTD (all areas except "Bud"):**
+- Areas: Work, Life, Health, etc.
+- Projects and tasks for personal productivity
+- Managed via `gtd_*` MCP tools
+
+**Bud's internal systems (Things "Bud" area only):**
+- Tasks: Commitments and work items (anytime/today scheduling)
+- Ideas: Two projects for exploration ideas:
+  - "Ideas" - active ideas to explore (someday)
+  - "Explored Ideas" - completed ideas with outcomes (someday)
+- Managed via `things_*` MCP tools directly
 
 ## Core Concepts
 
