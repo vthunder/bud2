@@ -351,12 +351,14 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 		sim := cosineSimilarity(queryEmb, embedding)
 		// Only include traces above minimum similarity threshold
 		if sim >= MinSimilarityThreshold {
-			// Blend similarity with stored activation:
-			// 70% semantic similarity + 30% activation
-			// This biases toward recent/frequently-used traces while
-			// keeping semantic relevance as the primary signal.
-			blended := 0.7*sim + 0.3*activation
-			candidates = append(candidates, scored{id: id, score: blended})
+			// Use pure semantic similarity for seeding (no stored activation blend).
+			// Temporal dynamics emerge naturally from spreading activation:
+			// - Seeds get initial boost (SeedBoost = 0.5)
+			// - Connected traces spread activation
+			// - Lateral inhibition and sigmoid transform shape final distribution
+			// Using stored activation here created a feedback loop where recently-active
+			// traces dominated all queries regardless of semantic relevance.
+			candidates = append(candidates, scored{id: id, score: sim})
 		}
 	}
 
