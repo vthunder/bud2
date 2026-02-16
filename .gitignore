@@ -25,3 +25,4 @@ repomix.md
 deploy/deploy.sh
 deploy/com.bud.daemon.plist
 deploy/com.bud.watcher.plist
+memory-service/memory-service
