@@ -1,5 +1,5 @@
 # Runtime state (seeded from seed/ on first run)
-state/
+/state/
 
 # Go build artifacts
 /bud2
