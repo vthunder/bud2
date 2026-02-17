@@ -58,12 +58,23 @@ func (g *DB) AddTrace(tr *Trace) error {
 		return fmt.Errorf("failed to insert trace: %w", err)
 	}
 
+	// Store verbatim summary in trace_summaries as level 0 (verbatim) if provided.
+	// This ensures GetTrace/GetAllTraces always have at least the original summary available,
+	// even before compress-traces generates the pyramid levels.
+	if tr.Summary != "" {
+		tokens := len(tr.Summary) / 4 // rough token estimate
+		if err := g.AddTraceSummary(tr.ID, CompressionLevelVerbatim, tr.Summary, tokens); err != nil {
+			// Non-fatal: trace is stored, summary will be available via compress-traces
+			_ = err
+		}
+	}
+
 	return nil
 }
 
 // GetTrace retrieves a trace by ID
 // Tries compression levels preferring higher detail: 0 (verbatim), 64, 32, 16, 8, 4 (most→least detail)
-// Falls back to empty string if no summary is available
+// Falls back to traces.summary then empty string if no summary is available
 func (g *DB) GetTrace(id string) (*Trace, error) {
 	// Try to get summary with fallback across compression levels
 	row := g.db.QueryRow(`
@@ -75,6 +86,7 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				t.summary,
 				''
 			) as summary,
 			t.topic, t.trace_type,
@@ -97,6 +109,7 @@ func (g *DB) GetTraceByShortID(shortID string) (*Trace, error) {
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				t.summary,
 				''
 			) as summary,
 			t.topic, t.trace_type,
@@ -125,6 +138,7 @@ func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) 
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				t.summary,
 				''
 			) as summary,
 			t.topic, t.trace_type,
@@ -136,6 +150,141 @@ func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) 
 	`, threshold, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query activated traces: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTraceRows(rows)
+}
+
+// GetTracesBatch retrieves multiple traces by ID in a single query.
+// Returns a map from trace ID to Trace for fast lookup.
+// Uses full detail (L64→L32→L16→L8→L4 fallback) same as GetTrace.
+func (g *DB) GetTracesBatch(ids []string) (map[string]*Trace, error) {
+	if len(ids) == 0 {
+		return make(map[string]*Trace), nil
+	}
+
+	// Build placeholders: ?,?,?,...
+	placeholders := make([]byte, 0, len(ids)*2-1)
+	for i := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+	}
+
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := g.db.Query(`
+		SELECT t.id, t.short_id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 0 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 64 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 32 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				t.summary,
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.id IN (`+string(placeholders)+`)
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch query traces: %w", err)
+	}
+	defer rows.Close()
+
+	traces, err := scanTraceRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]*Trace, len(traces))
+	for _, tr := range traces {
+		result[tr.ID] = tr
+	}
+	return result, nil
+}
+
+// GetTracesBatchAtLevel retrieves multiple traces by ID in a single query,
+// loading only the specified compression level summary (e.g. level=8 for headlines).
+// Used for Phase 1 funnel: cheaply screen many candidates before loading full detail.
+// Returns a map from trace ID to Trace.
+func (g *DB) GetTracesBatchAtLevel(ids []string, level int) (map[string]*Trace, error) {
+	if len(ids) == 0 {
+		return make(map[string]*Trace), nil
+	}
+
+	placeholders := make([]byte, 0, len(ids)*2-1)
+	for i := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+	}
+
+	// level arg comes first (for the COALESCE subquery), then IDs for WHERE IN
+	args := make([]any, 1+len(ids))
+	args[0] = level
+	for i, id := range ids {
+		args[1+i] = id
+	}
+
+	rows, err := g.db.Query(`
+		SELECT t.id, t.short_id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = ? LIMIT 1),
+				t.summary,
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.id IN (`+string(placeholders)+`)
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch query traces at level %d: %w", level, err)
+	}
+	defer rows.Close()
+
+	traces, err := scanTraceRows(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]*Trace, len(traces))
+	for _, tr := range traces {
+		result[tr.ID] = tr
+	}
+	return result, nil
+}
+
+// GetActivatedTracesWithLevel retrieves traces with activation above threshold,
+// loading only the specified compression level summary (e.g. level=8 for 8-word headlines).
+// Used for Phase 1 of funnel retrieval to cheaply screen many candidates.
+func (g *DB) GetActivatedTracesWithLevel(threshold float64, limit, level int) ([]*Trace, error) {
+	rows, err := g.db.Query(`
+		SELECT t.id, t.short_id,
+			COALESCE(
+				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = ? LIMIT 1),
+				t.summary,
+				''
+			) as summary,
+			t.topic, t.trace_type,
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+		FROM traces t
+		WHERE t.activation >= ?
+		ORDER BY t.activation DESC
+		LIMIT ?
+	`, level, threshold, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query activated traces at level %d: %w", level, err)
 	}
 	defer rows.Close()
 
@@ -480,7 +629,7 @@ func (g *DB) GetTraceSources(traceID string) ([]string, error) {
 
 // GetAllTraces retrieves all traces
 // Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
-// Falls back to empty string if no summary is available
+// Falls back to traces.summary then empty string if no summary is available
 func (g *DB) GetAllTraces() ([]*Trace, error) {
 	rows, err := g.db.Query(`
 		SELECT t.id, t.short_id,
@@ -491,6 +640,7 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 16 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 8 LIMIT 1),
 				(SELECT summary FROM trace_summaries WHERE trace_id = t.id AND compression_level = 4 LIMIT 1),
+				t.summary,
 				''
 			) as summary,
 			t.topic, t.trace_type,
