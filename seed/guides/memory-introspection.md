@@ -73,7 +73,7 @@ Update `state/notes/memory-health.md`:
 
 ### Step 6: Create Tracking Items
 - **Bugs found** → `things_add_todo` in Bud area with context in notes
-- **System improvements** → `add_idea` for later exploration
+- **System improvements** → `things_add_todo` in "Ideas" project (`list_id: "Ry155FXbamXMN2AupG1NvH"`) for later exploration; when explored, add entry to `notes/ideas-explored.md`
 - **Root causes** → Document in Dated Insights
 
 ## SQL Queries Reference

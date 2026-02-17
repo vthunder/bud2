@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/graph"
+	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -724,6 +725,13 @@ func (i *Inspector) SearchMemory(query string, limit int) ([]SearchResult, error
 
 // SearchMemoryWithContext searches memory with optional context awareness.
 func (i *Inspector) SearchMemoryWithContext(query string, limit int, useContext bool) ([]SearchResult, error) {
+	// Track total search time
+	defer profiling.Get().StartWithMetadata("search_memory", "memory_search.total", map[string]interface{}{
+		"query_length": len(query),
+		"limit":        limit,
+		"use_context":  useContext,
+	})()
+
 	if i.graphDB == nil {
 		return nil, fmt.Errorf("graph database not initialized")
 	}
@@ -739,52 +747,80 @@ func (i *Inspector) SearchMemoryWithContext(query string, limit int, useContext 
 		limit = 20
 	}
 
-	// Generate embedding for query
-	queryEmb, err := i.embedder.Embed(query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed query: %w", err)
+	// Generate embedding for query (track timing)
+	var queryEmb []float64
+	{
+		defer profiling.Get().Start("search_memory", "memory_search.embedding")()
+		var err error
+		queryEmb, err = i.embedder.Embed(query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to embed query: %w", err)
+		}
 	}
 
 	var result *graph.RetrievalResult
 
 	if useContext {
 		// Get currently-activated traces to use as additional context
-		activatedTraces, err := i.graphDB.GetActivatedTraces(0.3, 10)
-		if err != nil {
-			// Fall back to regular retrieval if we can't get activated traces
-			result, err = i.graphDB.Retrieve(queryEmb, query, limit)
+		var activatedTraces []*graph.Trace
+		{
+			defer profiling.Get().Start("search_memory", "memory_search.get_activated")()
+			var err error
+			activatedTraces, err = i.graphDB.GetActivatedTraces(0.3, 10)
 			if err != nil {
-				return nil, fmt.Errorf("retrieval failed: %w", err)
-			}
-		} else {
-			// Extract IDs from activated traces
-			contextIDs := make([]string, 0, len(activatedTraces))
-			for _, t := range activatedTraces {
-				contextIDs = append(contextIDs, t.ID)
-			}
-			// Use context-aware retrieval
-			result, err = i.graphDB.RetrieveWithContext(queryEmb, query, contextIDs, limit)
-			if err != nil {
-				return nil, fmt.Errorf("context retrieval failed: %w", err)
+				// Fall back to regular retrieval if we can't get activated traces
+				defer profiling.Get().StartWithMetadata("search_memory", "memory_search.retrieve", map[string]interface{}{
+					"mode": "fallback",
+				})()
+				result, err = i.graphDB.Retrieve(queryEmb, query, limit)
+				if err != nil {
+					return nil, fmt.Errorf("retrieval failed: %w", err)
+				}
+			} else {
+				// Extract IDs from activated traces
+				contextIDs := make([]string, 0, len(activatedTraces))
+				for _, t := range activatedTraces {
+					contextIDs = append(contextIDs, t.ID)
+				}
+				// Use context-aware retrieval
+				{
+					defer profiling.Get().StartWithMetadata("search_memory", "memory_search.retrieve_with_context", map[string]interface{}{
+						"context_count": len(contextIDs),
+					})()
+					var err error
+					result, err = i.graphDB.RetrieveWithContext(queryEmb, query, contextIDs, limit)
+					if err != nil {
+						return nil, fmt.Errorf("context retrieval failed: %w", err)
+					}
+				}
 			}
 		}
 	} else {
 		// Use standard retrieval without context
+		defer profiling.Get().StartWithMetadata("search_memory", "memory_search.retrieve", map[string]interface{}{
+			"mode": "standard",
+		})()
+		var err error
 		result, err = i.graphDB.Retrieve(queryEmb, query, limit)
 		if err != nil {
 			return nil, fmt.Errorf("retrieval failed: %w", err)
 		}
 	}
 
-	// Convert to SearchResult
+	// Convert to SearchResult (track timing for result processing)
 	var results []SearchResult
-	for _, t := range result.Traces {
-		results = append(results, SearchResult{
-			ID:         t.ID,
-			Summary:    t.Summary,
-			Activation: t.Activation,
-			CreatedAt:  t.CreatedAt,
-		})
+	{
+		defer profiling.Get().StartWithMetadata("search_memory", "memory_search.format_results", map[string]interface{}{
+			"result_count": len(result.Traces),
+		})()
+		for _, t := range result.Traces {
+			results = append(results, SearchResult{
+				ID:         t.ID,
+				Summary:    t.Summary,
+				Activation: t.Activation,
+				CreatedAt:  t.CreatedAt,
+			})
+		}
 	}
 
 	return results, nil

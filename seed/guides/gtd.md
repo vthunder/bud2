@@ -9,9 +9,8 @@ The GTD (Getting Things Done) system manages the owner's personal tasks via Thin
 
 **Bud's internal systems (Things "Bud" area only):**
 - Tasks: Commitments and work items (anytime/today scheduling)
-- Ideas: Two projects for exploration ideas:
-  - "Ideas" - active ideas to explore (someday)
-  - "Explored Ideas" - completed ideas with outcomes (someday)
+- Ideas: "Ideas" project (someday) - active and explored ideas (completed items stay visible with "Show Completed")
+  - Explored ideas indexed at `notes/ideas-explored.md` (title → Things ID for lookup)
 - Managed via `things_*` MCP tools directly
 
 ## Core Concepts

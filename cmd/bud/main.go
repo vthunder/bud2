@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -362,7 +363,7 @@ func main() {
 
 	// Initialize MCP HTTP server (for Claude Code integration)
 	mcpServer := mcp.NewServer()
-	var mcpSendMessage func(channelID, message string) error      // Will be wired to Discord effector
+	var mcpSendMessage func(channelID, message string) error          // Will be wired to Discord effector
 	var mcpAddReaction func(channelID, messageID, emoji string) error // Will be wired to Discord effector
 
 	// Declare variable for executive (will be initialized after MCP deps are set up)
@@ -429,9 +430,9 @@ func main() {
 		ollamaClient, // for query-based memory retrieval
 		statePath,    // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
-			Model:     claudeModel,
-			WorkDir:   statePath, // Run Claude from state/ to pick up .mcp.json
-			BotAuthor: "Bud",     // Kept for compatibility, but no longer used
+			Model:              claudeModel,
+			WorkDir:            statePath, // Run Claude from state/ to pick up .mcp.json
+			BotAuthor:          "Bud",     // Kept for compatibility, but no longer used
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
 			SendMessageFallback: func(channelID, message string) error {
@@ -530,11 +531,14 @@ func main() {
 	}
 
 	// Track last episode per channel for FOLLOWS edges
+	var lastEpisodeMu sync.Mutex
 	lastEpisodeByChannel := make(map[string]string) // channel → episode ID
 
 	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
+	// Phase 1 (sync): episode store + summaries + NER check (~2s total)
+	// Phase 2 (async): entity extraction + relationship storage (~18s, runs in background)
 	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
-		// L1: Overall ingestion time
+		// L1: Overall ingestion time (covers sync phase only; async phase has its own timing)
 		defer profiling.Get().Start(msg.ID, "ingest.total")()
 
 		if msg == nil || msg.Content == "" {
@@ -589,12 +593,15 @@ func main() {
 		}()
 
 		// Create FOLLOWS edge from previous episode in same channel
-		if prevID, ok := lastEpisodeByChannel[msg.ChannelID]; ok {
+		lastEpisodeMu.Lock()
+		prevID := lastEpisodeByChannel[msg.ChannelID]
+		lastEpisodeByChannel[msg.ChannelID] = episode.ID
+		lastEpisodeMu.Unlock()
+		if prevID != "" {
 			if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
 				log.Printf("[ingest] Failed to add FOLLOWS edge: %v", err)
 			}
 		}
-		lastEpisodeByChannel[msg.ChannelID] = episode.ID
 
 		// Fast NER pre-check: use spaCy sidecar to detect entities (~10ms)
 		// If no entities found, skip the expensive Ollama extraction (~6s)
@@ -614,125 +621,128 @@ func main() {
 			logging.Debug("ingest", "NER found %d entities", len(nerResult.Entities))
 		}
 
-		// Extract entities and relationships via Ollama (Tier 2 — full LLM extraction)
-		var result *extract.ExtractionResult
-		var err error
-		func() {
-			defer profiling.Get().Start(msg.ID, "ingest.entity_extract")()
-			result, err = entityExtractor.ExtractAll(msg.Content)
-		}()
-		if err != nil {
-			log.Printf("[ingest] Entity extraction failed: %v", err)
-			result = &extract.ExtractionResult{} // empty result
-		}
+		// Phase 2 (async): Extract entities and relationships via Ollama (~18s)
+		// Captured variables are safe to use in goroutine: episodeID and content are
+		// local copies, graphDB/entityExtractor/etc are immutable after init.
+		episodeID := msg.ID
+		msgContent := msg.Content
+		go func() {
+			defer profiling.Get().Start(episodeID, "ingest.entity_extract")()
 
-		// Resolve and store entities using fuzzy matching
-		entityIDMap := make(map[string]string) // name -> entityID for relationship linking
-		for _, ext := range result.Entities {
-			// Use resolver for fuzzy matching and deduplication
-			resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
+			result, err := entityExtractor.ExtractAll(msgContent)
 			if err != nil {
-				logging.Debug("ingest", "Failed to resolve entity %s: %v", ext.Name, err)
-				continue
-			}
-			if resolveResult == nil || resolveResult.Entity == nil {
-				logging.Debug("ingest", "Failed to resolve entity %s: nil result", ext.Name)
-				continue
+				log.Printf("[ingest] Entity extraction failed: %v", err)
+				result = &extract.ExtractionResult{} // empty result
 			}
 
-			entity := resolveResult.Entity
-			entityIDMap[strings.ToLower(ext.Name)] = entity.ID
-
-			// Log resolution method for debugging
-			if resolveResult.MatchedBy == "embedding" {
-				logging.Debug("ingest", "Merged '%s' with existing entity '%s'", ext.Name, entity.Name)
-			}
-
-			// Link episode to entity
-			if err := graphDB.LinkEpisodeToEntity(msg.ID, entity.ID); err != nil {
-				logging.Debug("ingest", "Failed to link episode to entity: %v", err)
-			}
-		}
-
-		// Store relationships with temporal invalidation detection
-		logging.Debug("ingest", "Processing %d extracted relationships", len(result.Relationships))
-		for _, rel := range result.Relationships {
-			logging.Debug("ingest", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
-
-			subjectID := entityIDMap[strings.ToLower(rel.Subject)]
-			objectID := entityIDMap[strings.ToLower(rel.Object)]
-
-			// Handle "speaker" reference - map to owner entity
-			speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
-			if speakerTerms[strings.ToLower(rel.Subject)] {
-				subjectID = "entity-PERSON-owner"
-				// Ensure owner entity exists
-				graphDB.AddEntity(&graph.Entity{
-					ID:   "entity-PERSON-owner",
-					Name: "Owner",
-					Type: graph.EntityPerson,
-				})
-			}
-			if speakerTerms[strings.ToLower(rel.Object)] {
-				objectID = "entity-PERSON-owner"
-				// Ensure owner entity exists
-				graphDB.AddEntity(&graph.Entity{
-					ID:   "entity-PERSON-owner",
-					Name: "Owner",
-					Type: graph.EntityPerson,
-				})
-			}
-
-			// Skip if we still don't have both entities
-			if subjectID == "" || objectID == "" {
-				logging.Debug("ingest", "Cannot resolve entities for relationship: %s -> %s", rel.Subject, rel.Object)
-				continue
-			}
-
-			edgeType := extract.PredicateToEdgeType(rel.Predicate)
-
-			// Check for invalidation candidates (existing relations that might be contradicted)
-			candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
-			if err != nil {
-				logging.Debug("ingest", "Failed to find invalidation candidates: %v", err)
-			}
-
-			// Add the new relationship first to get its ID
-			newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, msg.ID)
-			if err != nil {
-				logging.Debug("ingest", "Failed to store relationship: %v", err)
-				continue
-			}
-
-			// If there are candidates and this is an exclusive relation type, check for contradictions
-			if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
-				// Build entity name map for the invalidation prompt
-				entityNames := make(map[string]string)
-				for name, id := range entityIDMap {
-					entityNames[id] = name
+			// Resolve and store entities using fuzzy matching
+			entityIDMap := make(map[string]string) // name -> entityID for relationship linking
+			for _, ext := range result.Entities {
+				// Use resolver for fuzzy matching and deduplication
+				resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
+				if err != nil {
+					logging.Debug("ingest", "Failed to resolve entity %s: %v", ext.Name, err)
+					continue
+				}
+				if resolveResult == nil || resolveResult.Entity == nil {
+					logging.Debug("ingest", "Failed to resolve entity %s: nil result", ext.Name)
+					continue
 				}
 
-				invResult, err := invalidator.CheckInvalidation(
-					rel.Subject, rel.Predicate, rel.Object,
-					candidates, entityNames,
-				)
+				entity := resolveResult.Entity
+				entityIDMap[strings.ToLower(ext.Name)] = entity.ID
+
+				// Log resolution method for debugging
+				if resolveResult.MatchedBy == "embedding" {
+					logging.Debug("ingest", "Merged '%s' with existing entity '%s'", ext.Name, entity.Name)
+				}
+
+				// Link episode to entity
+				if err := graphDB.LinkEpisodeToEntity(episodeID, entity.ID); err != nil {
+					logging.Debug("ingest", "Failed to link episode to entity: %v", err)
+				}
+			}
+
+			// Store relationships with temporal invalidation detection
+			logging.Debug("ingest", "Processing %d extracted relationships", len(result.Relationships))
+			for _, rel := range result.Relationships {
+				logging.Debug("ingest", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
+
+				subjectID := entityIDMap[strings.ToLower(rel.Subject)]
+				objectID := entityIDMap[strings.ToLower(rel.Object)]
+
+				// Handle "speaker" reference - map to owner entity
+				speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
+				if speakerTerms[strings.ToLower(rel.Subject)] {
+					subjectID = "entity-PERSON-owner"
+					// Ensure owner entity exists
+					graphDB.AddEntity(&graph.Entity{
+						ID:   "entity-PERSON-owner",
+						Name: "Owner",
+						Type: graph.EntityPerson,
+					})
+				}
+				if speakerTerms[strings.ToLower(rel.Object)] {
+					objectID = "entity-PERSON-owner"
+					// Ensure owner entity exists
+					graphDB.AddEntity(&graph.Entity{
+						ID:   "entity-PERSON-owner",
+						Name: "Owner",
+						Type: graph.EntityPerson,
+					})
+				}
+
+				// Skip if we still don't have both entities
+				if subjectID == "" || objectID == "" {
+					logging.Debug("ingest", "Cannot resolve entities for relationship: %s -> %s", rel.Subject, rel.Object)
+					continue
+				}
+
+				edgeType := extract.PredicateToEdgeType(rel.Predicate)
+
+				// Check for invalidation candidates (existing relations that might be contradicted)
+				candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
 				if err != nil {
-					logging.Debug("ingest", "Invalidation check failed: %v", err)
-				} else if len(invResult.InvalidatedIDs) > 0 {
-					for _, oldID := range invResult.InvalidatedIDs {
-						if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
-							logging.Debug("ingest", "Failed to invalidate relation: %v", err)
-						} else {
-							logging.Debug("ingest", "Invalidated relation %d", oldID)
+					logging.Debug("ingest", "Failed to find invalidation candidates: %v", err)
+				}
+
+				// Add the new relationship first to get its ID
+				newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, episodeID)
+				if err != nil {
+					logging.Debug("ingest", "Failed to store relationship: %v", err)
+					continue
+				}
+
+				// If there are candidates and this is an exclusive relation type, check for contradictions
+				if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
+					// Build entity name map for the invalidation prompt
+					entityNames := make(map[string]string)
+					for name, id := range entityIDMap {
+						entityNames[id] = name
+					}
+
+					invResult, err := invalidator.CheckInvalidation(
+						rel.Subject, rel.Predicate, rel.Object,
+						candidates, entityNames,
+					)
+					if err != nil {
+						logging.Debug("ingest", "Invalidation check failed: %v", err)
+					} else if len(invResult.InvalidatedIDs) > 0 {
+						for _, oldID := range invResult.InvalidatedIDs {
+							if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
+								logging.Debug("ingest", "Failed to invalidate relation: %v", err)
+							} else {
+								logging.Debug("ingest", "Invalidated relation %d", oldID)
+							}
 						}
 					}
 				}
 			}
-		}
 
-		if len(result.Entities) > 0 || len(result.Relationships) > 0 {
-			logging.Debug("ingest", "Stored episode with %d entities, %d relationships", len(result.Entities), len(result.Relationships))
-		}
+			if len(result.Entities) > 0 || len(result.Relationships) > 0 {
+				logging.Debug("ingest", "Stored episode with %d entities, %d relationships", len(result.Entities), len(result.Relationships))
+			}
+		}()
 
 		// Traces (Tier 3) are created by consolidation, not on ingest.
 		// Episodes stay unconsolidated until memory_flush or periodic consolidation runs.
@@ -893,8 +903,10 @@ func main() {
 			}
 
 		default: // "message" or empty (backward compat)
-			// Ingest to memory graph (Tier 1: episode, Tier 2: entities)
-			ingestToMemoryGraph(msg)
+			// Ingest to memory graph asynchronously (Tier 1: episode, Tier 2: entities)
+			// Fire-and-forget: episode store runs in background so processPercept runs immediately.
+			// Executive reads from conversation history context, not the live episode store.
+			go ingestToMemoryGraph(msg)
 
 			percept := msg.ToPercept()
 			if percept != nil {
@@ -961,12 +973,15 @@ func main() {
 					logging.Debug("main", "Failed to generate summaries: %v", err)
 				}
 				// Create FOLLOWS edge from previous episode in same channel
-				if prevID, ok := lastEpisodeByChannel[channelID]; ok {
-					if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
+				lastEpisodeMu.Lock()
+				prevBudID := lastEpisodeByChannel[channelID]
+				lastEpisodeByChannel[channelID] = episode.ID
+				lastEpisodeMu.Unlock()
+				if prevBudID != "" {
+					if err := graphDB.AddEpisodeEdge(prevBudID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
 						logging.Debug("main", "Failed to add FOLLOWS edge: %v", err)
 					}
 				}
-				lastEpisodeByChannel[channelID] = episode.ID
 
 				// Extract entities from Bud's responses (skip entropy filter — responses are always substantive)
 				go func(episodeID, text string) {
@@ -1339,7 +1354,6 @@ func main() {
 			defer periodicTicker.Stop()
 
 			time.Sleep(10 * time.Second)
-
 
 			for {
 				select {
