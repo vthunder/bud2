@@ -173,6 +173,34 @@ func (e *DeepExtractor) ExtractEntities(text string) ([]ExtractedEntity, error) 
 	return filtered, nil
 }
 
+// relationshipExtractionWithContextPrompt injects known entity relationships into the prompt.
+// %s = entity list, %s = known context block, %s = text
+const relationshipExtractionWithContextPrompt = `Given these ENTITIES extracted from the text, identify relationships between them.
+
+ENTITIES:
+%s
+
+KNOWN CONTEXT (existing knowledge about these entities — use this to improve relationship extraction):
+%s
+
+RELATIONSHIP TYPES (use these exact labels):
+- affiliated_with: Professional connection (works at, works on, part of, studied at, cofounded)
+- kin_of: Family relationship (married to, sibling, parent, child)
+- knows: Social connection (friend, met, acquainted with)
+- located_in: Spatial relationship (lives in, located in, based in)
+- has: Possession or attribute (owns, has email, has pet, prefers, allergic to)
+
+When "my", "I", or "me" refers to the speaker, use "speaker" as the subject/object.
+
+TEXT: "%s"
+
+Return ONLY a JSON array:
+[{"subject":"...","predicate":"...","object":"...","confidence":0.9}]
+
+If no relationships are found, return: []
+
+JSON:`
+
 // ExtractRelationships performs pass 2: relationship extraction given known entities
 func (e *DeepExtractor) ExtractRelationships(text string, entities []ExtractedEntity) ([]ExtractedRelationship, error) {
 	if e.generator == nil || len(entities) == 0 {
@@ -190,6 +218,62 @@ func (e *DeepExtractor) ExtractRelationships(text string, entities []ExtractedEn
 	}
 
 	prompt := fmt.Sprintf(relationshipExtractionPrompt, entityList.String(), text)
+	response, err := e.generator.Generate(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("generation failed: %w", err)
+	}
+
+	rels := parseRelationshipJSON(response)
+	return rels, nil
+}
+
+// ExtractRelationshipsWithContext performs relationship extraction with known entity context injected.
+// entityContexts maps lowercase entity name -> EntityContext (fetched from graph before calling).
+func (e *DeepExtractor) ExtractRelationshipsWithContext(text string, entities []ExtractedEntity, entityContexts map[string]*graph.EntityContext) ([]ExtractedRelationship, error) {
+	if e.generator == nil || len(entities) == 0 {
+		return nil, nil
+	}
+
+	// Fall back to plain extraction if no context available
+	if len(entityContexts) == 0 {
+		return e.ExtractRelationships(text, entities)
+	}
+
+	if len(text) > 2000 {
+		text = text[:2000] + "..."
+	}
+
+	// Build entity list
+	var entityList strings.Builder
+	for _, ent := range entities {
+		fmt.Fprintf(&entityList, "- %s (%s)\n", ent.Name, ent.Type)
+	}
+
+	// Build context block from known relationships
+	var contextBlock strings.Builder
+	contextFound := false
+	for _, ent := range entities {
+		ec, ok := entityContexts[strings.ToLower(ent.Name)]
+		if !ok || ec == nil || len(ec.Relations) == 0 {
+			continue
+		}
+		contextFound = true
+		fmt.Fprintf(&contextBlock, "- %s (%s):", ent.Name, string(ec.Entity.Type))
+		for _, r := range ec.Relations {
+			if r.Direction == "outgoing" {
+				fmt.Fprintf(&contextBlock, " %s %s (%s),", r.RelationType, r.OtherName, r.OtherType)
+			} else {
+				fmt.Fprintf(&contextBlock, " %s (incoming from %s %s),", r.RelationType, r.OtherName, r.OtherType)
+			}
+		}
+		contextBlock.WriteString("\n")
+	}
+
+	if !contextFound {
+		return e.ExtractRelationships(text, entities)
+	}
+
+	prompt := fmt.Sprintf(relationshipExtractionWithContextPrompt, entityList.String(), contextBlock.String(), text)
 	response, err := e.generator.Generate(prompt)
 	if err != nil {
 		return nil, fmt.Errorf("generation failed: %w", err)
@@ -233,6 +317,43 @@ func (e *DeepExtractor) ExtractAll(text string) (*ExtractionResult, error) {
 		if len(rels) > 0 {
 			for _, rel := range rels {
 				log.Printf("[extract]   %s -[%s]-> %s (%.2f)", rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
+			}
+		}
+		result.Relationships = rels
+	}
+
+	return result, nil
+}
+
+// ExtractAllWithContext performs two-pass extraction with known entity context injected into pass 2.
+// entityContexts maps lowercase entity name -> EntityContext (fetched from graph before calling).
+func (e *DeepExtractor) ExtractAllWithContext(text string, entityContexts map[string]*graph.EntityContext) (*ExtractionResult, error) {
+	result := &ExtractionResult{}
+
+	// Pass 1: Extract entities (no context needed for entity detection)
+	entities, err := e.ExtractEntities(text)
+	if err != nil {
+		return nil, err
+	}
+	result.Entities = entities
+
+	realEntities := make([]ExtractedEntity, 0, len(entities))
+	for _, ent := range entities {
+		if strings.ToLower(ent.Name) == "none" || ent.Type == graph.EntityOther {
+			continue
+		}
+		realEntities = append(realEntities, ent)
+	}
+
+	if len(realEntities) > 0 {
+		rels, err := e.ExtractRelationshipsWithContext(text, realEntities, entityContexts)
+		if err != nil {
+			log.Printf("[extract] ⚠️  Relationship extraction (with context) failed: %v", err)
+			return result, nil
+		}
+		if len(rels) > 0 {
+			for _, rel := range rels {
+				log.Printf("[extract]   %s -[%s]-> %s (%.2f) [ctx]", rel.Subject, rel.Predicate, rel.Object, rel.Confidence)
 			}
 		}
 		result.Relationships = rels

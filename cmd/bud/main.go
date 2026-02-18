@@ -623,15 +623,29 @@ func main() {
 			logging.Debug("ingest", "NER found %d entities", len(nerResult.Entities))
 		}
 
+		// Fetch entity context for NER-detected entities (synchronous, fast — graph DB lookups)
+		// This runs before the goroutine so context is captured safely.
+		entityContexts := make(map[string]*graph.EntityContext)
+		if nerResult != nil {
+			for _, nerEnt := range nerResult.Entities {
+				ec, err := graphDB.GetEntityContext(nerEnt.Text, 3)
+				if err == nil && ec != nil && len(ec.Relations) > 0 {
+					entityContexts[strings.ToLower(nerEnt.Text)] = ec
+					logging.Debug("ingest", "Context for %s: %d relations", nerEnt.Text, len(ec.Relations))
+				}
+			}
+		}
+
 		// Phase 2 (async): Extract entities and relationships via Ollama (~18s)
 		// Captured variables are safe to use in goroutine: episodeID and content are
 		// local copies, graphDB/entityExtractor/etc are immutable after init.
 		episodeID := msg.ID
 		msgContent := msg.Content
+		capturedContexts := entityContexts
 		go func() {
 			defer profiling.Get().Start(episodeID, "ingest.entity_extract")()
 
-			result, err := entityExtractor.ExtractAll(msgContent)
+			result, err := entityExtractor.ExtractAllWithContext(msgContent, capturedContexts)
 			if err != nil {
 				log.Printf("[ingest] Entity extraction failed: %v", err)
 				result = &extract.ExtractionResult{} // empty result

@@ -442,6 +442,78 @@ func (g *DB) GetEntityRelations(entityID string) ([]Neighbor, error) {
 	return neighbors, nil
 }
 
+// EntityContext holds an entity and its known relationships for context injection into prompts.
+type EntityContext struct {
+	Entity    *Entity
+	Relations []EntityContextRelation
+}
+
+// EntityContextRelation is a simplified view of an entity_relation for prompt injection.
+type EntityContextRelation struct {
+	RelationType string
+	OtherName    string
+	OtherType    string
+	Direction    string // "outgoing" or "incoming"
+}
+
+// GetEntityContext returns an entity by name with its top N valid relationships.
+// Used for context injection during relationship extraction.
+func (g *DB) GetEntityContext(name string, maxRelationships int) (*EntityContext, error) {
+	entity, err := g.FindEntityByName(name)
+	if err != nil || entity == nil {
+		return nil, err
+	}
+
+	relations, err := g.GetValidRelationsFor(entity.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect other entity IDs we need to look up
+	otherIDs := make(map[string]bool)
+	for _, r := range relations {
+		if r.FromID == entity.ID {
+			otherIDs[r.ToID] = true
+		} else {
+			otherIDs[r.FromID] = true
+		}
+	}
+
+	// Fetch other entity names in one pass
+	nameByID := make(map[string]string)
+	typeByID := make(map[string]string)
+	for id := range otherIDs {
+		other, err := g.GetEntity(id)
+		if err == nil && other != nil {
+			nameByID[id] = other.Name
+			typeByID[id] = string(other.Type)
+		}
+	}
+
+	// Build context relations, capped at maxRelationships
+	ctx := &EntityContext{Entity: entity}
+	for i, r := range relations {
+		if maxRelationships > 0 && i >= maxRelationships {
+			break
+		}
+		ecr := EntityContextRelation{RelationType: string(r.RelationType)}
+		if r.FromID == entity.ID {
+			ecr.Direction = "outgoing"
+			ecr.OtherName = nameByID[r.ToID]
+			ecr.OtherType = typeByID[r.ToID]
+		} else {
+			ecr.Direction = "incoming"
+			ecr.OtherName = nameByID[r.FromID]
+			ecr.OtherType = typeByID[r.FromID]
+		}
+		if ecr.OtherName != "" {
+			ctx.Relations = append(ctx.Relations, ecr)
+		}
+	}
+
+	return ctx, nil
+}
+
 // IncrementEntitySalience increases the salience of an entity
 func (g *DB) IncrementEntitySalience(entityID string, increment float64) error {
 	_, err := g.db.Exec(`
