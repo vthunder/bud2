@@ -1031,8 +1031,10 @@ func main() {
 						subjectID := entityIDMap[strings.ToLower(rel.Subject)]
 						objectID := entityIDMap[strings.ToLower(rel.Object)]
 
-						// Handle "speaker" reference - map to bud entity
-						speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
+						// Handle "speaker" reference - map to bud entity.
+						// Include "bud" itself to prevent self-referential object noise
+						// (e.g. "X LOCATED_IN Bud" from first-person narrative).
+						speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true, "bud": true}
 						if speakerTerms[strings.ToLower(rel.Subject)] {
 							subjectID = "entity-PERSON-bud"
 							// Ensure bud entity exists
@@ -1055,6 +1057,15 @@ func main() {
 						// Skip if we still don't have both entities
 						if subjectID == "" || objectID == "" {
 							logging.Debug("ingest-bud", "Cannot resolve entities for relationship")
+							continue
+						}
+
+						// Skip relationships where Bud is the object but not the subject.
+						// Bud's first-person narrative produces many false positives like
+						// "BCS LOCATED_IN Bud" or "traces table AFFILIATED_WITH Bud" because
+						// the LLM conflates proximity in text with a relationship to Bud.
+						if objectID == "entity-PERSON-bud" && subjectID != "entity-PERSON-bud" {
+							logging.Debug("ingest-bud", "Skipping likely spurious object=Bud relationship: %s -[%s]-> Bud", rel.Subject, rel.Predicate)
 							continue
 						}
 
