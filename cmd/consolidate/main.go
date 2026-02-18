@@ -23,6 +23,7 @@ func main() {
 	deduplicateEpisodes := flag.Bool("deduplicate-episodes", false, "Remove duplicate episodes (same content) before consolidating")
 	incremental := flag.Bool("incremental", false, "Only infer edges for windows containing unconsolidated episodes")
 	dryRun := flag.Bool("dry-run", false, "Print stats without consolidating")
+	backfillEpisodeTraceEdges := flag.Bool("backfill-episode-trace-edges", false, "Backfill episode_trace_edges for all existing consolidated episodes")
 	claudeModel := flag.String("model", "claude-sonnet-4-5", "Claude model for inference (requires Claude Code)")
 	verbose := flag.Bool("verbose", false, "Verbose output")
 	flag.Parse()
@@ -127,6 +128,18 @@ func main() {
 			log.Fatalf("Failed to prune edges: %v", err)
 		}
 		log.Printf("✅ Pruned %d edges", count)
+	}
+
+	// Backfill episode_trace_edges for all existing consolidated episodes
+	if *backfillEpisodeTraceEdges {
+		log.Println("\nBackfilling episode→trace cross-reference edges for all consolidated episodes...")
+		start := time.Now()
+		linked, err := consolidator.BackfillEpisodeTraceEdges(500)
+		if err != nil {
+			log.Fatalf("Backfill failed: %v", err)
+		}
+		log.Printf("✅ Backfill complete in %v: created %d episode→trace edges", time.Since(start).Round(time.Second), linked)
+		return
 	}
 
 	// Configure incremental mode

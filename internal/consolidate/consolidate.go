@@ -724,6 +724,39 @@ func (c *Consolidator) linkEpisodesToRelatedTraces(episodes []*graph.Episode) in
 	return linked
 }
 
+// BackfillEpisodeTraceEdges iterates over all consolidated episodes with embeddings
+// and creates episode_trace_edges for any that are semantically similar to traces
+// they don't already belong to. Useful for one-time backfill after Phase 5 was deployed.
+// Returns total edges created.
+func (c *Consolidator) BackfillEpisodeTraceEdges(batchSize int) (int, error) {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+
+	total := 0
+	offset := 0
+	for {
+		episodes, err := c.graph.GetConsolidatedEpisodesWithEmbeddings(offset, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("failed to get consolidated episodes at offset %d: %w", offset, err)
+		}
+		if len(episodes) == 0 {
+			break
+		}
+
+		linked := c.linkEpisodesToRelatedTraces(episodes)
+		total += linked
+		log.Printf("[backfill] Processed %d episodes (offset=%d), created %d edges so far", len(episodes), offset, total)
+
+		offset += len(episodes)
+		if len(episodes) < batchSize {
+			break
+		}
+	}
+
+	return total, nil
+}
+
 // linkToSimilarTraces finds existing traces with high similarity and creates SIMILAR_TO edges.
 // Returns the number of edges created.
 func (c *Consolidator) linkToSimilarTraces(traceID string, embedding []float64, threshold float64) int {

@@ -324,6 +324,42 @@ func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {
 	return episodes, nil
 }
 
+// GetConsolidatedEpisodesWithEmbeddings returns episodes that have embeddings
+// and are linked to at least one trace (i.e., already consolidated).
+// Used for backfilling episode_trace_edges.
+// offset/limit support pagination for large datasets.
+func (g *DB) GetConsolidatedEpisodesWithEmbeddings(offset, limit int) ([]*Episode, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+
+	rows, err := g.db.Query(`
+		SELECT DISTINCT e.id, e.short_id, e.content, e.token_count, e.source, e.author, e.author_id, e.channel,
+			e.timestamp_event, e.timestamp_ingested, e.dialogue_act, e.entropy_score,
+			e.embedding, e.reply_to, e.authorization_checked, e.has_authorization, e.created_at
+		FROM episodes e
+		INNER JOIN trace_sources ts ON ts.episode_id = e.id
+		WHERE e.embedding IS NOT NULL
+		ORDER BY e.timestamp_event ASC
+		LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query consolidated episodes: %w", err)
+	}
+	defer rows.Close()
+
+	var episodes []*Episode
+	for rows.Next() {
+		ep, err := scanEpisodeRow(rows)
+		if err != nil {
+			continue
+		}
+		episodes = append(episodes, ep)
+	}
+
+	return episodes, nil
+}
+
 // UpdateEpisodeAuthorization updates the authorization status for an episode
 func (g *DB) UpdateEpisodeAuthorization(episodeID string, hasAuth bool) error {
 	_, err := g.db.Exec(`
