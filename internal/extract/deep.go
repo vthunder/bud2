@@ -29,7 +29,7 @@ var (
 		"they": true, "them": true, "their": true,
 		"we": true, "us": true, "our": true,
 		"this": true, "that": true, "these": true, "those": true,
-		"speaker": true, "user": true,
+		"speaker": true, "user": true, "owner": true,
 		// System/meta terms
 		"memory_reset": true, "memory": true, "your memory": true,
 		// Conversational fragments (often misclassified as PRODUCT)
@@ -110,7 +110,7 @@ RELATIONSHIP TYPES (use these exact labels):
 - affiliated_with: Professional connection (works at, works on, part of, studied at, cofounded)
 - kin_of: Family relationship (married to, sibling, parent, child)
 - knows: Social connection (friend, met, acquainted with)
-- located_in: Spatial relationship (lives in, located in, based in)
+- located_in: Physical location only (lives in a city, office based in Berlin). Do NOT use for abstract containment (e.g. "X is inside software Y" or "X is in a data store").
 - has: Possession or attribute (owns, has email, has pet, prefers, allergic to)
 
 When "my", "I", or "me" refers to the speaker, use "speaker" as the subject/object.
@@ -187,7 +187,7 @@ RELATIONSHIP TYPES (use these exact labels):
 - affiliated_with: Professional connection (works at, works on, part of, studied at, cofounded)
 - kin_of: Family relationship (married to, sibling, parent, child)
 - knows: Social connection (friend, met, acquainted with)
-- located_in: Spatial relationship (lives in, located in, based in)
+- located_in: Physical location only (lives in a city, office based in Berlin). Do NOT use for abstract containment (e.g. "X is inside software Y" or "X is in a data store").
 - has: Possession or attribute (owns, has email, has pet, prefers, allergic to)
 
 When "my", "I", or "me" refers to the speaker, use "speaker" as the subject/object.
