@@ -289,8 +289,10 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 
 	// One-shot sessions: session ID must already be rotated by the caller via
 	// PrepareNewSession before StartSession is recorded in the tracker.
-	// The Claude CLI assigns its own session ID (captured later from the result
-	// event) which is what --resume needs; we don't pass --session-id.
+	// Pass --session-id so the CLI uses our UUID as the session file name,
+	// unifying bud's tracking ID with the --resume ID. (CLI bug: currently
+	// ignored in --print mode despite being documented; re-check on upgrades.)
+	args = append(args, "--session-id", s.sessionID)
 
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)

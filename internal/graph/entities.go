@@ -220,12 +220,25 @@ func (g *DB) AddEntityRelation(fromID, toID string, relType EdgeType, weight flo
 	return err
 }
 
-// AddEntityRelationWithSource adds a relationship with source episode tracking
-// Returns the relation ID for use in invalidation tracking
+// AddEntityRelationWithSource adds a relationship with source episode tracking.
+// Returns the relation ID for use in invalidation tracking.
+// Deduplicates: if an identical active (from_id, to_id, relation_type) already exists,
+// returns the existing relation ID without creating a new row.
 func (g *DB) AddEntityRelationWithSource(fromID, toID string, relType EdgeType, weight float64, sourceEpisodeID string) (int64, error) {
-	var result sql.Result
-	var err error
+	// Check for existing active relation with same (from, to, type)
+	var existingID int64
+	err := g.db.QueryRow(`
+		SELECT id FROM entity_relations
+		WHERE from_id = ? AND to_id = ? AND relation_type = ? AND invalid_at IS NULL
+		LIMIT 1
+	`, fromID, toID, relType).Scan(&existingID)
+	if err == nil {
+		// Duplicate found — return existing ID, no insert
+		return existingID, nil
+	}
+	// err == sql.ErrNoRows means no duplicate; proceed with insert
 
+	var result sql.Result
 	if sourceEpisodeID == "" {
 		result, err = g.db.Exec(`
 			INSERT INTO entity_relations (from_id, to_id, relation_type, weight)
