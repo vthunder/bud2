@@ -1,7 +1,7 @@
 package consolidate
 
-// Tests for episode grouping logic in consolidation.
-// Covers: time-based grouping, channel-based grouping, entity overlap, edge cases.
+// Tests for episode clustering logic in consolidation.
+// Covers: edge-based clustering, connected components, confidence thresholds, edge cases.
 
 import (
 	"os"
@@ -61,360 +61,209 @@ func (m *mockLLM) Generate(prompt string) (string, error) {
 	return prompt, nil
 }
 
-func TestGroupEpisodesByTimeProximity(t *testing.T) {
+func TestClusterEpisodesByEdgesEmpty(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
+	c := NewConsolidator(db, &mockLLM{}, nil)
+
+	groups, existing := c.clusterEpisodesByEdges(nil, nil)
+	if groups != nil || existing != nil {
+		t.Error("Expected nil for empty episodes")
+	}
+
+	groups, existing = c.clusterEpisodesByEdges([]*graph.Episode{}, nil)
+	if groups != nil || existing != nil {
+		t.Error("Expected nil for empty episodes slice")
+	}
+}
+
+func TestClusterEpisodesByEdgesNoEdges(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	c.MinGroupSize = 1
 
 	now := time.Now()
+	episodes := []*graph.Episode{
+		{ID: "ep-1", Content: "First message", Channel: "general", TimestampEvent: now},
+		{ID: "ep-2", Content: "Second message", Channel: "general", TimestampEvent: now.Add(10 * time.Minute)},
+	}
 
-	// Create episodes: first two within 10 min, third is 1 hour later
+	// No edges = each episode is its own component
+	groups, _ := c.clusterEpisodesByEdges(episodes, nil)
+
+	if len(groups) != 2 {
+		t.Fatalf("Expected 2 groups (no edges = separate components), got %d", len(groups))
+	}
+}
+
+func TestClusterEpisodesByEdgesHighConfidence(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	c.MinGroupSize = 1
+
+	now := time.Now()
 	episodes := []*graph.Episode{
 		{ID: "ep-1", Content: "First message", Channel: "general", TimestampEvent: now},
 		{ID: "ep-2", Content: "Second message", Channel: "general", TimestampEvent: now.Add(10 * time.Minute)},
 		{ID: "ep-3", Content: "Third message", Channel: "general", TimestampEvent: now.Add(1 * time.Hour)},
 	}
 
-	groups := c.groupEpisodes(episodes)
+	// High-confidence edge between ep-1 and ep-2; ep-3 unconnected
+	edges := []EpisodeEdge{
+		{FromID: "ep-1", ToID: "ep-2", Confidence: 0.9},
+	}
+
+	groups, _ := c.clusterEpisodesByEdges(episodes, edges)
 
 	// Should have 2 groups: (ep-1, ep-2) and (ep-3)
 	if len(groups) != 2 {
 		t.Fatalf("Expected 2 groups, got %d", len(groups))
 	}
 
-	// First group should have 2 episodes
-	if len(groups[0].episodes) != 2 {
-		t.Errorf("Expected first group to have 2 episodes, got %d", len(groups[0].episodes))
-	}
-
-	// Second group should have 1 episode
-	if len(groups[1].episodes) != 1 {
-		t.Errorf("Expected second group to have 1 episode, got %d", len(groups[1].episodes))
-	}
-}
-
-func TestGroupEpisodesBySameChannel(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
-
-	now := time.Now()
-
-	// Create episodes: same timestamp but different channels
-	episodes := []*graph.Episode{
-		{ID: "ep-1", Content: "Message in general", Channel: "general", TimestampEvent: now},
-		{ID: "ep-2", Content: "Message in random", Channel: "random", TimestampEvent: now.Add(5 * time.Minute)},
-		{ID: "ep-3", Content: "Another in general", Channel: "general", TimestampEvent: now.Add(10 * time.Minute)},
-	}
-
-	groups := c.groupEpisodes(episodes)
-
-	// ep-1 and ep-3 should be grouped together (same channel, within time window)
-	// ep-2 should be in its own group (different channel, no entity overlap)
-	if len(groups) != 2 {
-		t.Fatalf("Expected 2 groups, got %d", len(groups))
-	}
-
 	// Find the group with ep-1
-	var generalGroup *episodeGroup
+	var joinedGroup *episodeGroup
 	for _, g := range groups {
 		for _, ep := range g.episodes {
 			if ep.ID == "ep-1" {
-				generalGroup = g
+				joinedGroup = g
 				break
 			}
 		}
 	}
 
-	if generalGroup == nil {
+	if joinedGroup == nil {
 		t.Fatal("Could not find group containing ep-1")
 	}
 
-	// Check that ep-3 is also in this group
-	foundEp3 := false
-	for _, ep := range generalGroup.episodes {
-		if ep.ID == "ep-3" {
-			foundEp3 = true
-			break
-		}
-	}
-	if !foundEp3 {
-		t.Error("Expected ep-3 to be grouped with ep-1 (same channel)")
+	if len(joinedGroup.episodes) != 2 {
+		t.Errorf("Expected 2 episodes in ep-1's group, got %d", len(joinedGroup.episodes))
 	}
 }
 
-func TestGroupEpisodesByEntityOverlap(t *testing.T) {
+func TestClusterEpisodesByEdgesLowConfidenceSkipped(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Add entities
-	db.AddEntity(&graph.Entity{ID: "entity-alice", Name: "Alice", Type: graph.EntityPerson})
-	db.AddEntity(&graph.Entity{ID: "entity-bob", Name: "Bob", Type: graph.EntityPerson})
-
-	// Add episodes with entity links
-	// Note: The grouping algorithm processes episodes in order and doesn't
-	// backtrack, so ep-3 (which mentions both Alice and Bob) will join ep-1's
-	// group (which has Alice), but ep-2 (Bob only) won't be reconsidered.
-	now := time.Now()
-	episodes := []*graph.Episode{
-		{ID: "ep-1", Content: "Alice said something", Channel: "ch-1", TimestampEvent: now},
-		{ID: "ep-2", Content: "Bob responded", Channel: "ch-2", TimestampEvent: now.Add(5 * time.Minute)},
-		{ID: "ep-3", Content: "Alice mentioned Bob", Channel: "ch-3", TimestampEvent: now.Add(10 * time.Minute)},
-	}
-
-	for _, ep := range episodes {
-		db.AddEpisode(ep)
-	}
-
-	// Link entities to episodes
-	db.LinkEpisodeToEntity("ep-1", "entity-alice")
-	db.LinkEpisodeToEntity("ep-2", "entity-bob")
-	db.LinkEpisodeToEntity("ep-3", "entity-alice")
-	db.LinkEpisodeToEntity("ep-3", "entity-bob")
-
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
-
-	groups := c.groupEpisodes(episodes)
-
-	// Current behavior: 2 groups
-	// - Group 1: ep-1 (Alice) + ep-3 (Alice, Bob) - joined via Alice overlap
-	// - Group 2: ep-2 (Bob) - standalone because Bob wasn't in group when ep-2 was checked
-	// This is a design choice: no backtracking, simpler algorithm.
-	if len(groups) != 2 {
-		t.Fatalf("Expected 2 groups, got %d", len(groups))
-	}
-
-	// Find the group containing ep-1
-	var group1 *episodeGroup
-	for _, g := range groups {
-		for _, ep := range g.episodes {
-			if ep.ID == "ep-1" {
-				group1 = g
-				break
-			}
-		}
-	}
-
-	if group1 == nil {
-		t.Fatal("Could not find group containing ep-1")
-	}
-
-	// ep-3 should be in same group as ep-1 (Alice overlap)
-	foundEp3 := false
-	for _, ep := range group1.episodes {
-		if ep.ID == "ep-3" {
-			foundEp3 = true
-			break
-		}
-	}
-	if !foundEp3 {
-		t.Error("Expected ep-3 to be grouped with ep-1 (Alice entity overlap)")
-	}
-
-	// Group should have both Alice and Bob in entityIDs (from ep-3)
-	if !group1.entityIDs["entity-alice"] {
-		t.Error("Expected entity-alice in group")
-	}
-	if !group1.entityIDs["entity-bob"] {
-		t.Error("Expected entity-bob in group (added via ep-3)")
-	}
-}
-
-func TestGroupEpisodesNoOverlap(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	// Add distinct entities
-	db.AddEntity(&graph.Entity{ID: "entity-alice", Name: "Alice", Type: graph.EntityPerson})
-	db.AddEntity(&graph.Entity{ID: "entity-bob", Name: "Bob", Type: graph.EntityPerson})
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	c.MinGroupSize = 1
 
 	now := time.Now()
 	episodes := []*graph.Episode{
-		{ID: "ep-1", Content: "Alice said something", Channel: "ch-alice", TimestampEvent: now},
-		{ID: "ep-2", Content: "Bob said something", Channel: "ch-bob", TimestampEvent: now.Add(5 * time.Minute)},
+		{ID: "ep-1", Content: "First", Channel: "ch1", TimestampEvent: now},
+		{ID: "ep-2", Content: "Second", Channel: "ch2", TimestampEvent: now.Add(5 * time.Minute)},
 	}
 
-	for _, ep := range episodes {
-		db.AddEpisode(ep)
+	// Low-confidence edge (below 0.7 threshold) should be ignored
+	edges := []EpisodeEdge{
+		{FromID: "ep-1", ToID: "ep-2", Confidence: 0.5},
 	}
 
-	// Link to different entities
-	db.LinkEpisodeToEntity("ep-1", "entity-alice")
-	db.LinkEpisodeToEntity("ep-2", "entity-bob")
+	groups, _ := c.clusterEpisodesByEdges(episodes, edges)
 
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
-
-	groups := c.groupEpisodes(episodes)
-
-	// Different channels AND different entities = separate groups
+	// Should have 2 separate groups since edge confidence is too low
 	if len(groups) != 2 {
-		t.Fatalf("Expected 2 groups (no overlap), got %d", len(groups))
+		t.Fatalf("Expected 2 separate groups (low confidence edge ignored), got %d", len(groups))
 	}
 }
 
-func TestGroupEpisodesRespectMaxGroupSize(t *testing.T) {
+func TestClusterEpisodesByEdgesTransitiveChain(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
-	c.MaxGroupSize = 3 // Limit to 3 episodes per group
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	c.MinGroupSize = 1
 
 	now := time.Now()
-
-	// Create 5 episodes, all in same channel
-	episodes := make([]*graph.Episode, 5)
-	for i := 0; i < 5; i++ {
-		episodes[i] = &graph.Episode{
-			ID:             "ep-" + string(rune('1'+i)),
-			Content:        "Message " + string(rune('1'+i)),
-			Channel:        "general",
-			TimestampEvent: now.Add(time.Duration(i) * time.Minute),
-		}
+	episodes := []*graph.Episode{
+		{ID: "ep-1", Content: "A", Channel: "ch1", TimestampEvent: now},
+		{ID: "ep-2", Content: "B", Channel: "ch2", TimestampEvent: now.Add(5 * time.Minute)},
+		{ID: "ep-3", Content: "C", Channel: "ch3", TimestampEvent: now.Add(10 * time.Minute)},
 	}
 
-	groups := c.groupEpisodes(episodes)
-
-	// With MaxGroupSize=3, first group gets 3, second group gets 2
-	if len(groups) < 2 {
-		t.Fatalf("Expected at least 2 groups (max size limit), got %d", len(groups))
+	// Chain: ep-1 <-> ep-2 <-> ep-3 (transitive)
+	edges := []EpisodeEdge{
+		{FromID: "ep-1", ToID: "ep-2", Confidence: 0.9},
+		{FromID: "ep-2", ToID: "ep-3", Confidence: 0.8},
 	}
 
-	for i, g := range groups {
-		if len(g.episodes) > c.MaxGroupSize {
-			t.Errorf("Group %d exceeds MaxGroupSize: %d > %d", i, len(g.episodes), c.MaxGroupSize)
-		}
+	groups, _ := c.clusterEpisodesByEdges(episodes, edges)
+
+	// All 3 should be in one group via transitivity
+	if len(groups) != 1 {
+		t.Fatalf("Expected 1 group (transitive chain), got %d", len(groups))
+	}
+
+	if len(groups[0].episodes) != 3 {
+		t.Errorf("Expected 3 episodes in group, got %d", len(groups[0].episodes))
 	}
 }
 
-func TestGroupEpisodesMinGroupSize(t *testing.T) {
+func TestClusterEpisodesByEdgesMinGroupSize(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
+	c := NewConsolidator(db, &mockLLM{}, nil)
 	c.MinGroupSize = 2 // Require at least 2 episodes
 
 	now := time.Now()
-
-	// Create episodes: two close together, one far apart
 	episodes := []*graph.Episode{
 		{ID: "ep-1", Content: "First", Channel: "general", TimestampEvent: now},
 		{ID: "ep-2", Content: "Second", Channel: "general", TimestampEvent: now.Add(5 * time.Minute)},
 		{ID: "ep-3", Content: "Lonely", Channel: "random", TimestampEvent: now.Add(2 * time.Hour)},
 	}
 
-	groups := c.groupEpisodes(episodes)
-
-	// ep-1 and ep-2 form a valid group (size 2)
-	// ep-3 is alone (size 1) and should be skipped with MinGroupSize=2
-	validGroups := 0
-	for _, g := range groups {
-		if len(g.episodes) >= c.MinGroupSize {
-			validGroups++
-		}
+	// ep-1 and ep-2 connected, ep-3 isolated
+	edges := []EpisodeEdge{
+		{FromID: "ep-1", ToID: "ep-2", Confidence: 0.9},
 	}
 
-	// Only groups with >= MinGroupSize should be returned
-	for _, g := range groups {
-		if len(g.episodes) < c.MinGroupSize {
-			t.Errorf("Group with %d episodes returned despite MinGroupSize=%d", len(g.episodes), c.MinGroupSize)
-		}
-	}
-}
+	groups, _ := c.clusterEpisodesByEdges(episodes, edges)
 
-func TestGroupEpisodesEmptyInput(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	c := NewConsolidator(db, &mockLLM{})
-
-	groups := c.groupEpisodes(nil)
-	if groups != nil {
-		t.Error("Expected nil for empty input")
-	}
-
-	groups = c.groupEpisodes([]*graph.Episode{})
-	if groups != nil {
-		t.Error("Expected nil for empty slice")
-	}
-}
-
-func TestGroupEpisodesSingleEpisode(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	c := NewConsolidator(db, &mockLLM{})
-	c.MinGroupSize = 1
-
-	episodes := []*graph.Episode{
-		{ID: "ep-1", Content: "Solo message", Channel: "general", TimestampEvent: time.Now()},
-	}
-
-	groups := c.groupEpisodes(episodes)
-
+	// Only ep-1+ep-2 group should be returned; ep-3 alone is below MinGroupSize
 	if len(groups) != 1 {
-		t.Fatalf("Expected 1 group for single episode, got %d", len(groups))
+		t.Fatalf("Expected 1 group (ep-3 filtered by MinGroupSize), got %d", len(groups))
 	}
 
-	if len(groups[0].episodes) != 1 {
-		t.Errorf("Expected 1 episode in group, got %d", len(groups[0].episodes))
+	if len(groups[0].episodes) != 2 {
+		t.Errorf("Expected 2 episodes in group, got %d", len(groups[0].episodes))
 	}
 }
 
-func TestGroupEpisodesTransitiveEntityChaining(t *testing.T) {
+func TestClusterEpisodesByEdgesMultipleDisconnected(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Create entities: A, B, C
-	db.AddEntity(&graph.Entity{ID: "entity-a", Name: "A", Type: graph.EntityPerson})
-	db.AddEntity(&graph.Entity{ID: "entity-b", Name: "B", Type: graph.EntityPerson})
-	db.AddEntity(&graph.Entity{ID: "entity-c", Name: "C", Type: graph.EntityPerson})
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	c.MinGroupSize = 1
 
 	now := time.Now()
 	episodes := []*graph.Episode{
-		{ID: "ep-1", Content: "A", Channel: "ch-1", TimestampEvent: now},
-		{ID: "ep-2", Content: "B", Channel: "ch-2", TimestampEvent: now.Add(5 * time.Minute)},
-		{ID: "ep-3", Content: "C", Channel: "ch-3", TimestampEvent: now.Add(10 * time.Minute)},
+		{ID: "ep-1", Content: "A", Channel: "ch1", TimestampEvent: now},
+		{ID: "ep-2", Content: "B", Channel: "ch1", TimestampEvent: now.Add(1 * time.Minute)},
+		{ID: "ep-3", Content: "C", Channel: "ch2", TimestampEvent: now.Add(2 * time.Minute)},
+		{ID: "ep-4", Content: "D", Channel: "ch2", TimestampEvent: now.Add(3 * time.Minute)},
 	}
 
-	for _, ep := range episodes {
-		db.AddEpisode(ep)
+	// Two separate components: (ep-1, ep-2) and (ep-3, ep-4)
+	edges := []EpisodeEdge{
+		{FromID: "ep-1", ToID: "ep-2", Confidence: 0.95},
+		{FromID: "ep-3", ToID: "ep-4", Confidence: 0.85},
 	}
 
-	// Chain: ep-1 has A, ep-2 has A and B, ep-3 has B and C
-	// This creates a transitive chain: ep-1 -> ep-2 -> ep-3
-	db.LinkEpisodeToEntity("ep-1", "entity-a")
-	db.LinkEpisodeToEntity("ep-2", "entity-a")
-	db.LinkEpisodeToEntity("ep-2", "entity-b")
-	db.LinkEpisodeToEntity("ep-3", "entity-b")
-	db.LinkEpisodeToEntity("ep-3", "entity-c")
+	groups, _ := c.clusterEpisodesByEdges(episodes, edges)
 
-	c := NewConsolidator(db, &mockLLM{})
-	c.TimeWindow = 30 * time.Minute
-
-	groups := c.groupEpisodes(episodes)
-
-	// All should be in one group via transitive entity overlap
-	if len(groups) != 1 {
-		t.Fatalf("Expected 1 group (transitive entity chaining), got %d", len(groups))
+	if len(groups) != 2 {
+		t.Fatalf("Expected 2 groups (2 disconnected components), got %d", len(groups))
 	}
 
-	if len(groups[0].episodes) != 3 {
-		t.Errorf("Expected 3 episodes in group, got %d", len(groups[0].episodes))
-	}
-
-	// Verify all three entities are in the group's entityIDs
-	expectedEntities := []string{"entity-a", "entity-b", "entity-c"}
-	for _, e := range expectedEntities {
-		if !groups[0].entityIDs[e] {
-			t.Errorf("Expected entity %s in group", e)
+	for _, g := range groups {
+		if len(g.episodes) != 2 {
+			t.Errorf("Expected 2 episodes per group, got %d", len(g.episodes))
 		}
 	}
 }
@@ -717,5 +566,127 @@ func TestCalculateCentroidNoEmbeddings(t *testing.T) {
 	centroid := calculateCentroid(episodes)
 	if centroid != nil {
 		t.Error("Expected nil when no episodes have embeddings")
+	}
+}
+
+// TestLinkEpisodesToRelatedTraces verifies that episodes are linked to semantically
+// similar existing traces via episode_trace_edges.
+func TestLinkEpisodesToRelatedTraces(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+
+	now := time.Now()
+
+	// Create an existing trace with a high-similarity embedding
+	existingTrace := &graph.Trace{
+		ID:        "trace-existing-abc",
+		Summary:   "Discussion about entity extraction and NER",
+		Topic:     "conversation",
+		TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.9, 0.1, 0.0, 0.0}, // Similar to episode below
+		CreatedAt: now.Add(-1 * time.Hour),
+	}
+	if err := db.AddTrace(existingTrace); err != nil {
+		t.Fatalf("Failed to add existing trace: %v", err)
+	}
+
+	// Create a different trace with a low-similarity embedding (should not be linked)
+	distantTrace := &graph.Trace{
+		ID:        "trace-distant-xyz",
+		Summary:   "Calendar event: sprint planning meeting",
+		Topic:     "conversation",
+		TraceType: graph.TraceTypeOperational,
+		Embedding: []float64{0.0, 0.0, 0.9, 0.1}, // Very different
+		CreatedAt: now.Add(-2 * time.Hour),
+	}
+	if err := db.AddTrace(distantTrace); err != nil {
+		t.Fatalf("Failed to add distant trace: %v", err)
+	}
+
+	// Create a primary trace that the episode will belong to
+	primaryTrace := &graph.Trace{
+		ID:        "trace-primary-episode",
+		Summary:   "New episode about NER extraction quality",
+		Topic:     "conversation",
+		TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.8, 0.2, 0.0, 0.0},
+		CreatedAt: now,
+	}
+	if err := db.AddTrace(primaryTrace); err != nil {
+		t.Fatalf("Failed to add primary trace: %v", err)
+	}
+
+	// Create an episode with a high-similarity embedding to existingTrace
+	ep := &graph.Episode{
+		ID:             "ep-ner-discussion",
+		Content:        "The NER sidecar is working well for entity extraction",
+		Author:         "thunder",
+		Channel:        "general",
+		TimestampEvent: now,
+		Embedding:      []float64{0.88, 0.12, 0.0, 0.0}, // Similarity ~0.99 to existingTrace
+	}
+	if err := db.AddEpisode(ep); err != nil {
+		t.Fatalf("Failed to add episode: %v", err)
+	}
+
+	// Link episode to its primary trace
+	if err := db.LinkTraceToSource("trace-primary-episode", ep.ID); err != nil {
+		t.Fatalf("Failed to link episode to primary trace: %v", err)
+	}
+
+	// Run the linking function
+	linked := c.linkEpisodesToRelatedTraces([]*graph.Episode{ep})
+
+	// Should have linked to existingTrace (similarity ~0.99 > 0.80)
+	// Should NOT have linked to distantTrace (similarity ~0.0 < 0.80)
+	// Should NOT have linked to primaryTrace (it's excluded as the episode's own trace)
+	if linked != 1 {
+		t.Errorf("Expected 1 episode→trace edge, got %d", linked)
+	}
+
+	// Verify the edge exists to existingTrace
+	traceIDs, err := db.GetTracesReferencedByEpisode(ep.ID)
+	if err != nil {
+		t.Fatalf("GetTracesReferencedByEpisode failed: %v", err)
+	}
+	if len(traceIDs) != 1 {
+		t.Fatalf("Expected 1 trace reference, got %d: %v", len(traceIDs), traceIDs)
+	}
+	if traceIDs[0] != "trace-existing-abc" {
+		t.Errorf("Expected link to trace-existing-abc, got %s", traceIDs[0])
+	}
+
+	// Verify no link to the primary trace or distant trace
+	for _, id := range traceIDs {
+		if id == "trace-primary-episode" {
+			t.Error("Should not have linked episode to its own primary trace")
+		}
+		if id == "trace-distant-xyz" {
+			t.Error("Should not have linked episode to dissimilar trace")
+		}
+	}
+}
+
+// TestLinkEpisodesToRelatedTracesNoEmbedding verifies episodes without embeddings are skipped.
+func TestLinkEpisodesToRelatedTracesNoEmbedding(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+
+	ep := &graph.Episode{
+		ID:             "ep-no-embedding",
+		Content:        "some content",
+		Author:         "thunder",
+		Channel:        "general",
+		TimestampEvent: time.Now(),
+		Embedding:      nil, // No embedding
+	}
+
+	linked := c.linkEpisodesToRelatedTraces([]*graph.Episode{ep})
+	if linked != 0 {
+		t.Errorf("Expected 0 links for episode without embedding, got %d", linked)
 	}
 }

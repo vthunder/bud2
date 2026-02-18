@@ -176,6 +176,14 @@ func (c *Consolidator) Run() (int, error) {
 
 		totalCreated += created
 
+		// Phase 3c: Link episodes to semantically related existing traces (episode_trace_edges)
+		// This captures cross-references between individual episodes and historical traces
+		// that they're related to but didn't consolidate into.
+		linked := c.linkEpisodesToRelatedTraces(episodes)
+		if linked > 0 {
+			log.Printf("[consolidate] Created %d episode→trace cross-reference edges", linked)
+		}
+
 		// Phase 4: Batch reconsolidation of traces with new episodes
 		tracesNeedingRecon, err := c.graph.GetTracesNeedingReconsolidation()
 		if err != nil {
@@ -666,6 +674,54 @@ func isEphemeralContent(summary string) bool {
 	}
 
 	return false
+}
+
+// linkEpisodesToRelatedTraces creates episode_trace_edges for episodes that are
+// semantically similar to existing traces they don't belong to. This captures
+// cross-references between individual episodes and historical traces.
+// Threshold: 0.80 similarity (lower than SIMILAR_TO edge threshold of 0.85)
+func (c *Consolidator) linkEpisodesToRelatedTraces(episodes []*graph.Episode) int {
+	linked := 0
+	const threshold = 0.80
+
+	for _, ep := range episodes {
+		if len(ep.Embedding) == 0 {
+			continue
+		}
+
+		// Find the primary trace(s) this episode belongs to
+		primaryTraces, err := c.graph.GetEpisodeTraces(ep.ID)
+		if err != nil || len(primaryTraces) == 0 {
+			continue
+		}
+
+		// Build set of traces to exclude (primary trace + _ephemeral)
+		excludeSet := make(map[string]bool)
+		for _, t := range primaryTraces {
+			excludeSet[t] = true
+		}
+		excludeSet["_ephemeral"] = true
+
+		// Find other traces with high similarity to this episode's embedding
+		// Use first primary trace as the "exclude" ID (FindSimilarTracesAboveThreshold only takes one)
+		similar, err := c.graph.FindSimilarTracesAboveThreshold(ep.Embedding, threshold, primaryTraces[0])
+		if err != nil {
+			continue
+		}
+
+		for _, s := range similar {
+			if excludeSet[s.ID] {
+				continue
+			}
+			// Create episode_trace_edge with similarity as confidence
+			desc := "semantically related"
+			if err := c.graph.AddEpisodeTraceEdge(ep.ID, s.ID, desc, s.Similarity); err == nil {
+				linked++
+			}
+		}
+	}
+
+	return linked
 }
 
 // linkToSimilarTraces finds existing traces with high similarity and creates SIMILAR_TO edges.
