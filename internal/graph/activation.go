@@ -2,6 +2,7 @@ package graph
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -454,30 +455,95 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 		return candidates[i].activation > candidates[j].activation
 	})
 
-	// Fetch top traces and apply operational bias
-	operationalPenaltyCount := 0
-	for i := 0; i < len(candidates) && i < limit; i++ {
-		trace, err := g.GetTrace(candidates[i].id)
-		if err == nil && trace != nil {
-			activation := candidates[i].activation
+	// Funnel retrieval Phase 1: take top-50 by activation, load only L8 summaries
+	phase1Limit := 50
+	if phase1Limit > len(candidates) {
+		phase1Limit = len(candidates)
+	}
+	phase1Candidates := candidates[:phase1Limit]
 
-			// Apply penalty to operational traces unless query is about recent work/status
-			if !isStatusQuery && trace.TraceType == TraceTypeOperational {
-				activation *= 0.5
-				operationalPenaltyCount++
+	phase1IDs := make([]string, len(phase1Candidates))
+	for i, c := range phase1Candidates {
+		phase1IDs[i] = c.id
+	}
+	l8Map, err := g.GetTracesBatchAtLevel(phase1IDs, 8)
+	if err != nil {
+		// Fall back to direct full-detail fetch on error
+		l8Map = nil
+	}
+
+	// Phase 1 scoring: combine activation with L8 text relevance to query
+	type phase1scored struct {
+		id         string
+		activation float64
+		score      float64
+	}
+	keywords := extractKeywords(queryText)
+	phase1Scored := make([]phase1scored, 0, len(phase1Candidates))
+	for _, c := range phase1Candidates {
+		textScore := 0.0
+		if l8Map != nil {
+			if tr, ok := l8Map[c.id]; ok && tr != nil {
+				summaryLower := strings.ToLower(tr.Summary)
+				for _, kw := range keywords {
+					if strings.Contains(summaryLower, kw) {
+						textScore += 1.0
+					}
+				}
 			}
-
-			trace.Activation = activation
-			result.Traces = append(result.Traces, trace)
 		}
+		// Combined score: activation dominant, text relevance breaks ties
+		combinedScore := c.activation + textScore*0.1
+		phase1Scored = append(phase1Scored, phase1scored{
+			id:         c.id,
+			activation: c.activation,
+			score:      combinedScore,
+		})
+	}
+	sort.Slice(phase1Scored, func(i, j int) bool {
+		return phase1Scored[i].score > phase1Scored[j].score
+	})
+
+	// Phase 2: load full detail for top-N shortlisted candidates
+	fetchLimit := limit
+	if fetchLimit > len(phase1Scored) {
+		fetchLimit = len(phase1Scored)
+	}
+	shortlisted := phase1Scored[:fetchLimit]
+
+	// Log funnel filter rate metric (skip when limit=0, that's an intentional no-op)
+	if limit > 0 && phase1Limit > 0 {
+		filterRate := float64(phase1Limit-fetchLimit) / float64(phase1Limit)
+		log.Printf("[funnel] phase1=%d shortlisted=%d filter_rate=%.2f query=%q", phase1Limit, fetchLimit, filterRate, queryText)
+	}
+
+	topIDs := make([]string, len(shortlisted))
+	for i, c := range shortlisted {
+		topIDs[i] = c.id
+	}
+	traceMap, err := g.GetTracesBatch(topIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply operational bias and assemble result
+	for _, c := range shortlisted {
+		trace, ok := traceMap[c.id]
+		if !ok || trace == nil {
+			continue
+		}
+		act := c.activation
+		if !isStatusQuery && trace.TraceType == TraceTypeOperational {
+			act *= 0.5
+		}
+		trace.Activation = act
+		result.Traces = append(result.Traces, trace)
 	}
 
 	// Re-sort after applying operational bias (may reorder results)
 	sort.Slice(result.Traces, func(i, j int) bool {
 		return result.Traces[i].Activation > result.Traces[j].Activation
 	})
-
-	// Memory retrieval complete - detailed logging removed for cleaner logs
 
 	return result, nil
 }
@@ -580,30 +646,93 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 		return candidates[i].activation > candidates[j].activation
 	})
 
-	// Fetch top traces and apply operational bias
-	operationalPenaltyCount := 0
-	for i := 0; i < len(candidates) && i < limit; i++ {
-		trace, err := g.GetTrace(candidates[i].id)
-		if err == nil && trace != nil {
-			activation := candidates[i].activation
+	// Funnel retrieval Phase 1: take top-50 by activation, load only L8 summaries
+	phase1LimitCtx := 50
+	if phase1LimitCtx > len(candidates) {
+		phase1LimitCtx = len(candidates)
+	}
+	phase1CandidatesCtx := candidates[:phase1LimitCtx]
 
-			// Apply penalty to operational traces unless query is about recent work/status
-			if !isStatusQuery && trace.TraceType == TraceTypeOperational {
-				activation *= 0.5
-				operationalPenaltyCount++
+	phase1IDsCtx := make([]string, len(phase1CandidatesCtx))
+	for i, c := range phase1CandidatesCtx {
+		phase1IDsCtx[i] = c.id
+	}
+	l8MapCtx, err := g.GetTracesBatchAtLevel(phase1IDsCtx, 8)
+	if err != nil {
+		l8MapCtx = nil
+	}
+
+	// Phase 1 scoring: activation + L8 text relevance
+	type phase1scoredCtx struct {
+		id         string
+		activation float64
+		score      float64
+	}
+	kwCtx := extractKeywords(queryText)
+	phase1ScoredCtx := make([]phase1scoredCtx, 0, len(phase1CandidatesCtx))
+	for _, c := range phase1CandidatesCtx {
+		textScore := 0.0
+		if l8MapCtx != nil {
+			if tr, ok := l8MapCtx[c.id]; ok && tr != nil {
+				summaryLower := strings.ToLower(tr.Summary)
+				for _, kw := range kwCtx {
+					if strings.Contains(summaryLower, kw) {
+						textScore += 1.0
+					}
+				}
 			}
-
-			trace.Activation = activation
-			result.Traces = append(result.Traces, trace)
 		}
+		combinedScore := c.activation + textScore*0.1
+		phase1ScoredCtx = append(phase1ScoredCtx, phase1scoredCtx{
+			id:         c.id,
+			activation: c.activation,
+			score:      combinedScore,
+		})
+	}
+	sort.Slice(phase1ScoredCtx, func(i, j int) bool {
+		return phase1ScoredCtx[i].score > phase1ScoredCtx[j].score
+	})
+
+	// Phase 2: load full detail for shortlisted top-N
+	fetchLimitCtx := limit
+	if fetchLimitCtx > len(phase1ScoredCtx) {
+		fetchLimitCtx = len(phase1ScoredCtx)
+	}
+	shortlistedCtx := phase1ScoredCtx[:fetchLimitCtx]
+
+	// Log funnel filter rate metric (skip when limit=0, that's an intentional no-op)
+	if limit > 0 && phase1LimitCtx > 0 {
+		filterRateCtx := float64(phase1LimitCtx-fetchLimitCtx) / float64(phase1LimitCtx)
+		log.Printf("[funnel/ctx] phase1=%d shortlisted=%d filter_rate=%.2f query=%q", phase1LimitCtx, fetchLimitCtx, filterRateCtx, queryText)
+	}
+
+	topIDsCtx := make([]string, len(shortlistedCtx))
+	for i, c := range shortlistedCtx {
+		topIDsCtx[i] = c.id
+	}
+	traceMap, err := g.GetTracesBatch(topIDsCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply operational bias and assemble result
+	for _, c := range shortlistedCtx {
+		trace, ok := traceMap[c.id]
+		if !ok || trace == nil {
+			continue
+		}
+		act := c.activation
+		if !isStatusQuery && trace.TraceType == TraceTypeOperational {
+			act *= 0.5
+		}
+		trace.Activation = act
+		result.Traces = append(result.Traces, trace)
 	}
 
 	// Re-sort after applying operational bias (may reorder results)
 	sort.Slice(result.Traces, func(i, j int) bool {
 		return result.Traces[i].Activation > result.Traces[j].Activation
 	})
-
-	// Memory retrieval with context complete - detailed logging removed for cleaner logs
 
 	return result, nil
 }

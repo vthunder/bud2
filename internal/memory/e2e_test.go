@@ -47,7 +47,7 @@ func setupE2ETest(t *testing.T) *e2eTestHarness {
 	}
 
 	// Create consolidator with mock LLM
-	cons := consolidate.NewConsolidator(db, &mockLLM{})
+	cons := consolidate.NewConsolidator(db, &mockLLM{}, nil)
 	cons.TimeWindow = 10 * time.Minute // Default grouping window
 
 	return &e2eTestHarness{
@@ -1208,7 +1208,7 @@ func TestE2EMetrics(t *testing.T) {
 	t.Log("")
 
 	// Track starting state
-	startTraces, _, _ := h.db.CountTraces()
+	startTraces, _ := h.db.CountTraces()
 	startEntities, _ := h.db.CountEntities()
 
 	// Run all scenarios and collect metrics
@@ -1221,7 +1221,7 @@ func TestE2EMetrics(t *testing.T) {
 	runMetricScenario9(t, h, metrics)
 
 	// Compute final metrics
-	endTraces, _, _ := h.db.CountTraces()
+	endTraces, _ := h.db.CountTraces()
 	endEntities, _ := h.db.CountEntities()
 
 	metrics.TracesCreated = endTraces - startTraces

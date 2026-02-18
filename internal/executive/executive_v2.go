@@ -210,13 +210,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	// Log consolidated message on separate lines
-	fullSessionID := e.session.SessionID()
 	if author != "" {
 		logging.Info("main", "Message from %s: %s", author, logging.Truncate(item.Content, 40))
 	} else {
 		logging.Info("main", "Processing: %s", logging.Truncate(item.Content, 40))
 	}
-	logging.Info("main", "Handler: Claude session: %s", fullSessionID)
 
 	// Get channel ID for typing indicator
 	channelID := item.ChannelID
@@ -299,6 +297,10 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 
 	startTime := time.Now()
 
+	// Rotate session ID before registering with the tracker so that
+	// StartSession, SendPrompt, and CompleteSession all see the same ID.
+	e.session.PrepareNewSession()
+
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
 	}
@@ -329,9 +331,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	// Log session completion summary with token stats
 	if usage := e.session.LastUsage(); usage != nil {
 		log.Printf("✅ Session complete in %.1fs", duration)
-		log.Printf("   Tokens: input=%d output=%d cache_read=%d cache_create=%d",
+		log.Printf("   Tokens: input=%d output=%d cache_read=%d cache_create=%d turns=%d",
 			usage.InputTokens, usage.OutputTokens,
-			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens,
+			usage.NumTurns)
+		if id := e.session.ClaudeSessionID(); id != "" {
+			log.Printf("   Resume: claude --resume %s", id)
+		}
 	} else {
 		log.Printf("✅ Session complete in %.1fs (no usage data)", duration)
 	}
@@ -434,7 +440,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		memoryLimit = 0
 	}
 
-	if e.graph != nil && e.embedder != nil && item.Content != "" {
+	if e.graph != nil && e.embedder != nil && item.Content != "" && memoryLimit > 0 {
 		var allMemories []focus.MemorySummary
 
 		func() {
@@ -705,6 +711,25 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 				prompt.WriteString("Metadata:\n")
 				prompt.WriteString(strings.Join(metadata, "\n"))
 				prompt.WriteString("\n")
+			}
+
+			// Surface attachments so the executive can view images/files via WebFetch
+			// Note: after JSON round-trip the slice type becomes []interface{}
+			if attsRaw, ok := bundle.CurrentFocus.Data["attachments"].([]interface{}); ok && len(attsRaw) > 0 {
+				prompt.WriteString("Attachments:\n")
+				for _, attRaw := range attsRaw {
+					att, ok := attRaw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					url, _ := att["url"].(string)
+					filename, _ := att["filename"].(string)
+					ct, _ := att["content_type"].(string)
+					if ct == "" {
+						ct = "unknown"
+					}
+					prompt.WriteString(fmt.Sprintf("  - %s (%s): %s\n", filename, ct, url))
+				}
 			}
 		}
 		prompt.WriteString("\n")

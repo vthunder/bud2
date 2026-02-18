@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1314,6 +1316,36 @@ func main() {
 		}
 	}
 
+	// Register /log-tool endpoint for Claude Code PostToolUse hook observability
+	// This receives tool call data from hooks and logs it to activity.jsonl
+	mcpServer.RegisterHTTPHandler("/log-tool", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		toolName, _ := payload["tool_name"].(string)
+		summary := fmt.Sprintf("tool_call: %s", toolName)
+		activityLog.Log(activity.Entry{
+			Type:    activity.TypeAction,
+			Summary: summary,
+			Data:    payload,
+		})
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// Start MCP HTTP server (for Claude Code integration)
 	go func() {
 		addr := "127.0.0.1:" + mcpHTTPPort
@@ -1346,10 +1378,6 @@ func main() {
 	if autonomousEnabled {
 		log.Printf("[main] Autonomous mode enabled (interval: %v)", autonomousInterval)
 		go func() {
-			taskCheckInterval := 1 * time.Minute
-			taskTicker := time.NewTicker(taskCheckInterval)
-			defer taskTicker.Stop()
-
 			periodicTicker := time.NewTicker(autonomousInterval)
 			defer periodicTicker.Stop()
 
@@ -1361,6 +1389,19 @@ func main() {
 					return
 
 				case <-periodicTicker.C:
+					// Skip wake during quiet hours (23:00–07:00 local time) to avoid
+					// wasting resources while the user is sleeping.
+					tz := userTimezone
+					if tz == nil {
+						tz = time.UTC
+					}
+					now := time.Now().In(tz)
+					hour := now.Hour()
+					if hour >= 23 || hour < 7 {
+						log.Printf("[autonomous] Quiet hours (%02d:00 %s) — skipping wake", hour, tz)
+						continue
+					}
+
 					impulse := &types.Impulse{
 						ID:          fmt.Sprintf("impulse-wake-%d", time.Now().UnixNano()),
 						Source:      types.ImpulseSystem,

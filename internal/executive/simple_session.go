@@ -50,6 +50,9 @@ type SimpleSession struct {
 	// Usage from last completed prompt
 	lastUsage *SessionUsage
 
+	// Claude-assigned session ID (from result event) — use this for --resume
+	claudeSessionID string
+
 	// Track if we've received text output for current prompt (to avoid duplicates)
 	currentPromptHasText bool
 
@@ -234,6 +237,18 @@ func (s *SimpleSession) IsFirstPrompt() bool {
 	return len(s.seenItemIDs) == 0 && s.lastBufferSync.IsZero()
 }
 
+// PrepareNewSession rotates the session ID and clears per-prompt state so the
+// caller can record the correct ID with the session tracker before sending.
+// Must be called before StartSession + SendPrompt.
+func (s *SimpleSession) PrepareNewSession() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionID = generateSessionUUID()
+	s.sessionStartTime = time.Now()
+	s.memoryIDMap = make(map[string]string)
+	s.claudeSessionID = ""
+}
+
 // OnToolCall sets the callback for tool calls
 func (s *SimpleSession) OnToolCall(fn func(name string, args map[string]any) (string, error)) {
 	s.onToolCall = fn
@@ -272,12 +287,10 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		"--verbose",
 	}
 
-	// One-shot sessions: always create fresh session, never resume
-	// Generate new session ID and reset state for each prompt to keep them independent
-	s.sessionID = generateSessionUUID()
-	s.sessionStartTime = time.Now()
-	s.memoryIDMap = make(map[string]string) // Reset memory display IDs
-	args = append(args, "--session-id", s.sessionID)
+	// One-shot sessions: session ID must already be rotated by the caller via
+	// PrepareNewSession before StartSession is recorded in the tracker.
+	// The Claude CLI assigns its own session ID (captured later from the result
+	// event) which is what --resume needs; we don't pass --session-id.
 
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
@@ -328,7 +341,22 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		s.processStderr(stderr, &stderrBuf)
 	}()
 
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	const sessionTimeout = 30 * time.Minute
+	select {
+	case <-done:
+		// Session completed normally
+	case <-time.After(sessionTimeout):
+		log.Printf("[simple-session] Session %s timed out after %v, killing subprocess", s.sessionID, sessionTimeout)
+		cmd.Process.Kill()
+		<-done
+		return fmt.Errorf("claude session timed out after %v", sessionTimeout)
+	}
 
 	if err := cmd.Wait(); err != nil {
 		if stderrBuf.Len() > 0 {
@@ -475,12 +503,19 @@ func (s *SimpleSession) LastUsage() *SessionUsage {
 	return s.lastUsage
 }
 
+// ClaudeSessionID returns the Claude-assigned session ID from the last completed
+// prompt. Use this value with `claude --resume` to reload the session.
+func (s *SimpleSession) ClaudeSessionID() string {
+	return s.claudeSessionID
+}
+
 // parseResultUsage extracts token usage from a raw result event JSON line
 func (s *SimpleSession) parseResultUsage(raw []byte) {
 	var result struct {
-		NumTurns      int `json:"num_turns"`
-		DurationMs    int `json:"duration_ms"`
-		DurationApiMs int `json:"duration_api_ms"`
+		SessionID     string `json:"session_id"`
+		NumTurns      int    `json:"num_turns"`
+		DurationMs    int    `json:"duration_ms"`
+		DurationApiMs int    `json:"duration_api_ms"`
 		Usage         struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
@@ -516,6 +551,9 @@ func (s *SimpleSession) parseResultUsage(raw []byte) {
 	}
 
 	s.lastUsage = usage
+	if result.SessionID != "" {
+		s.claudeSessionID = result.SessionID
+	}
 	logging.Debug("simple-session", "Usage: input=%d output=%d cache_read=%d turns=%d duration=%dms",
 		usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.NumTurns, usage.DurationMs)
 }

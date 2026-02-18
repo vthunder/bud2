@@ -409,6 +409,28 @@ func (g *DB) runMigrations() error {
 	// Migration v10: Make traces.summary nullable (deprecated - use trace_summaries instead)
 	// SQLite doesn't support ALTER COLUMN, so we need to recreate the table
 	if version < 10 {
+		// Check if is_core column exists (it was added in v4, but fresh DBs may not have it)
+		hasIsCore := false
+		pragmaRows, _ := g.db.Query("PRAGMA table_info(traces)")
+		if pragmaRows != nil {
+			for pragmaRows.Next() {
+				var cid int
+				var name, colType string
+				var notNull int
+				var dflt interface{}
+				var pk int
+				if err := pragmaRows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err == nil && name == "is_core" {
+					hasIsCore = true
+				}
+			}
+			pragmaRows.Close()
+		}
+
+		insertSQL := `INSERT INTO traces_new SELECT id, summary, topic, activation, strength, is_core, embedding, created_at, last_accessed, labile_until, trace_type FROM traces`
+		if !hasIsCore {
+			insertSQL = `INSERT INTO traces_new SELECT id, summary, topic, activation, strength, FALSE, embedding, created_at, last_accessed, labile_until, trace_type FROM traces`
+		}
+
 		migrations := []string{
 			`CREATE TABLE IF NOT EXISTS traces_new (
 				id TEXT PRIMARY KEY,
@@ -423,7 +445,7 @@ func (g *DB) runMigrations() error {
 				labile_until DATETIME,
 				trace_type TEXT DEFAULT 'knowledge'
 			)`,
-			`INSERT INTO traces_new SELECT id, summary, topic, activation, strength, is_core, embedding, created_at, last_accessed, labile_until, trace_type FROM traces`,
+			insertSQL,
 			`DROP TABLE traces`,
 			`ALTER TABLE traces_new RENAME TO traces`,
 			`CREATE INDEX IF NOT EXISTS idx_traces_activation ON traces(activation)`,
@@ -588,6 +610,14 @@ func (g *DB) runMigrations() error {
 		}
 		g.db.Exec("INSERT INTO schema_version (version) VALUES (15)")
 		log.Println("[graph] Migration to v15 completed successfully")
+	}
+
+	// Migration v16: Add authorization tracking columns to episodes
+	if version < 16 {
+		g.db.Exec(`ALTER TABLE episodes ADD COLUMN authorization_checked INTEGER DEFAULT 0`)
+		g.db.Exec(`ALTER TABLE episodes ADD COLUMN has_authorization INTEGER DEFAULT 0`)
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (16)")
+		log.Println("[graph] Migration to v16 completed successfully")
 	}
 
 	return nil

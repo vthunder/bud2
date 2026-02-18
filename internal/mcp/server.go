@@ -23,6 +23,9 @@ type Server struct {
 	// Context passed to handlers
 	context any
 
+	// Extra HTTP handlers registered via RegisterHTTPHandler
+	extraHandlers map[string]http.HandlerFunc
+
 	reader *bufio.Reader
 	writer io.Writer
 }
@@ -47,11 +50,18 @@ type ToolHandler func(ctx any, args map[string]any) (string, error)
 // NewServer creates a new MCP server
 func NewServer() *Server {
 	return &Server{
-		handlers:    make(map[string]ToolHandler),
-		definitions: []ToolDef{},
-		reader:      bufio.NewReader(os.Stdin),
-		writer:      os.Stdout,
+		handlers:      make(map[string]ToolHandler),
+		definitions:   []ToolDef{},
+		extraHandlers: make(map[string]http.HandlerFunc),
+		reader:        bufio.NewReader(os.Stdin),
+		writer:        os.Stdout,
 	}
+}
+
+// RegisterHTTPHandler registers an extra HTTP handler at the given path.
+// Must be called before RunHTTP.
+func (s *Server) RegisterHTTPHandler(path string, handler http.HandlerFunc) {
+	s.extraHandlers[path] = handler
 }
 
 // SetContext sets the context passed to tool handlers
@@ -331,6 +341,9 @@ func (s *Server) RunHTTP(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHTTP)
 	mux.HandleFunc("/mcp", s.handleHTTP)
+	for path, handler := range s.extraHandlers {
+		mux.HandleFunc(path, handler)
+	}
 
 	log.Printf("[mcp] HTTP server starting on %s", addr)
 	return http.ListenAndServe(addr, mux)
