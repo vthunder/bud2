@@ -999,8 +999,16 @@ func main() {
 					}
 				}
 
-				// Extract entities from Bud's responses (skip entropy filter — responses are always substantive)
-				go func(episodeID, text string) {
+				// Extract entities from Bud's responses — use NER pre-check to skip
+				// low-entity content like meeting reminders ("starts in 13 minutes")
+				nerResult, nerErr := nerClient.Extract(content)
+				skipExtraction := nerErr == nil && !nerResult.HasEntities
+
+				go func(episodeID, text string, skip bool) {
+					if skip {
+						logging.Debug("ingest-bud", "NER: no entities, skipping extraction")
+						return
+					}
 					result, err := entityExtractor.ExtractAll(text)
 					if err != nil {
 						logging.Debug("ingest-bud", "Entity extraction failed: %v", err)
@@ -1109,7 +1117,7 @@ func main() {
 							}
 						}
 					}
-				}(responseID, content)
+				}(responseID, content, skipExtraction)
 			}
 		}
 	}
