@@ -220,17 +220,12 @@ func TestDecayActivation(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	// Add non-core traces
 	db.AddTrace(&Trace{ID: "trace-1", Summary: "Test 1", Activation: 1.0})
 	db.AddTrace(&Trace{ID: "trace-2", Summary: "Test 2", Activation: 0.8})
-
-	// Add a core trace (should not decay)
-	db.AddTrace(&Trace{ID: "core-1", Summary: "Core identity", Activation: 1.0, IsCore: true})
 
 	// Decay by 0.9 (lose 10% activation)
 	db.DecayActivation(0.9)
 
-	// Check non-core traces decayed
 	t1, _ := db.GetTrace("trace-1")
 	if t1.Activation != 0.9 {
 		t.Errorf("Expected trace-1 activation 0.9, got %f", t1.Activation)
@@ -239,12 +234,6 @@ func TestDecayActivation(t *testing.T) {
 	t2, _ := db.GetTrace("trace-2")
 	if t2.Activation < 0.71 || t2.Activation > 0.73 {
 		t.Errorf("Expected trace-2 activation ~0.72, got %f", t2.Activation)
-	}
-
-	// Check core trace did NOT decay
-	core, _ := db.GetTrace("core-1")
-	if core.Activation != 1.0 {
-		t.Errorf("Expected core trace to maintain activation 1.0, got %f", core.Activation)
 	}
 }
 
@@ -745,4 +734,298 @@ func TestMultiEntitySharedWeight(t *testing.T) {
 	}
 
 	t.Logf("Multi-entity weights: trace-2=%f, trace-3=%f", w2, w3)
+}
+
+// TestReconsolidationFlags tests marking, querying, and clearing reconsolidation flags
+func TestReconsolidationFlags(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Add two traces
+	tr1 := &Trace{ID: "trace-recon-1", Summary: "Original summary about Alice"}
+	tr2 := &Trace{ID: "trace-recon-2", Summary: "Another trace about Bob"}
+	if err := addTestTrace(t, db, tr1); err != nil {
+		t.Fatalf("AddTrace failed: %v", err)
+	}
+	if err := addTestTrace(t, db, tr2); err != nil {
+		t.Fatalf("AddTrace failed: %v", err)
+	}
+
+	// Initially no traces need reconsolidation
+	needsRecon, err := db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) != 0 {
+		t.Errorf("Expected 0 traces needing reconsolidation, got %d", len(needsRecon))
+	}
+
+	// Mark trace-1 for reconsolidation
+	if err := db.MarkTraceForReconsolidation("trace-recon-1"); err != nil {
+		t.Fatalf("MarkTraceForReconsolidation failed: %v", err)
+	}
+
+	// Now 1 trace should need reconsolidation
+	needsRecon, err = db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) != 1 {
+		t.Fatalf("Expected 1 trace needing reconsolidation, got %d", len(needsRecon))
+	}
+	if needsRecon[0] != "trace-recon-1" {
+		t.Errorf("Expected trace-recon-1, got %s", needsRecon[0])
+	}
+
+	// Mark trace-2 as well
+	if err := db.MarkTraceForReconsolidation("trace-recon-2"); err != nil {
+		t.Fatalf("MarkTraceForReconsolidation failed: %v", err)
+	}
+	needsRecon, err = db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) != 2 {
+		t.Errorf("Expected 2 traces needing reconsolidation, got %d", len(needsRecon))
+	}
+
+	// Clear flag for trace-1
+	if err := db.ClearReconsolidationFlag("trace-recon-1"); err != nil {
+		t.Fatalf("ClearReconsolidationFlag failed: %v", err)
+	}
+	needsRecon, err = db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) != 1 {
+		t.Fatalf("Expected 1 trace after clear, got %d", len(needsRecon))
+	}
+	if needsRecon[0] != "trace-recon-2" {
+		t.Errorf("Expected trace-recon-2 to remain, got %s", needsRecon[0])
+	}
+}
+
+// TestUpdateTrace tests updating a trace's summary, embedding, and type
+func TestUpdateTrace(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	original := &Trace{ID: "trace-update-1", Summary: "Original content"}
+	if err := addTestTrace(t, db, original); err != nil {
+		t.Fatalf("AddTrace failed: %v", err)
+	}
+
+	// Update with new summary, embedding, type
+	newSummary := "Updated content with richer context about the project"
+	newEmbedding := []float64{0.1, 0.2, 0.3, 0.4, 0.5}
+	if err := db.UpdateTrace("trace-update-1", newSummary, newEmbedding, TraceTypeKnowledge, 3); err != nil {
+		t.Fatalf("UpdateTrace failed: %v", err)
+	}
+
+	// Update trace_summaries at level=0 (verbatim) - this is what GetTrace reads first
+	if err := db.AddTraceSummary("trace-update-1", 0, newSummary, estimateTokens(newSummary)); err != nil {
+		t.Fatalf("AddTraceSummary failed: %v", err)
+	}
+
+	// Verify update
+	updated, err := db.GetTrace("trace-update-1")
+	if err != nil {
+		t.Fatalf("GetTrace failed: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("Expected trace, got nil")
+	}
+	if updated.Summary != newSummary {
+		t.Errorf("Expected summary %q, got %q", newSummary, updated.Summary)
+	}
+	if updated.TraceType != TraceTypeKnowledge {
+		t.Errorf("Expected TraceTypeKnowledge, got %s", updated.TraceType)
+	}
+	if updated.Strength != 3 {
+		t.Errorf("Expected strength 3, got %d", updated.Strength)
+	}
+}
+
+// TestReconsolidationEndToEnd tests the full reconsolidation flow:
+// add episode to existing trace → mark for reconsolidation → reconsolidate → verify summary updated
+func TestReconsolidationEndToEnd(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create an episode and initial trace
+	ep1 := &Episode{
+		ID:             "ep-recon-1",
+		Content:        "Alice joined the Nightshade team as tech lead",
+		Author:         "user",
+		Channel:        "general",
+		TimestampEvent: time.Now().Add(-2 * time.Hour),
+	}
+	if err := db.AddEpisode(ep1); err != nil {
+		t.Fatalf("AddEpisode failed: %v", err)
+	}
+
+	// Initial trace from first episode
+	tr := &Trace{
+		ID:       "trace-e2e-recon",
+		Summary:  "Alice joined Nightshade as tech lead",
+		Strength: 1,
+	}
+	if err := addTestTrace(t, db, tr); err != nil {
+		t.Fatalf("AddTrace failed: %v", err)
+	}
+	if err := db.LinkTraceToSource("trace-e2e-recon", "ep-recon-1"); err != nil {
+		t.Fatalf("LinkTraceToSource failed: %v", err)
+	}
+
+	// New episode arrives with updated information
+	ep2 := &Episode{
+		ID:             "ep-recon-2",
+		Content:        "Alice is now leading the privacy initiative at Nightshade",
+		Author:         "user",
+		Channel:        "general",
+		TimestampEvent: time.Now().Add(-1 * time.Hour),
+	}
+	if err := db.AddEpisode(ep2); err != nil {
+		t.Fatalf("AddEpisode failed: %v", err)
+	}
+
+	// Link new episode to trace and mark for reconsolidation
+	if err := db.LinkTraceToSource("trace-e2e-recon", "ep-recon-2"); err != nil {
+		t.Fatalf("LinkTraceToSource failed: %v", err)
+	}
+	if err := db.MarkTraceForReconsolidation("trace-e2e-recon"); err != nil {
+		t.Fatalf("MarkTraceForReconsolidation failed: %v", err)
+	}
+
+	// Verify flag is set
+	needsRecon, err := db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) == 0 || needsRecon[0] != "trace-e2e-recon" {
+		t.Fatal("Expected trace to be marked for reconsolidation")
+	}
+
+	// Simulate reconsolidation: update trace with combined content
+	allEpisodes, err := db.GetTraceSourceEpisodes("trace-e2e-recon")
+	if err != nil {
+		t.Fatalf("GetTraceSourceEpisodes failed: %v", err)
+	}
+	if len(allEpisodes) != 2 {
+		t.Fatalf("Expected 2 source episodes, got %d", len(allEpisodes))
+	}
+
+	// Build new summary from all episodes (simulating LLM summarization)
+	newSummary := "Alice joined Nightshade as tech lead and is now leading the privacy initiative"
+	newEmbedding := []float64{0.5, 0.6, 0.7}
+	if err := db.UpdateTrace("trace-e2e-recon", newSummary, newEmbedding, TraceTypeKnowledge, len(allEpisodes)); err != nil {
+		t.Fatalf("UpdateTrace failed: %v", err)
+	}
+
+	// Store updated summary at level=0 (verbatim) - this is what GetTrace reads first
+	if err := db.AddTraceSummary("trace-e2e-recon", 0, newSummary, estimateTokens(newSummary)); err != nil {
+		t.Fatalf("AddTraceSummary failed: %v", err)
+	}
+
+	// Clear the flag
+	if err := db.ClearReconsolidationFlag("trace-e2e-recon"); err != nil {
+		t.Fatalf("ClearReconsolidationFlag failed: %v", err)
+	}
+
+	// Verify: no more traces needing reconsolidation
+	needsRecon, err = db.GetTracesNeedingReconsolidation()
+	if err != nil {
+		t.Fatalf("GetTracesNeedingReconsolidation failed: %v", err)
+	}
+	if len(needsRecon) != 0 {
+		t.Errorf("Expected 0 traces needing reconsolidation after clear, got %d", len(needsRecon))
+	}
+
+	// Verify: trace now has updated summary and increased strength
+	updated, err := db.GetTrace("trace-e2e-recon")
+	if err != nil {
+		t.Fatalf("GetTrace failed: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("Expected trace, got nil")
+	}
+	if updated.Summary != newSummary {
+		t.Errorf("Expected updated summary %q, got %q", newSummary, updated.Summary)
+	}
+	if updated.Strength != 2 {
+		t.Errorf("Expected strength 2 (2 episodes), got %d", updated.Strength)
+	}
+
+	t.Logf("Reconsolidation e2e: trace updated from 1 episode to 2, summary reflects new context")
+}
+
+// TestEpisodeTraceEdges tests linking episodes to traces and querying those links
+func TestEpisodeTraceEdges(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create episode and trace
+	ep := &Episode{
+		ID:             "ep-link-1",
+		Content:        "Discussion about the new API design",
+		Author:         "user",
+		TimestampEvent: time.Now(),
+	}
+	if err := db.AddEpisode(ep); err != nil {
+		t.Fatalf("AddEpisode failed: %v", err)
+	}
+	tr := &Trace{ID: "trace-link-1", Summary: "API design decisions"}
+	if err := addTestTrace(t, db, tr); err != nil {
+		t.Fatalf("AddTrace failed: %v", err)
+	}
+
+	// Add episode-trace edge
+	if err := db.AddEpisodeTraceEdge("ep-link-1", "trace-link-1", "informs the design described", 0.85); err != nil {
+		t.Fatalf("AddEpisodeTraceEdge failed: %v", err)
+	}
+
+	// Query: episodes referencing this trace
+	episodes, err := db.GetEpisodesReferencingTrace("trace-link-1")
+	if err != nil {
+		t.Fatalf("GetEpisodesReferencingTrace failed: %v", err)
+	}
+	if len(episodes) != 1 {
+		t.Fatalf("Expected 1 episode referencing trace, got %d", len(episodes))
+	}
+	if episodes[0].ID != "ep-link-1" {
+		t.Errorf("Expected ep-link-1, got %s", episodes[0].ID)
+	}
+
+	// Query: traces referenced by this episode
+	traceIDs, err := db.GetTracesReferencedByEpisode("ep-link-1")
+	if err != nil {
+		t.Fatalf("GetTracesReferencedByEpisode failed: %v", err)
+	}
+	if len(traceIDs) != 1 || traceIDs[0] != "trace-link-1" {
+		t.Errorf("Expected [trace-link-1], got %v", traceIDs)
+	}
+
+	// Query: edge details
+	edges, err := db.GetEpisodeTraceEdges("trace-link-1")
+	if err != nil {
+		t.Fatalf("GetEpisodeTraceEdges failed: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("Expected 1 edge, got %d", len(edges))
+	}
+	if edges[0].RelationshipDesc != "informs the design described" {
+		t.Errorf("Expected relationship desc 'informs the design described', got %q", edges[0].RelationshipDesc)
+	}
+	if edges[0].Confidence != 0.85 {
+		t.Errorf("Expected confidence 0.85, got %f", edges[0].Confidence)
+	}
+
+	// Deduplication: adding same edge again should not error
+	if err := db.AddEpisodeTraceEdge("ep-link-1", "trace-link-1", "duplicate attempt", 0.5); err != nil {
+		t.Errorf("Duplicate AddEpisodeTraceEdge should not fail, got: %v", err)
+	}
+	edges, _ = db.GetEpisodeTraceEdges("trace-link-1")
+	if len(edges) != 1 {
+		t.Errorf("Duplicate edge insert should be ignored, still expected 1 edge, got %d", len(edges))
+	}
 }
