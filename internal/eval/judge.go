@@ -3,6 +3,7 @@ package eval
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/graph"
+	"github.com/zeebo/blake3"
 )
 
 // Judge evaluates memory relevance independently of self-eval.
@@ -119,6 +121,30 @@ type executiveWakeEntry struct {
 	Data      map[string]interface{} `json:"data"`
 }
 
+// displayIDToTraceID computes a BLAKE3-based display ID from a trace ID,
+// matching the GetOrAssignMemoryID() logic in simple_session.go.
+func displayIDToTraceID(traceID string) string {
+	hash := blake3.Sum256([]byte(traceID))
+	shortHash := hex.EncodeToString(hash[:])[:5]
+	return "tr_" + shortHash
+}
+
+// buildDisplayIDLookup builds a map from display ID (tr_xxxxx) to trace ID for all
+// traces currently in the DB. This lets us resolve self-eval entries even when the
+// in-memory memoryIDMap was cleared before signal_done was processed.
+func (j *Judge) buildDisplayIDLookup() (map[string]string, error) {
+	allTraces, err := j.graphDB.GetAllTraces()
+	if err != nil {
+		return nil, err
+	}
+	lookup := make(map[string]string, len(allTraces))
+	for _, t := range allTraces {
+		displayID := displayIDToTraceID(t.ID)
+		lookup[displayID] = t.ID
+	}
+	return lookup, nil
+}
+
 // EvaluateSample runs batch evaluation on recent memory retrievals.
 func (j *Judge) EvaluateSample(activityPath string, sampleSize int) (*SampleReport, error) {
 	// Load recent memory_eval entries
@@ -131,6 +157,12 @@ func (j *Judge) EvaluateSample(activityPath string, sampleSize int) (*SampleRepo
 	wakes, err := j.loadExecutiveWakes(activityPath)
 	if err != nil {
 		return nil, fmt.Errorf("load executive wakes: %w", err)
+	}
+
+	// Build display ID → trace ID lookup for resolving tr_xxxx short IDs
+	displayLookup, err := j.buildDisplayIDLookup()
+	if err != nil {
+		return nil, fmt.Errorf("build display ID lookup: %w", err)
 	}
 
 	var results []JudgeResult
@@ -148,8 +180,31 @@ func (j *Judge) EvaluateSample(activityPath string, sampleSize int) (*SampleRepo
 			continue // skip if we can't find context
 		}
 
-		// Process each trace rating in this eval
-		for traceID, selfRating := range eval.Data.Resolved {
+		// Build resolved map: prefer pre-resolved trace IDs, fall back to display ID lookup
+		resolved := make(map[string]int)
+		for traceID, rating := range eval.Data.Resolved {
+			resolved[traceID] = rating
+		}
+		// Also resolve any display IDs from the eval field that weren't resolved
+		for displayID, ratingRaw := range eval.Data.Eval {
+			var rating int
+			switch v := ratingRaw.(type) {
+			case float64:
+				rating = int(v)
+			case int:
+				rating = v
+			default:
+				continue
+			}
+			if traceID, ok := displayLookup[displayID]; ok {
+				if _, alreadyResolved := resolved[traceID]; !alreadyResolved {
+					resolved[traceID] = rating
+				}
+			}
+		}
+
+		// Process each resolved trace rating
+		for traceID, selfRating := range resolved {
 			if len(results) >= sampleSize {
 				break
 			}
@@ -235,7 +290,8 @@ func (j *Judge) loadMemoryEvals(path string, limit int) ([]memoryEvalEntry, erro
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
-		if entry.Type == "memory_eval" && entry.Data.Resolved != nil {
+		// Accept entries with either resolved trace IDs or display IDs (tr_xxxxx)
+		if entry.Type == "memory_eval" && (len(entry.Data.Resolved) > 0 || len(entry.Data.Eval) > 0) {
 			entries = append(entries, entry)
 		}
 	}
