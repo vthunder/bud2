@@ -17,6 +17,7 @@
 .idea/
 .vscode/
 *.swp
+.claude/
 /bud
 
 repomix.md
