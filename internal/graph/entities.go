@@ -148,12 +148,12 @@ func (g *DB) GetEntity(id string) (*Entity, error) {
 	return e, nil
 }
 
-// FindEntityByName finds an entity by canonical name or alias
+// FindEntityByName finds an entity by canonical name or alias (case-insensitive)
 func (g *DB) FindEntityByName(name string) (*Entity, error) {
-	// Try canonical name first
+	// Try canonical name first (case-insensitive)
 	row := g.db.QueryRow(`
 		SELECT id, name, type, salience, embedding, created_at, updated_at
-		FROM entities WHERE name = ?
+		FROM entities WHERE LOWER(name) = LOWER(?)
 	`, name)
 
 	e, err := scanEntity(row)
@@ -162,10 +162,10 @@ func (g *DB) FindEntityByName(name string) (*Entity, error) {
 		return e, nil
 	}
 
-	// Try alias
+	// Try alias (case-insensitive)
 	var entityID string
 	err = g.db.QueryRow(`
-		SELECT entity_id FROM entity_aliases WHERE alias = ?
+		SELECT entity_id FROM entity_aliases WHERE LOWER(alias) = LOWER(?)
 	`, name).Scan(&entityID)
 
 	if err != nil {
