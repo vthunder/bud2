@@ -211,19 +211,40 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 	return g.SpreadActivation(seedIDs, iterations)
 }
 
-// FindTracesWithKeywords performs lexical/keyword matching (BM25-style)
-// Returns traces that contain query keywords in their summary
+// FindTracesWithKeywords performs lexical/keyword matching using FTS5 BM25 ranking.
+// Falls back to a Go-side full scan if the FTS5 index is unavailable.
+// Returns up to topK trace IDs ordered by relevance.
 func (g *DB) FindTracesWithKeywords(query string, topK int) ([]string, error) {
-	// Extract keywords (simple: lowercase, split, filter short words)
 	keywords := extractKeywords(query)
 	if len(keywords) == 0 {
 		return nil, nil
 	}
 
-	// Build SQL LIKE query for each keyword
-	// This is a simple approximation of BM25 - matches any keyword
-	// Use L32 pyramid summary from trace_summaries, fall back to empty string if not available
+	// Try FTS5 path first: query trace_fts with OR-joined keywords, ranked by BM25.
+	ftsQuery := strings.Join(keywords, " OR ")
 	rows, err := g.db.Query(`
+		SELECT trace_id
+		FROM trace_fts
+		WHERE summary MATCH ?
+		ORDER BY rank
+		LIMIT ?
+	`, ftsQuery, topK)
+	if err == nil {
+		defer rows.Close()
+		var result []string
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				result = append(result, id)
+			}
+		}
+		if rows.Err() == nil {
+			return result, nil
+		}
+	}
+
+	// Fallback: full table scan with Go-side keyword counting (O(n) but always works).
+	scanRows, err := g.db.Query(`
 		SELECT t.id, COALESCE(ts.summary, '')
 		FROM traces t
 		LEFT JOIN trace_summaries ts ON t.id = ts.trace_id AND ts.compression_level = 32
@@ -231,20 +252,19 @@ func (g *DB) FindTracesWithKeywords(query string, topK int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer scanRows.Close()
 
 	type scored struct {
 		id    string
-		score int // number of keyword matches
+		score int
 	}
 
 	var candidates []scored
-	for rows.Next() {
+	for scanRows.Next() {
 		var id, summary string
-		if err := rows.Scan(&id, &summary); err != nil {
+		if err := scanRows.Scan(&id, &summary); err != nil {
 			continue
 		}
-
 		summaryLower := strings.ToLower(summary)
 		matchCount := 0
 		for _, kw := range keywords {
@@ -252,23 +272,19 @@ func (g *DB) FindTracesWithKeywords(query string, topK int) ([]string, error) {
 				matchCount++
 			}
 		}
-
 		if matchCount > 0 {
 			candidates = append(candidates, scored{id: id, score: matchCount})
 		}
 	}
 
-	// Sort by match count descending
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
 
-	// Return top K
 	result := make([]string, 0, topK)
 	for i := 0; i < len(candidates) && i < topK; i++ {
 		result = append(result, candidates[i].id)
 	}
-
 	return result, nil
 }
 

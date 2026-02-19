@@ -38,7 +38,7 @@ Additional substages:
 - **Ingest**:
   - `ingest.episode_store` - Episode storage
   - `ingest.ner_check` - NER pre-check
-  - `ingest.entity_extract` - Ollama entity extraction
+  - `ingest.entity_extract` - Ollama entity extraction (**async background goroutine** — does NOT block ingest or user-visible latency)
   - `ingest.summary_gen` - Episode summary generation
 - **Percept**:
   - `percept.reflex_check` - Reflex processing
@@ -103,7 +103,7 @@ Typical timings for a user message with entity extraction:
 |-------|------------------|
 | `ingest.episode_store` | 10-20ms |
 | `ingest.ner_check` | 5-15ms |
-| `ingest.entity_extract` | 500-800ms (Ollama) |
+| `ingest.entity_extract` | 12-16s avg (Ollama, **async** — not user-visible) |
 | `ingest.summary_gen` | 150-300ms (Ollama) |
 | `percept.reflex_check` | 30-50ms |
 | `context.conversation_load` | 10-20ms |
@@ -132,5 +132,5 @@ Typical timings for a user message with entity extraction:
 
 ### Missing stages
 - Some stages only run conditionally:
-  - `ingest.entity_extract` skipped if NER finds no entities
+  - `ingest.entity_extract` skipped if NER finds no entities; runs async so high duration here is **not a latency concern**
   - `context.memory_retrieval` skipped for autonomous wakes

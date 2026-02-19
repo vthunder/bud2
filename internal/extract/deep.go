@@ -79,7 +79,8 @@ ENTITY TYPES (use these exact labels):
 - FAC: Buildings, hospitals, airports (UCSF Medical Center, SFO)
 - DATE: Dates, years, relative dates (2015, next Tuesday, March 15th, Q1)
 - TIME: Times of day (2pm, 6am, noon)
-- PRODUCT: Named commercial products only (iPhone, Tesla Model 3, Slack). NOT generic terms, code concepts, or internal project names.
+- PRODUCT: Named consumer products only (iPhone, Tesla Model 3, Nike shoes). NOT software or tech tools.
+- TECHNOLOGY: Software, frameworks, programming languages, AI models, developer tools (Go, SQLite, React, Ollama, Claude, spaCy, GitHub Actions, Slack, Things 3)
 - MONEY: Monetary values ($50k, $1 million)
 - EMAIL: Email addresses
 - PET: Named pets (cat named Pixel, dog named Max)
@@ -686,6 +687,8 @@ func parseEntityType(s string) graph.EntityType {
 		return graph.EntityEmail
 	case "PET", "ANIMAL":
 		return graph.EntityPet
+	case "TECHNOLOGY", "TECH", "FRAMEWORK", "LIBRARY":
+		return graph.EntityTechnology
 	default:
 		return graph.EntityOther
 	}

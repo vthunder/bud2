@@ -409,6 +409,26 @@ func main() {
 	tools.RegisterAll(mcpServer, mcpDeps)
 	log.Printf("[main] MCP server initialized with %d tools", mcpServer.ToolCount())
 
+	// Start stdio MCP proxy servers from .mcp.json and register their tools
+	// This makes things-mcp (and any other stdio servers) available to both
+	// Claude sessions (via HTTP) and the reflex engine (via call_tool action).
+	mcpConfigPath := filepath.Join(statePath, ".mcp.json")
+	if proxyClients, proxyErr := mcp.StartProxiesFromConfig(mcpConfigPath, mcpServer); proxyErr != nil {
+		log.Printf("[main] Warning: failed to start MCP proxies: %v", proxyErr)
+	} else if len(proxyClients) > 0 {
+		log.Printf("[main] Started %d MCP proxy server(s), total tools: %d", len(proxyClients), mcpServer.ToolCount())
+		defer func() {
+			for _, p := range proxyClients {
+				p.Close()
+			}
+		}()
+	}
+
+	// Wire the MCP server as the tool caller for the reflex engine
+	// This lets call_tool pipeline actions invoke any registered MCP tool
+	reflexEngine.SetToolCaller(mcpServer)
+	log.Printf("[main] Reflex engine wired to MCP tool dispatcher")
+
 	// Initialize reflex log for short-term context
 	reflexLog := reflex.NewLog(20)
 
@@ -643,7 +663,7 @@ func main() {
 		msgContent := msg.Content
 		capturedContexts := entityContexts
 		go func() {
-			defer profiling.Get().Start(episodeID, "ingest.entity_extract")()
+			defer profiling.Get().Start(episodeID, "ingest.entity_extract")() // NOTE: async background goroutine — duration does NOT block ingest or affect user-visible latency
 
 			result, err := entityExtractor.ExtractAllWithContext(msgContent, capturedContexts)
 			if err != nil {

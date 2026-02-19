@@ -620,6 +620,56 @@ func (g *DB) runMigrations() error {
 		log.Println("[graph] Migration to v16 completed successfully")
 	}
 
+	// Migration v17: Add FTS5 virtual table for trace keyword search.
+	// Indexes level-32 summaries from trace_summaries for fast BM25 MATCH queries,
+	// replacing the Go-side full table scan in FindTracesWithKeywords.
+	if version < 17 {
+		log.Println("[graph] Migrating to schema v17: FTS5 index for trace keyword search")
+		migrations := []string{
+			// Create FTS5 table with content= pointing to trace_summaries
+			`CREATE VIRTUAL TABLE IF NOT EXISTS trace_fts USING fts5(
+				trace_id UNINDEXED,
+				summary,
+				content=trace_summaries,
+				content_rowid=id
+			)`,
+			// Populate FTS5 from existing level-32 summaries
+			`INSERT INTO trace_fts(rowid, trace_id, summary)
+				SELECT id, trace_id, summary FROM trace_summaries WHERE compression_level = 32`,
+			// Trigger: keep FTS5 in sync when a summary is inserted
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_ai
+				AFTER INSERT ON trace_summaries
+				WHEN NEW.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(rowid, trace_id, summary) VALUES (NEW.id, NEW.trace_id, NEW.summary);
+				END`,
+			// Trigger: keep FTS5 in sync when a summary is updated
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_au
+				AFTER UPDATE ON trace_summaries
+				WHEN NEW.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(trace_fts, rowid, trace_id, summary) VALUES ('delete', OLD.id, OLD.trace_id, OLD.summary);
+					INSERT INTO trace_fts(rowid, trace_id, summary) VALUES (NEW.id, NEW.trace_id, NEW.summary);
+				END`,
+			// Trigger: keep FTS5 in sync when a summary is deleted
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_ad
+				AFTER DELETE ON trace_summaries
+				WHEN OLD.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(trace_fts, rowid, trace_id, summary) VALUES ('delete', OLD.id, OLD.trace_id, OLD.summary);
+				END`,
+		}
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				// Non-fatal: FTS5 may not be compiled in; fall back gracefully
+				log.Printf("[graph] Migration v17 warning (FTS5 may be unavailable): %v", err)
+				break
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (17)")
+		log.Println("[graph] Migration to v17 completed successfully")
+	}
+
 	return nil
 }
 

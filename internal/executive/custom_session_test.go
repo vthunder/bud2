@@ -2,11 +2,16 @@ package executive
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
 
 func TestRunCustomSession(t *testing.T) {
+	if os.Getenv("CLAUDECODE") != "" {
+		t.Skip("skipping: cannot launch nested Claude Code session")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

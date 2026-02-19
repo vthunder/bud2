@@ -9,6 +9,7 @@ import (
 type Reflex struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
+	Callable    bool     `yaml:"callable,omitempty"` // if true, only invokable via invoke_reflex (not auto-matched)
 	Trigger     Trigger  `yaml:"trigger"`
 	Pipeline    Pipeline `yaml:"pipeline"`
 	Level       int      `yaml:"level"`    // 0=pattern, 1=heuristic, 2=ollama, 3=executive
@@ -57,6 +58,11 @@ type PipelineStep struct {
 
 // Match checks if this reflex matches a percept
 func (r *Reflex) Match(source, typ, content string) MatchResult {
+	// Callable reflexes are only invokable via invoke_reflex, not auto-matched
+	if r.Callable {
+		return MatchResult{Matched: false}
+	}
+
 	// Check source filter
 	if r.Trigger.Source != "" && r.Trigger.Source != source {
 		return MatchResult{Matched: false}
@@ -120,6 +126,7 @@ type ReflexResult struct {
 	ReflexName string
 	Success    bool
 	Stopped    bool // true if pipeline stopped early via gate
+	Escalate   bool // true if pipeline wants to escalate to executive
 	Output     map[string]any
 	Error      error
 	Duration   time.Duration

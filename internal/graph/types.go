@@ -78,8 +78,9 @@ const (
 	EntityOrdinal  EntityType = "ORDINAL"  // "first", "second", etc.
 
 	// Custom types (extended beyond OntoNotes)
-	EntityEmail EntityType = "EMAIL" // Email addresses
-	EntityPet   EntityType = "PET"   // Pet names
+	EntityEmail      EntityType = "EMAIL"      // Email addresses
+	EntityPet        EntityType = "PET"        // Pet names
+	EntityTechnology EntityType = "TECHNOLOGY" // Software, frameworks, AI models, developer tools
 
 	// Fallback
 	EntityOther EntityType = "OTHER" // Unknown or unclassified

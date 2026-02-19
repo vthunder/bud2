@@ -81,6 +81,15 @@ func (s *Server) ToolCount() int {
 	return len(s.definitions)
 }
 
+// Call invokes a registered tool handler directly (for use by the reflex engine without HTTP)
+func (s *Server) Call(toolName string, args map[string]any) (string, error) {
+	handler, ok := s.handlers[toolName]
+	if !ok {
+		return "", fmt.Errorf("tool not found: %s", toolName)
+	}
+	return handler(s.context, args)
+}
+
 // JSON-RPC types
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`

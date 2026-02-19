@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/itchyny/gojq"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,11 @@ import (
 // AttentionChecker is the interface for checking attention state
 type AttentionChecker interface {
 	IsAttending(domain string) bool
+}
+
+// ToolCaller is the interface for calling MCP tools from reflex pipelines
+type ToolCaller interface {
+	Call(toolName string, args map[string]any) (string, error)
 }
 
 // Engine manages and executes reflexes
@@ -55,6 +61,9 @@ type Engine struct {
 
 	// Calendar client for calendar_* actions
 	calendarClient *calendar.Client
+
+	// Tool caller for call_tool action (bridges to MCP dispatcher)
+	toolCaller ToolCaller
 }
 
 // NewEngine creates a new reflex engine
@@ -66,6 +75,10 @@ func NewEngine(statePath string) *Engine {
 		fileModTime: make(map[string]time.Time),
 	}
 	e.createGTDActions()
+	e.createCallToolAction()
+	e.createGTDThingsActions()
+	e.createInvokeReflexAction()
+	e.createJSONQueryAction()
 	return e
 }
 
@@ -107,6 +120,11 @@ func (e *Engine) SetCalendarClient(client *calendar.Client) {
 	if client != nil {
 		e.createCalendarActions()
 	}
+}
+
+// SetToolCaller sets the tool caller for call_tool pipeline actions
+func (e *Engine) SetToolCaller(tc ToolCaller) {
+	e.toolCaller = tc
 }
 
 // SetAttention sets the attention checker for proactive mode
@@ -343,6 +361,10 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 	for k, v := range perceptData {
 		vars[k] = v
 	}
+	// Initialize implicit pipe variable (steps auto-chain through $_)
+	if _, exists := vars["_"]; !exists {
+		vars["_"] = nil
+	}
 
 	// Execute pipeline steps
 	for i, step := range reflex.Pipeline {
@@ -410,6 +432,16 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 					Duration:   time.Since(start),
 				}, nil
 			}
+			// Check if this is an escalate signal
+			if errors.Is(err, ErrEscalate) {
+				return &ReflexResult{
+					ReflexName: reflex.Name,
+					Success:    false,
+					Escalate:   true,
+					Output:     vars,
+					Duration:   time.Since(start),
+				}, nil
+			}
 			return &ReflexResult{
 				ReflexName: reflex.Name,
 				Success:    false,
@@ -418,9 +450,11 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 			}, nil
 		}
 
-		// Store output in variables
+		// Store output: named var if specified, otherwise implicit pipe ($_)
 		if step.Output != "" {
 			vars[step.Output] = result
+		} else {
+			vars["_"] = result
 		}
 	}
 
@@ -610,9 +644,10 @@ Message: %s`, intentList, content)
 
 	// Call Ollama API
 	reqBody := map[string]any{
-		"model":  model,
-		"prompt": prompt,
-		"stream": false,
+		"model":      model,
+		"prompt":     prompt,
+		"stream":     false,
+		"keep_alive": "30m",
 	}
 
 	jsonBody, _ := json.Marshal(reqBody)
@@ -623,7 +658,7 @@ Message: %s`, intentList, content)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("ollama request failed: %w", err)
@@ -750,6 +785,11 @@ func (e *Engine) Process(ctx context.Context, source, typ, content string, data 
 			continue
 		}
 		results = append(results, result)
+
+		if result.Escalate {
+			log.Printf("[reflex] Escalating to executive: %s", reflex.Name)
+			return false, results
+		}
 
 		if result.Success {
 			log.Printf("[reflex] Fired: %s (%.2fms)", reflex.Name, result.Duration.Seconds()*1000)
@@ -1136,6 +1176,257 @@ func filterOpenTasks(tasks []gtd.Task) []gtd.Task {
 		}
 	}
 	return result
+}
+
+// createCallToolAction registers the generic call_tool action that routes to the MCP dispatcher
+func (e *Engine) createCallToolAction() {
+	e.actions.Register("call_tool", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.toolCaller == nil {
+			return nil, fmt.Errorf("tool caller not configured (SetToolCaller not called)")
+		}
+
+		toolName := resolveVar(params, vars, "tool")
+		if toolName == "" {
+			return nil, fmt.Errorf("tool name is required (set 'tool' param)")
+		}
+
+		// Build tool args from all params except "tool" itself
+		args := make(map[string]any)
+		for k, v := range params {
+			if k == "tool" {
+				continue
+			}
+			// Resolve variable references ($varname → value from vars)
+			if str, ok := v.(string); ok && strings.HasPrefix(str, "$") {
+				varName := str[1:]
+				if val, ok := vars[varName]; ok {
+					args[k] = val
+					continue
+				}
+			}
+			// Render template strings ({{.varname}} syntax)
+			if str, ok := v.(string); ok && strings.Contains(str, "{{") {
+				rendered, err := renderTemplate(str, vars)
+				if err == nil {
+					args[k] = rendered
+					continue
+				}
+			}
+			args[k] = v
+		}
+
+		result, err := e.toolCaller.Call(toolName, args)
+		if err != nil {
+			return nil, fmt.Errorf("tool %s failed: %w", toolName, err)
+		}
+		return result, nil
+	}))
+}
+
+// createGTDThingsActions registers gtd_dispatch_things, which handles GTD intents
+// via Things 3 using the MCP tool caller. This replaces the old gtd_dispatch action
+// which used the JSON-file GTD store.
+func (e *Engine) createGTDThingsActions() {
+	e.actions.Register("gtd_dispatch_things", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.toolCaller == nil {
+			return nil, fmt.Errorf("tool caller not configured — Things MCP not available")
+		}
+
+		intent, _ := vars["intent"].(string)
+		content, _ := vars["content"].(string)
+
+		switch intent {
+		case "gtd_show_today":
+			result, err := e.toolCaller.Call("things_get_today", map[string]any{})
+			if err != nil {
+				return nil, fmt.Errorf("things_get_today failed: %w", err)
+			}
+			return result, nil
+
+		case "gtd_show_inbox":
+			result, err := e.toolCaller.Call("things_get_list", map[string]any{
+				"list": "inbox",
+			})
+			if err != nil {
+				return nil, fmt.Errorf("things_get_list(inbox) failed: %w", err)
+			}
+			return result, nil
+
+		case "gtd_add_inbox":
+			// Extract what to add from content
+			item := content
+			for _, prefix := range []string{"add ", "capture ", "remember to ", "remember "} {
+				if idx := strings.Index(strings.ToLower(item), prefix); idx == 0 {
+					item = item[len(prefix):]
+					break
+				}
+			}
+			item = strings.TrimSpace(item)
+			if item == "" {
+				return nil, fmt.Errorf("couldn't extract item to add from: %q", content)
+			}
+
+			result, err := e.toolCaller.Call("things_add_todo", map[string]any{
+				"title": item,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("things_add_todo failed: %w", err)
+			}
+			if result == "" {
+				return fmt.Sprintf("Added '%s' to inbox", item), nil
+			}
+			return result, nil
+
+		default:
+			return nil, fmt.Errorf("unknown GTD intent: %q", intent)
+		}
+	}))
+}
+
+// createInvokeReflexAction registers the invoke_reflex action, which lets a pipeline
+// call a named sub-reflex by name (supporting template interpolation like "gtd-{{.intent}}").
+// The on_missing param controls behavior when the named reflex doesn't exist:
+//   - "fail" (default): return an error
+//   - "continue": pass through current $_ and keep going
+//   - "escalate": signal the engine to escalate to the executive
+func (e *Engine) createInvokeReflexAction() {
+	e.actions.Register("invoke_reflex", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		nameTemplate, _ := params["name"].(string)
+		if nameTemplate == "" {
+			return nil, fmt.Errorf("invoke_reflex: name is required")
+		}
+
+		// Render the name (supports "gtd-{{.intent}}" style templates)
+		name, err := renderTemplate(nameTemplate, vars)
+		if err != nil {
+			return nil, fmt.Errorf("invoke_reflex: name template failed: %w", err)
+		}
+
+		onMissing, _ := params["on_missing"].(string)
+		if onMissing == "" {
+			onMissing = "fail"
+		}
+
+		// Prevent infinite recursion
+		depth := 0
+		if d, ok := vars["__depth"].(int); ok {
+			depth = d
+		}
+		if depth >= 5 {
+			return nil, fmt.Errorf("invoke_reflex: max depth (5) exceeded at %q", name)
+		}
+
+		// Look up the target reflex
+		e.mu.RLock()
+		target, ok := e.reflexes[name]
+		e.mu.RUnlock()
+
+		if !ok {
+			switch onMissing {
+			case "escalate":
+				return nil, ErrEscalate
+			case "continue":
+				return vars["_"], nil // pass through current $_
+			default: // "fail"
+				return nil, fmt.Errorf("invoke_reflex: reflex %q not found", name)
+			}
+		}
+
+		// Build sub-vars, inheriting current context with incremented depth
+		subData := make(map[string]any, len(vars)+1)
+		for k, v := range vars {
+			subData[k] = v
+		}
+		subData["__depth"] = depth + 1
+
+		// Execute the sub-reflex pipeline
+		result, _ := e.Execute(ctx, target, nil, subData)
+		if result == nil {
+			return nil, fmt.Errorf("invoke_reflex: sub-reflex %q returned nil result", name)
+		}
+		if result.Escalate {
+			return nil, ErrEscalate
+		}
+		if !result.Success {
+			if result.Error != nil {
+				return nil, fmt.Errorf("invoke_reflex: sub-reflex %q failed: %w", name, result.Error)
+			}
+			return nil, fmt.Errorf("invoke_reflex: sub-reflex %q failed", name)
+		}
+
+		// Return the sub-reflex's implicit output ($_)
+		return result.Output["_"], nil
+	}))
+}
+
+// createJSONQueryAction registers the json_query action, which applies a gojq query
+// to the current implicit pipe value ($_). The query param is a JQ expression string.
+// If the input is a JSON string, it is parsed first; maps/slices pass through directly.
+// The output is the query result: if it produces a single string it stays a string,
+// otherwise it is re-encoded to JSON.
+func (e *Engine) createJSONQueryAction() {
+	e.actions.Register("json_query", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		queryStr, _ := params["query"].(string)
+		if queryStr == "" {
+			return nil, fmt.Errorf("json_query: query is required")
+		}
+
+		// Resolve input: use named input var or fall back to implicit $_
+		var input any
+		if inputVar, _ := params["input"].(string); inputVar != "" {
+			input = vars[inputVar]
+		} else {
+			input = vars["_"]
+		}
+
+		// If input is a string, try to parse it as JSON
+		if s, ok := input.(string); ok {
+			var parsed any
+			if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+				// Not JSON — treat as a plain string value
+				parsed = s
+			}
+			input = parsed
+		}
+
+		// Compile and run the jq query
+		q, err := gojq.Parse(queryStr)
+		if err != nil {
+			return nil, fmt.Errorf("json_query: invalid query %q: %w", queryStr, err)
+		}
+		code, err := gojq.Compile(q)
+		if err != nil {
+			return nil, fmt.Errorf("json_query: compile failed: %w", err)
+		}
+
+		iter := code.Run(input)
+		var results []any
+		for {
+			v, ok := iter.Next()
+			if !ok {
+				break
+			}
+			if err, ok := v.(error); ok {
+				return nil, fmt.Errorf("json_query: runtime error: %w", err)
+			}
+			results = append(results, v)
+		}
+
+		// Return single value directly, multiple values as JSON array
+		switch len(results) {
+		case 0:
+			return "", nil
+		case 1:
+			if s, ok := results[0].(string); ok {
+				return s, nil
+			}
+			b, _ := json.Marshal(results[0])
+			return string(b), nil
+		default:
+			b, _ := json.Marshal(results)
+			return string(b), nil
+		}
+	}))
 }
 
 // formatTaskList formats tasks into numbered lines, truncating to fit within maxLen

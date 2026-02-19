@@ -23,6 +23,13 @@ app = FastAPI()
 _nlp = None
 _model_name = None
 
+# Entity types that warrant expensive Ollama extraction.
+# Excludes noise types: ORDINAL, CARDINAL, MONEY, TIME, DATE, QUANTITY, PERCENT, LANGUAGE.
+HIGH_VALUE_TYPES = frozenset({
+    "PERSON", "ORG", "GPE", "LOC", "FAC",
+    "PRODUCT", "WORK_OF_ART", "NORP", "EVENT",
+})
+
 
 class ExtractRequest(BaseModel):
     text: str
@@ -48,6 +55,7 @@ def extract(req: ExtractRequest) -> ExtractResponse:
     entities = [
         Entity(text=ent.text, label=ent.label_, start=ent.start_char, end=ent.end_char)
         for ent in doc.ents
+        if ent.label_ in HIGH_VALUE_TYPES
     ]
     duration = (time.monotonic() - start) * 1000
     if entities:

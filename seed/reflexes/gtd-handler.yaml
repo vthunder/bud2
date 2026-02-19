@@ -1,30 +1,26 @@
 name: gtd-handler
-description: Handle GTD queries via /gtd slash command
+description: Handle GTD queries via /gtd slash command using Things 3 via MCP
 priority: 10
 trigger:
-  source: inbox
+  source: discord
   slash_command: gtd
   classifier: ollama
   model: qwen2.5:7b
   intents:
     - gtd_show_today
     - gtd_show_inbox
-    - gtd_show_logbook
     - gtd_add_inbox
-    - gtd_complete
   prompt: |
-    Classify this GTD query. The user invoked /gtd, so they want task management.
+    Classify this GTD task management request from a /gtd slash command.
 
     Intents:
-    - gtd_show_today: Asks for today's tasks (e.g., "today", "what's on my list", "tasks")
-    - gtd_show_inbox: Asks for inbox items (e.g., "inbox", "what's waiting")
-    - gtd_show_logbook: Asks for completed tasks (e.g., "done", "completed", "logbook")
-    - gtd_add_inbox: Adding an item (e.g., "add buy milk", "capture call doctor")
-    - gtd_complete: Completing a task (e.g., "complete X", "done with X")
+    - gtd_show_today: User wants to see today's tasks (e.g., "today", "what's on my list", "tasks", "show", "list")
+    - gtd_show_inbox: User wants to see inbox items (e.g., "inbox", "what's waiting", "captured", "unsorted")
+    - gtd_add_inbox: User wants to add an item to inbox (e.g., "add buy milk", "capture call doctor", "remember to...")
 
-    Answer with ONE intent name only.
+    Answer with ONE intent name only, no explanation.
 pipeline:
-  - action: gtd_dispatch
+  - action: gtd_dispatch_things
     output: response
   - action: reply
     message: "{{.response}}"

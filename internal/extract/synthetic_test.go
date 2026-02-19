@@ -234,6 +234,40 @@ var syntheticCases = []syntheticCase{
 		},
 		expectedRels: nil,
 	},
+	{
+		name:    "technology entities (software, frameworks, AI models)",
+		message: "We migrated from Postgres to SQLite for storage. Claude handles the LLM layer.",
+		mockEntityResp: `[
+			{"name":"Postgres","type":"TECHNOLOGY","confidence":0.95},
+			{"name":"SQLite","type":"TECHNOLOGY","confidence":0.95},
+			{"name":"Claude","type":"TECHNOLOGY","confidence":0.9}
+		]`,
+		mockRelResp: `[]`,
+		expectedEntities: map[string]graph.EntityType{
+			"Postgres": graph.EntityTechnology,
+			"SQLite":   graph.EntityTechnology,
+			"Claude":   graph.EntityTechnology,
+		},
+		expectedRels: nil,
+	},
+	{
+		name:    "technology vs product distinction",
+		message: "Using React and TypeScript for the frontend. The iPhone app uses Swift.",
+		mockEntityResp: `[
+			{"name":"React","type":"TECHNOLOGY","confidence":0.95},
+			{"name":"TypeScript","type":"TECHNOLOGY","confidence":0.95},
+			{"name":"iPhone","type":"PRODUCT","confidence":0.9},
+			{"name":"Swift","type":"TECHNOLOGY","confidence":0.9}
+		]`,
+		mockRelResp: `[]`,
+		expectedEntities: map[string]graph.EntityType{
+			"React":      graph.EntityTechnology,
+			"TypeScript": graph.EntityTechnology,
+			"iPhone":     graph.EntityProduct,
+			"Swift":      graph.EntityTechnology,
+		},
+		expectedRels: nil,
+	},
 }
 
 func TestSyntheticExtraction(t *testing.T) {

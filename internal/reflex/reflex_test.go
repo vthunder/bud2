@@ -131,6 +131,142 @@ func TestEngineLoadSave(t *testing.T) {
 	}
 }
 
+func TestImplicitPiping(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir)
+
+	// Pipeline where steps chain through $_ without explicit output names
+	reflex := &Reflex{
+		Name: "pipe-test",
+		Trigger: Trigger{
+			Pattern: "pipe (.*)",
+			Extract: []string{"text"},
+		},
+		Pipeline: Pipeline{
+			{Action: "template", Params: map[string]any{"template": "step1: {{.text}}"}},
+			// Second step uses $_ implicitly via template
+			{Action: "template", Params: map[string]any{"template": "wrapped({{._}})"}},
+		},
+	}
+	engine.SaveReflex(reflex)
+
+	ctx := context.Background()
+	fired, results := engine.Process(ctx, "discord", "message", "pipe hello", map[string]any{})
+
+	if !fired {
+		t.Fatal("Expected reflex to fire")
+	}
+	if !results[0].Success {
+		t.Fatalf("Expected success: %v", results[0].Error)
+	}
+	// $_ should hold the last step's output
+	if results[0].Output["_"] != "wrapped(step1: hello)" {
+		t.Errorf("Unexpected implicit pipe output: %v", results[0].Output["_"])
+	}
+}
+
+func TestInvokeReflex(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir)
+
+	// Register a callable sub-reflex
+	sub := &Reflex{
+		Name:     "my-sub",
+		Callable: true,
+		Pipeline: Pipeline{
+			{Action: "template", Params: map[string]any{"template": "sub: {{.text}}"}},
+		},
+	}
+	engine.SaveReflex(sub)
+
+	// Register a dispatcher that invokes the sub-reflex
+	dispatcher := &Reflex{
+		Name: "my-dispatcher",
+		Trigger: Trigger{
+			Pattern: "dispatch (.*)",
+			Extract: []string{"text"},
+		},
+		Pipeline: Pipeline{
+			{Action: "invoke_reflex", Params: map[string]any{"name": "my-sub"}},
+		},
+	}
+	engine.SaveReflex(dispatcher)
+
+	// Reload so both are known
+	engine.Load()
+
+	ctx := context.Background()
+	fired, results := engine.Process(ctx, "discord", "message", "dispatch world", map[string]any{})
+
+	if !fired {
+		t.Fatal("Expected dispatcher to fire")
+	}
+	if !results[0].Success {
+		t.Fatalf("Expected success: %v", results[0].Error)
+	}
+	if results[0].Output["_"] != "sub: world" {
+		t.Errorf("Expected 'sub: world', got: %v", results[0].Output["_"])
+	}
+}
+
+func TestInvokeReflexOnMissingEscalate(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir)
+
+	// Dispatcher that tries to invoke a non-existent reflex and escalates
+	dispatcher := &Reflex{
+		Name: "escalate-test",
+		Trigger: Trigger{
+			Pattern: "escalate",
+		},
+		Pipeline: Pipeline{
+			{Action: "invoke_reflex", Params: map[string]any{
+				"name":       "nonexistent-reflex",
+				"on_missing": "escalate",
+			}},
+		},
+	}
+	engine.SaveReflex(dispatcher)
+	engine.Load()
+
+	ctx := context.Background()
+	fired, results := engine.Process(ctx, "discord", "message", "escalate", map[string]any{})
+
+	// Should NOT have fired (escalated to executive instead)
+	if fired {
+		t.Error("Expected not fired (escalated)")
+	}
+	if len(results) == 0 || !results[0].Escalate {
+		t.Error("Expected result with Escalate=true")
+	}
+}
+
+func TestCallableReflexNotAutoMatched(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine := NewEngine(tmpDir)
+
+	// A callable reflex with a permissive pattern - should NOT auto-match
+	callable := &Reflex{
+		Name:     "callable-only",
+		Callable: true,
+		Trigger: Trigger{
+			Pattern: ".*", // would match everything if not callable
+		},
+		Pipeline: Pipeline{
+			{Action: "log", Params: map[string]any{"message": "should not run"}},
+		},
+	}
+	engine.SaveReflex(callable)
+	engine.Load()
+
+	ctx := context.Background()
+	fired, _ := engine.Process(ctx, "discord", "message", "hello world", map[string]any{})
+
+	if fired {
+		t.Error("Callable reflex should not auto-match percepts")
+	}
+}
+
 func TestEngineProcess(t *testing.T) {
 	tmpDir := t.TempDir()
 	engine := NewEngine(tmpDir)

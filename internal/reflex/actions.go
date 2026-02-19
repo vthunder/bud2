@@ -17,6 +17,9 @@ import (
 // ErrStopPipeline signals the pipeline should stop (not an error, just early exit)
 var ErrStopPipeline = fmt.Errorf("pipeline stopped")
 
+// ErrEscalate signals the pipeline wants to escalate to the executive
+var ErrEscalate = fmt.Errorf("escalate to executive")
+
 // Action is the interface for reflex actions
 type Action interface {
 	Execute(ctx context.Context, params map[string]any, vars map[string]any) (any, error)
@@ -145,13 +148,15 @@ func actionOllamaPrompt(ctx context.Context, params map[string]any, vars map[str
 
 	// Call Ollama API
 	reqBody := map[string]any{
-		"model":  model,
-		"prompt": prompt,
-		"stream": false,
+		"model":      model,
+		"prompt":     prompt,
+		"stream":     false,
+		"keep_alive": "30m",
 	}
 
 	jsonBody, _ := json.Marshal(reqBody)
-	resp, err := http.Post("http://localhost:11434/api/generate", "application/json", bytes.NewReader(jsonBody))
+	ollamaClient := &http.Client{Timeout: 90 * time.Second}
+	resp, err := ollamaClient.Post("http://localhost:11434/api/generate", "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("ollama request failed: %w", err)
 	}
@@ -287,7 +292,28 @@ func resolveVar(params map[string]any, vars map[string]any, paramNames ...string
 }
 
 func renderTemplate(tmplStr string, vars map[string]any) (string, error) {
-	tmpl, err := template.New("reflex").Parse(tmplStr)
+	funcMap := template.FuncMap{
+		"trimSpace":   strings.TrimSpace,
+		"trimPrefix":  strings.TrimPrefix,
+		"trimSuffix":  strings.TrimSuffix,
+		"toLower":     strings.ToLower,
+		"toUpper":     strings.ToUpper,
+		"hasPrefix":   strings.HasPrefix,
+		"hasSuffix":   strings.HasSuffix,
+		"contains":    strings.Contains,
+		// extractTask strips common command prefixes ("add ", "capture ", etc.)
+		// preserving original case of the remainder
+		"extractTask": func(s string) string {
+			lower := strings.ToLower(s)
+			for _, prefix := range []string{"add ", "capture ", "remember to ", "remember "} {
+				if strings.HasPrefix(lower, prefix) {
+					return strings.TrimSpace(s[len(prefix):])
+				}
+			}
+			return strings.TrimSpace(s)
+		},
+	}
+	tmpl, err := template.New("reflex").Funcs(funcMap).Parse(tmplStr)
 	if err != nil {
 		return "", err
 	}
