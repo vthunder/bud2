@@ -2,20 +2,61 @@ package embedding
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"sync"
 	"time"
 )
 
+// embeddingCache is a simple fixed-size FIFO cache for embeddings.
+// It reduces repeated Ollama calls (e.g. search_memory with similar queries).
+type embeddingCache struct {
+	mu      sync.Mutex
+	items   map[string][]float64
+	order   []string
+	maxSize int
+}
+
+func newEmbeddingCache(maxSize int) *embeddingCache {
+	return &embeddingCache{
+		items:   make(map[string][]float64, maxSize),
+		order:   make([]string, 0, maxSize),
+		maxSize: maxSize,
+	}
+}
+
+func (c *embeddingCache) get(key string) ([]float64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.items[key]
+	return v, ok
+}
+
+func (c *embeddingCache) set(key string, emb []float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.items[key]; !exists {
+		if len(c.order) >= c.maxSize {
+			oldest := c.order[0]
+			c.order = c.order[1:]
+			delete(c.items, oldest)
+		}
+		c.order = append(c.order, key)
+	}
+	c.items[key] = emb
+}
+
 // Client handles embedding generation via Ollama
 type Client struct {
-	baseURL        string
-	model          string
+	baseURL         string
+	model           string
 	generationModel string
-	client         *http.Client
+	client          *http.Client
+	cache           *embeddingCache
 }
 
 // NewClient creates a new Ollama embedding client
@@ -33,6 +74,7 @@ func NewClient(baseURL, model string) *Client {
 		client: &http.Client{
 			Timeout: 300 * time.Second, // 5 minutes for long-running compressions
 		},
+		cache: newEmbeddingCache(256),
 	}
 }
 
@@ -52,10 +94,21 @@ type embeddingResponse struct {
 	Embedding []float64 `json:"embedding"`
 }
 
+// cacheKey returns a stable cache key for the given text and model.
+func (c *Client) cacheKey(text string) string {
+	h := sha256.Sum256([]byte(c.model + "\x00" + text))
+	return fmt.Sprintf("%x", h[:16]) // 128-bit prefix is plenty
+}
+
 // Embed generates an embedding for the given text
 func (c *Client) Embed(text string) ([]float64, error) {
 	if text == "" {
 		return nil, fmt.Errorf("empty text")
+	}
+
+	key := c.cacheKey(text)
+	if cached, ok := c.cache.get(key); ok {
+		return cached, nil
 	}
 
 	reqBody := embeddingRequest{
@@ -92,6 +145,7 @@ func (c *Client) Embed(text string) ([]float64, error) {
 		return nil, fmt.Errorf("empty embedding returned")
 	}
 
+	c.cache.set(key, result.Embedding)
 	return result.Embedding, nil
 }
 
