@@ -1355,6 +1355,19 @@ func main() {
 		log.Println("[main] Write to inbox.jsonl, read from test_output.jsonl")
 	}
 
+	// Send startup message so future sessions can tell when a restart happened
+	if mcpSendMessage != nil && discordChannel != "" {
+		tz := userTimezone
+		if tz == nil {
+			tz = time.UTC
+		}
+		ts := time.Now().In(tz).Format("15:04 MST")
+		startupMsg := fmt.Sprintf("♻️ Back at %s", ts)
+		if err := mcpSendMessage(discordChannel, startupMsg); err != nil {
+			log.Printf("[main] Warning: failed to send startup message: %v", err)
+		}
+	}
+
 	// Start calendar sense (optional, independent of Discord)
 	var calendarSense *senses.CalendarSense
 	if calendarClient != nil {
