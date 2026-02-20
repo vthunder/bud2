@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	"github.com/vthunder/bud2/internal/profiling"
@@ -179,41 +180,46 @@ func (g *DB) SpreadActivation(seedIDs []string, iterations int) (map[string]floa
 func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string, topK int, iterations int) (map[string]float64, error) {
 	// Run all 3 triggers concurrently — they're independent reads on WAL-mode SQLite.
 	type triggerResult struct {
-		ids []string
+		ids      []string
+		name     string
+		duration time.Duration
 	}
 	ch := make(chan triggerResult, 3)
 
 	// Trigger 1: Semantic similarity (embedding-based, uses sqlite-vec KNN)
 	go func() {
+		t0 := time.Now()
 		ids, err := g.FindSimilarTraces(queryEmb, topK)
 		if err != nil {
 			ids = nil
 		}
-		ch <- triggerResult{ids: ids}
+		ch <- triggerResult{ids: ids, name: "semantic", duration: time.Since(t0)}
 	}()
 
 	// Trigger 2: Lexical matching (BM25-style, uses FTS5)
 	go func() {
 		if queryText == "" {
-			ch <- triggerResult{}
+			ch <- triggerResult{name: "lexical"}
 			return
 		}
+		t0 := time.Now()
 		ids, err := g.FindTracesWithKeywords(queryText, topK)
 		if err != nil {
 			ids = nil
 		}
-		ch <- triggerResult{ids: ids}
+		ch <- triggerResult{ids: ids, name: "lexical", duration: time.Since(t0)}
 	}()
 
 	// Trigger 3: Entity-based seeding — match entity names/aliases in query text
 	go func() {
 		if queryText == "" {
-			ch <- triggerResult{}
+			ch <- triggerResult{name: "entity"}
 			return
 		}
+		t0 := time.Now()
 		matchedEntities, err := g.FindEntitiesByText(queryText, 5)
 		if err != nil || len(matchedEntities) == 0 {
-			ch <- triggerResult{}
+			ch <- triggerResult{name: "entity", duration: time.Since(t0)}
 			return
 		}
 		entityIDs := make([]string, len(matchedEntities))
@@ -225,18 +231,24 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 		if err != nil {
 			ids = nil
 		}
-		ch <- triggerResult{ids: ids}
+		ch <- triggerResult{ids: ids, name: "entity", duration: time.Since(t0)}
 	}()
 
 	// Merge results from all 3 triggers
 	stopTriggers := profiling.Get().Start("memory_ctx", "memory_retrieval.triggers")
 	seedSet := make(map[string]bool)
+	var triggerDurations [3]struct{ name string; ms float64 }
 	for i := 0; i < 3; i++ {
 		result := <-ch
+		triggerDurations[i] = struct{ name string; ms float64 }{result.name, float64(result.duration.Milliseconds())}
 		for _, id := range result.ids {
 			seedSet[id] = true
 		}
 	}
+	log.Printf("[triggers] semantic=%.0fms lexical=%.0fms entity=%.0fms",
+		triggerDuration(triggerDurations[:], "semantic"),
+		triggerDuration(triggerDurations[:], "lexical"),
+		triggerDuration(triggerDurations[:], "entity"))
 	stopTriggers()
 
 	// Convert set to slice
@@ -995,6 +1007,16 @@ func cosineSimilarity(a, b []float64) float64 {
 	}
 
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// triggerDuration finds the duration for a named trigger in the results slice.
+func triggerDuration(results []struct{ name string; ms float64 }, name string) float64 {
+	for _, r := range results {
+		if r.name == name {
+			return r.ms
+		}
+	}
+	return 0
 }
 
 // isStatusQuery detects if the query is asking about recent work, status, or "what did I do"
