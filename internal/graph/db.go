@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sync"
 	"time"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -18,12 +20,23 @@ func init() {
 	sqlite_vec.Auto() // registers the vec0 virtual table with go-sqlite3
 }
 
+// entityCacheEntry holds an entity and its pre-compiled word-boundary patterns,
+// one per name/alias. Built once and reused across FindEntitiesByText calls.
+type entityCacheEntry struct {
+	entity   *Entity
+	patterns []*regexp.Regexp // pre-compiled patterns, one per name/alias (nil = skip short names)
+}
+
 // DB wraps the SQLite database connection for the memory graph
 type DB struct {
 	db           *sql.DB
 	path         string
 	vecAvailable bool
 	vecDim       int // embedding dimension used in trace_vec (0 = not yet determined)
+
+	// Entity lookup cache: rebuilt lazily, invalidated on entity writes.
+	entityCacheMu sync.RWMutex
+	entityCache   []entityCacheEntry // nil means cache needs rebuild
 }
 
 // Open opens or creates the memory graph database

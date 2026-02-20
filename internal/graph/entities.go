@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 )
@@ -60,6 +59,7 @@ func (g *DB) AddEntity(e *Entity) error {
 		g.AddEntityAlias(e.ID, alias)
 	}
 
+	g.invalidateEntityCache()
 	return nil
 }
 
@@ -181,6 +181,9 @@ func (g *DB) AddEntityAlias(entityID, alias string) error {
 		INSERT OR IGNORE INTO entity_aliases (entity_id, alias)
 		VALUES (?, ?)
 	`, entityID, alias)
+	if err == nil {
+		g.invalidateEntityCache()
+	}
 	return err
 }
 
@@ -578,54 +581,147 @@ func (g *DB) IncrementEntitySalience(entityID string, increment float64) error {
 	_, err := g.db.Exec(`
 		UPDATE entities SET salience = salience + ?, updated_at = ? WHERE id = ?
 	`, increment, time.Now(), entityID)
+	if err == nil {
+		g.invalidateEntityCache()
+	}
 	return err
+}
+
+// invalidateEntityCache marks the entity cache as stale. Called on any entity write.
+func (g *DB) invalidateEntityCache() {
+	g.entityCacheMu.Lock()
+	g.entityCache = nil
+	g.entityCacheMu.Unlock()
+}
+
+// getEntityCache returns the entity cache, rebuilding it if stale.
+func (g *DB) getEntityCache() ([]entityCacheEntry, error) {
+	g.entityCacheMu.RLock()
+	cache := g.entityCache
+	g.entityCacheMu.RUnlock()
+	if cache != nil {
+		return cache, nil
+	}
+
+	g.entityCacheMu.Lock()
+	defer g.entityCacheMu.Unlock()
+	// Double-check after acquiring write lock.
+	if g.entityCache != nil {
+		return g.entityCache, nil
+	}
+
+	entities, err := g.getAllEntitiesWithAliasesBatch(500)
+	if err != nil {
+		return nil, err
+	}
+
+	cache = make([]entityCacheEntry, 0, len(entities))
+	for _, e := range entities {
+		names := append([]string{e.Name}, e.Aliases...)
+		var patterns []*regexp.Regexp
+		for _, name := range names {
+			if len(name) < 3 {
+				patterns = append(patterns, nil) // skip but keep index aligned
+				continue
+			}
+			escaped := regexp.QuoteMeta(strings.ToLower(name))
+			re, err := regexp.Compile(`\b` + escaped + `\b`)
+			if err != nil {
+				patterns = append(patterns, nil)
+				continue
+			}
+			patterns = append(patterns, re)
+		}
+		cache = append(cache, entityCacheEntry{entity: e, patterns: patterns})
+	}
+	g.entityCache = cache
+	return cache, nil
+}
+
+// getAllEntitiesWithAliasesBatch loads up to limit entities and their aliases
+// using two queries instead of 1+N.
+func (g *DB) getAllEntitiesWithAliasesBatch(limit int) ([]*Entity, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := g.db.Query(`
+		SELECT id, name, type, salience, embedding, created_at, updated_at
+		FROM entities
+		ORDER BY salience DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entities: %w", err)
+	}
+	entities, err := scanEntityRows(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(entities) == 0 {
+		return entities, nil
+	}
+
+	// Build entity index for alias assignment
+	byID := make(map[string]*Entity, len(entities))
+	ids := make([]string, len(entities))
+	for i, e := range entities {
+		byID[e.ID] = e
+		ids[i] = e.ID
+	}
+
+	// Single batch query for all aliases
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	aliasRows, err := g.db.Query(
+		`SELECT entity_id, alias FROM entity_aliases WHERE entity_id IN (`+placeholders+`)`,
+		args...,
+	)
+	if err == nil {
+		defer aliasRows.Close()
+		for aliasRows.Next() {
+			var entityID, alias string
+			if aliasRows.Scan(&entityID, &alias) == nil {
+				if e, ok := byID[entityID]; ok {
+					e.Aliases = append(e.Aliases, alias)
+				}
+			}
+		}
+	}
+
+	return entities, nil
 }
 
 // FindEntitiesByText matches entity names and aliases against query text using
 // word-boundary awareness. Returns up to maxResults entities sorted by salience.
+// Uses a cached list of pre-compiled patterns to avoid per-call DB queries and regex compilation.
 func (g *DB) FindEntitiesByText(queryText string, maxResults int) ([]*Entity, error) {
 	if maxResults <= 0 {
 		maxResults = 5
 	}
 
-	entities, err := g.GetAllEntities(500)
+	cache, err := g.getEntityCache()
 	if err != nil {
 		return nil, err
 	}
 
 	queryLower := strings.ToLower(queryText)
 
-	type scored struct {
-		entity *Entity
-	}
-
 	var matches []*Entity
-	seen := make(map[string]bool)
-
-	for _, e := range entities {
-		if seen[e.ID] {
-			continue
-		}
-
-		// Check canonical name and all aliases
-		names := append([]string{e.Name}, e.Aliases...)
-		for _, name := range names {
-			if len(name) < 3 {
-				continue
-			}
-			if containsWholeWord(queryLower, strings.ToLower(name)) {
-				matches = append(matches, e)
-				seen[e.ID] = true
+	for _, entry := range cache {
+		for _, re := range entry.patterns {
+			if re != nil && re.MatchString(queryLower) {
+				matches = append(matches, entry.entity)
 				break
 			}
 		}
 	}
 
-	// Sort by salience descending
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Salience > matches[j].Salience
-	})
-
+	// Cache is already salience-sorted; just cap the result.
 	if len(matches) > maxResults {
 		matches = matches[:maxResults]
 	}
@@ -634,13 +730,12 @@ func (g *DB) FindEntitiesByText(queryText string, maxResults int) ([]*Entity, er
 }
 
 // containsWholeWord checks if text contains word as a whole word (word-boundary aware).
+// Kept for external use; internal FindEntitiesByText now uses pre-compiled cache.
 func containsWholeWord(text, word string) bool {
-	// Escape regex special characters in the word
 	escaped := regexp.QuoteMeta(word)
 	pattern := `(?i)\b` + escaped + `\b`
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		// Fallback: simple contains check for names that break regex
 		return strings.Contains(text, word)
 	}
 	return re.MatchString(text)
