@@ -10,11 +10,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	osExec "os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -556,6 +558,9 @@ func main() {
 	var lastEpisodeMu sync.Mutex
 	lastEpisodeByChannel := make(map[string]string) // channel → episode ID
 
+	// Track last episode creation time for idle-based consolidation triggering (unix nanos, atomic)
+	var lastEpisodeTimeNs int64 = time.Now().UnixNano()
+
 	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
 	// Phase 1 (sync): episode store + summaries + NER check (~2s total)
 	// Phase 2 (async): entity extraction + relationship storage (~18s, runs in background)
@@ -600,6 +605,7 @@ func main() {
 			log.Printf("[ingest] Failed to store episode: %v", addErr)
 			return
 		}
+		atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
 
 		// Check for authorization async (user messages only)
 		if msg.Author != "Bud" {
@@ -1003,6 +1009,7 @@ func main() {
 				log.Printf("Warning: failed to store Bud episode: %v", err)
 			} else {
 				logging.Debug("main", "Stored Bud response as episode")
+				atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
 
 				// Generate episode summaries (async for level 1-2)
 				if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
@@ -1507,21 +1514,49 @@ func main() {
 	}()
 	log.Printf("[main] Trigger file watcher started (buffer.clear, consolidate.trigger)")
 
-	// Start periodic memory consolidation goroutine (runs every 10 minutes)
-	consolidationInterval := 10 * time.Minute
+	// Start smart memory consolidation goroutine.
+	// Triggers based on three conditions (checked every minute):
+	//   (a) idle ≥ 20 min (no new episodes) AND pending ≥ 10
+	//   (b) pending ≥ 100 (flush backlog regardless of idle state)
+	//   (c) time since last consolidation > 4h AND pending ≥ 10 (safety fallback)
 	go func() {
-		consolidationTicker := time.NewTicker(consolidationInterval)
-		defer consolidationTicker.Stop()
+		checkTicker := time.NewTicker(1 * time.Minute)
+		defer checkTicker.Stop()
 
-		// Initial delay before first periodic consolidation
+		// Initial delay: let things settle before first check
 		time.Sleep(2 * time.Minute)
+
+		var lastConsolidationTime time.Time
 
 		for {
 			select {
 			case <-stopChan:
 				return
-			case <-consolidationTicker.C:
-				log.Printf("[consolidate] Running memory consolidation (trigger: periodic)...")
+			case <-checkTicker.C:
+				pendingCount, err := graphDB.GetUnconsolidatedEpisodeCount()
+				if err != nil || pendingCount == 0 {
+					continue
+				}
+
+				lastEpNs := atomic.LoadInt64(&lastEpisodeTimeNs)
+				idleEnough := time.Since(time.Unix(0, lastEpNs)) >= 20*time.Minute
+				backlogFull := pendingCount >= 100
+				fallbackDue := !lastConsolidationTime.IsZero() &&
+					time.Since(lastConsolidationTime) >= 4*time.Hour &&
+					pendingCount >= 10
+
+				if !((idleEnough && pendingCount >= 10) || backlogFull || fallbackDue) {
+					continue
+				}
+
+				trigger := "idle"
+				if backlogFull {
+					trigger = "flush"
+				} else if fallbackDue {
+					trigger = "fallback"
+				}
+
+				log.Printf("[consolidate] Triggering consolidation (pending=%d, trigger=%s)", pendingCount, trigger)
 				count, err := memoryConsolidator.Run()
 				if err != nil {
 					log.Printf("[consolidate] Error: %v", err)
@@ -1530,12 +1565,24 @@ func main() {
 				} else {
 					log.Println("[consolidate] No unconsolidated episodes found")
 				}
+				lastConsolidationTime = time.Now()
+			}
+		}
+	}()
 
-				// Apply time-based activation decay
-				// lambda=0.01 achieves ~21% decay per day: exp(-0.01*24) ≈ 0.787
-				// Creates 7-day half-life for boosted traces (0.6→0.1 in ~7 days)
-				// Decay is time-based (hours since last access), not per-interval
-				// floor=0.1 prevents traces from fully disappearing
+	// Activation decay on its own 1-hour schedule, decoupled from consolidation.
+	// lambda=0.01 achieves ~21% decay per day: exp(-0.01*24) ≈ 0.787
+	// Creates 7-day half-life for boosted traces (0.6→0.1 in ~7 days)
+	// floor=0.1 prevents traces from fully disappearing
+	go func() {
+		decayTicker := time.NewTicker(1 * time.Hour)
+		defer decayTicker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-decayTicker.C:
 				decayed, err := graphDB.DecayActivationByAge(0.01, 0.1)
 				if err != nil {
 					log.Printf("[consolidate] Activation decay error: %v", err)
@@ -1545,7 +1592,33 @@ func main() {
 			}
 		}
 	}()
-	log.Printf("[main] Memory consolidation scheduled (interval: %v)", consolidationInterval)
+	log.Printf("[main] Memory consolidation scheduled (smart trigger: idle=20m, flush=100, fallback=4h)")
+
+	// Periodic state sync: commit and push state/ to bud2-state repo every hour.
+	// This replaces the old impulse:task recurring mechanism removed in the Things 3 migration.
+	stateSyncPath := statePath // capture for goroutine
+	go func() {
+		syncTicker := time.NewTicker(1 * time.Hour)
+		defer syncTicker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-syncTicker.C:
+				cmd := osExec.Command("bash", "-c",
+					`git add -A && git diff --cached --quiet || git commit -m "auto sync $(date +%Y-%m-%d-%H%M)" && git push`,
+				)
+				cmd.Dir = stateSyncPath
+				if out, err := cmd.CombinedOutput(); err != nil {
+					log.Printf("[state-sync] Error: %v — %s", err, strings.TrimSpace(string(out)))
+				} else {
+					log.Printf("[state-sync] State synced to git")
+				}
+			}
+		}
+	}()
+	log.Printf("[main] State sync scheduled (every 1h)")
 
 	// Outbox is append-only, no periodic save needed
 
