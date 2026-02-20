@@ -945,6 +945,16 @@ func main() {
 			}
 
 		default: // "message" or empty (backward compat)
+			// Pre-warm embedding cache: start Ollama embedding immediately so the executive
+			// finds a cache hit when it builds context (~250-500ms later via 500ms ticker).
+			if msg.Content != "" && ollamaClient != nil {
+				go func(c string) {
+					if _, err := ollamaClient.Embed(c); err != nil {
+						logging.Debug("main", "embedding prefetch: %v", err)
+					}
+				}(msg.Content)
+			}
+
 			// Ingest to memory graph asynchronously (Tier 1: episode, Tier 2: entities)
 			// Fire-and-forget: episode store runs in background so processPercept runs immediately.
 			// Executive reads from conversation history context, not the live episode store.
