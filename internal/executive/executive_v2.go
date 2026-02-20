@@ -519,7 +519,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 
 	// Fetch unconsolidated episode IDs for the extended buffer (episodes 31-100).
 	// Errors are non-fatal: we just won't extend beyond the base 30.
+	stopGetUnconsolidated := profiling.Get().Start(excludeID, "context.conversation_load.get_unconsolidated")
 	unconsolidated, _ := e.graph.GetUnconsolidatedEpisodeIDsForChannel(channelID)
+	stopGetUnconsolidated()
 
 	// Pre-fetch all summaries in batch (2 queries instead of N+1 individual lookups).
 	// Replaces per-episode GetEpisodeSummary calls inside the tier loops.
