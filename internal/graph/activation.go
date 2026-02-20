@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	"github.com/vthunder/bud2/internal/profiling"
 )
 
 // Activation parameters (from Synapse paper - arxiv:2601.02744)
@@ -228,6 +229,7 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 	}()
 
 	// Merge results from all 3 triggers
+	stopTriggers := profiling.Get().Start("memory_ctx", "memory_retrieval.triggers")
 	seedSet := make(map[string]bool)
 	for i := 0; i < 3; i++ {
 		result := <-ch
@@ -235,6 +237,7 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 			seedSet[id] = true
 		}
 	}
+	stopTriggers()
 
 	// Convert set to slice
 	seedIDs := make([]string, 0, len(seedSet))
@@ -246,7 +249,10 @@ func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string,
 		return make(map[string]float64), nil
 	}
 
-	return g.SpreadActivation(seedIDs, iterations)
+	stopSpread := profiling.Get().Start("memory_ctx", "memory_retrieval.spread")
+	spreadResult, spreadErr := g.SpreadActivation(seedIDs, iterations)
+	stopSpread()
+	return spreadResult, spreadErr
 }
 
 // FindTracesWithKeywords performs lexical/keyword matching using FTS5 BM25 ranking.
@@ -559,7 +565,9 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 	result := &RetrievalResult{}
 
 	// Spread activation using dual triggers (semantic + lexical)
+	stopActivation := profiling.Get().Start("memory_ctx", "memory_retrieval.activation")
 	activation, err := g.SpreadActivationFromEmbedding(queryEmb, queryText, 20, DefaultIters)
+	stopActivation()
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +612,9 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 	for i, c := range phase1Candidates {
 		phase1IDs[i] = c.id
 	}
+	stopPhase1 := profiling.Get().Start("memory_ctx", "memory_retrieval.funnel_phase1")
 	l8Map, err := g.GetTracesBatchAtLevel(phase1IDs, 8)
+	stopPhase1()
 	if err != nil {
 		// Fall back to direct full-detail fetch on error
 		l8Map = nil
@@ -659,7 +669,9 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 	for i, c := range shortlisted {
 		topIDs[i] = c.id
 	}
+	stopPhase2 := profiling.Get().Start("memory_ctx", "memory_retrieval.funnel_phase2")
 	traceMap, err := g.GetTracesBatch(topIDs)
+	stopPhase2()
 	if err != nil {
 		return nil, err
 	}

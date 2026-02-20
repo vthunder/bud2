@@ -446,10 +446,14 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		func() {
 			defer profiling.Get().Start(item.ID, "context.memory_retrieval")()
 			// Generate embedding for the query
+			stopEmb := profiling.Get().Start(item.ID, "context.memory_retrieval.embedding")
 			queryEmb, err := e.embedder.Embed(item.Content)
+			stopEmb()
 			if err == nil && len(queryEmb) > 0 {
 				// Use dual-trigger spreading activation (semantic + lexical)
+				stopRetrieve := profiling.Get().Start(item.ID, "context.memory_retrieval.retrieve")
 				result, err := e.graph.Retrieve(queryEmb, item.Content, memoryLimit)
+				stopRetrieve()
 				if err == nil && result != nil {
 					for _, t := range result.Traces {
 						allMemories = append(allMemories, focus.MemorySummary{
