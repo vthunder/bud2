@@ -1438,7 +1438,30 @@ func main() {
 		}
 	}()
 
-	// Start focus queue processing
+	// P1 goroutine: event-driven, fires immediately on user message arrival.
+	// Drains all P0/P1 items after each notification, serializing user sessions.
+	go func() {
+		notifyCh := exec.GetQueue().NotifyChannel()
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-notifyCh:
+				for {
+					ctx := context.Background()
+					processed, err := exec.ProcessNextP1(ctx)
+					if err != nil {
+						log.Printf("[main] P1 executive error: %v", err)
+					}
+					if !processed {
+						break
+					}
+				}
+			}
+		}
+	}()
+
+	// Background goroutine: 500ms ticker for P2+ items (autonomous wakes, scheduled tasks).
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -1449,9 +1472,9 @@ func main() {
 				return
 			case <-ticker.C:
 				ctx := context.Background()
-				_, err := exec.ProcessNext(ctx)
+				_, err := exec.ProcessNextBackground(ctx)
 				if err != nil {
-					log.Printf("[main] Executive error: %v", err)
+					log.Printf("[main] Background executive error: %v", err)
 				}
 			}
 		}

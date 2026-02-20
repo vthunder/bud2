@@ -120,6 +120,62 @@ func (q *Queue) PopHighest() *PendingItem {
 	return item
 }
 
+// PopHighestMaxPriority removes and returns the highest priority item
+// with priority <= maxPriority (i.e., items at least as urgent as maxPriority).
+// Returns nil if no qualifying item exists.
+func (q *Queue) PopHighestMaxPriority(maxPriority Priority) *PendingItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	bestIdx := -1
+	for i, item := range q.items {
+		if item.Priority > maxPriority {
+			continue
+		}
+		if bestIdx == -1 || item.Priority < q.items[bestIdx].Priority {
+			bestIdx = i
+		} else if item.Priority == q.items[bestIdx].Priority && item.Salience > q.items[bestIdx].Salience {
+			bestIdx = i
+		}
+	}
+
+	if bestIdx == -1 {
+		return nil
+	}
+
+	item := q.items[bestIdx]
+	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
+	return item
+}
+
+// PopHighestMinPriority removes and returns the highest priority item
+// with priority >= minPriority (i.e., items no more urgent than minPriority).
+// Returns nil if no qualifying item exists.
+func (q *Queue) PopHighestMinPriority(minPriority Priority) *PendingItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	bestIdx := -1
+	for i, item := range q.items {
+		if item.Priority < minPriority {
+			continue
+		}
+		if bestIdx == -1 || item.Priority < q.items[bestIdx].Priority {
+			bestIdx = i
+		} else if item.Priority == q.items[bestIdx].Priority && item.Salience > q.items[bestIdx].Salience {
+			bestIdx = i
+		}
+	}
+
+	if bestIdx == -1 {
+		return nil
+	}
+
+	item := q.items[bestIdx]
+	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
+	return item
+}
+
 // All returns all items (copy)
 func (q *Queue) All() []*PendingItem {
 	q.mu.RLock()

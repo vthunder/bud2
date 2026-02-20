@@ -191,6 +191,34 @@ func (e *ExecutiveV2) ProcessNext(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// ProcessNextP1 processes the next P0/P1 item (user input, critical alerts).
+// Bypasses the attention system so it can run concurrently with ProcessNextBackground.
+// Returns true if an item was processed, false if no P0/P1 items are queued.
+func (e *ExecutiveV2) ProcessNextP1(ctx context.Context) (bool, error) {
+	item := e.queue.PopHighestMaxPriority(focus.P1UserInput)
+	if item == nil {
+		return false, nil
+	}
+	if err := e.processItem(ctx, item); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// ProcessNextBackground processes the next P2+ item (autonomous wakes, scheduled tasks).
+// Bypasses the attention system so it can run concurrently with ProcessNextP1.
+// Returns true if an item was processed, false if no background items are queued.
+func (e *ExecutiveV2) ProcessNextBackground(ctx context.Context) (bool, error) {
+	item := e.queue.PopHighestMinPriority(focus.P2DueTask)
+	if item == nil {
+		return false, nil
+	}
+	if err := e.processItem(ctx, item); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
 // ProcessItem processes a specific pending item
 func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) error {
 	e.attention.Focus(item)
