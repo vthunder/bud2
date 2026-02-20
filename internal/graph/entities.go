@@ -639,13 +639,14 @@ func (g *DB) getEntityCache() ([]entityCacheEntry, error) {
 }
 
 // getAllEntitiesWithAliasesBatch loads up to limit entities and their aliases
-// using two queries instead of 1+N.
+// using two queries instead of 1+N. Omits embedding to avoid deserializing
+// ~3KB per entity when embeddings are not needed (cache rebuild for pattern matching).
 func (g *DB) getAllEntitiesWithAliasesBatch(limit int) ([]*Entity, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := g.db.Query(`
-		SELECT id, name, type, salience, embedding, created_at, updated_at
+		SELECT id, name, type, salience, created_at, updated_at
 		FROM entities
 		ORDER BY salience DESC
 		LIMIT ?
@@ -653,7 +654,7 @@ func (g *DB) getAllEntitiesWithAliasesBatch(limit int) ([]*Entity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query entities: %w", err)
 	}
-	entities, err := scanEntityRows(rows)
+	entities, err := scanEntityRowsNoEmbedding(rows)
 	rows.Close()
 	if err != nil {
 		return nil, err
@@ -795,6 +796,32 @@ func scanEntityRows(rows *sql.Rows) ([]*Entity, error) {
 	var entities []*Entity
 	for rows.Next() {
 		e, err := scanEntityRow(rows)
+		if err != nil {
+			continue
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
+// scanEntityRowNoEmbedding scans a row from queries that omit the embedding column.
+// Used by getAllEntitiesWithAliasesBatch to avoid deserializing unused embeddings.
+func scanEntityRowNoEmbedding(rows *sql.Rows) (*Entity, error) {
+	var e Entity
+	var entityType string
+	err := rows.Scan(&e.ID, &e.Name, &entityType, &e.Salience, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	e.Type = EntityType(entityType)
+	return &e, nil
+}
+
+// scanEntityRowsNoEmbedding scans multiple rows from queries that omit the embedding column.
+func scanEntityRowsNoEmbedding(rows *sql.Rows) ([]*Entity, error) {
+	var entities []*Entity
+	for rows.Next() {
+		e, err := scanEntityRowNoEmbedding(rows)
 		if err != nil {
 			continue
 		}
