@@ -505,7 +505,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 // Returns the formatted content and whether authorization patterns were detected.
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
 	// Fetch up to 100 episodes for variable buffer (min 30, max 100 for unconsolidated)
+	stopGetEpisodes := profiling.Get().Start(excludeID, "context.conversation_load.get_episodes")
 	episodes, err := e.graph.GetRecentEpisodes(channelID, 100)
+	stopGetEpisodes()
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
 		return "", false
@@ -525,8 +527,10 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	for i, ep := range episodes {
 		allIDs[i] = ep.ID
 	}
+	stopGetSummaries := profiling.Get().Start(excludeID, "context.conversation_load.get_summaries")
 	c32Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel32)
 	c8Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel8)
+	stopGetSummaries()
 
 	// lookupSummary returns (content, tokens, compressionLevel) for an episode.
 	// For C32 tier: prefers C32, falls back to C8. For C8 tier: uses C8 only.

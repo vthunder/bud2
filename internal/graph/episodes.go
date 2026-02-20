@@ -177,7 +177,8 @@ func (g *DB) GetEpisodes(ids []string) ([]*Episode, error) {
 	return episodes, nil
 }
 
-// GetRecentEpisodes retrieves the most recent episodes, optionally filtered by channel
+// GetRecentEpisodes retrieves the most recent episodes, optionally filtered by channel.
+// Omits the embedding column (large JSON blob) since callers use content/metadata only.
 // Removed time-based filtering - we now rely on episode count and pyramid compression
 func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 	if limit <= 0 {
@@ -191,7 +192,7 @@ func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 		rows, err = g.db.Query(`
 			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-				embedding, reply_to, authorization_checked, has_authorization, created_at
+				reply_to, authorization_checked, has_authorization, created_at
 			FROM episodes
 			WHERE channel = ?
 			ORDER BY timestamp_event DESC
@@ -201,7 +202,7 @@ func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 		rows, err = g.db.Query(`
 			SELECT id, short_id, content, token_count, source, author, author_id, channel,
 				timestamp_event, timestamp_ingested, dialogue_act, entropy_score,
-				embedding, reply_to, authorization_checked, has_authorization, created_at
+				reply_to, authorization_checked, has_authorization, created_at
 			FROM episodes
 			ORDER BY timestamp_event DESC
 			LIMIT ?
@@ -215,7 +216,7 @@ func (g *DB) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
 
 	var episodes []*Episode
 	for rows.Next() {
-		ep, err := scanEpisodeRow(rows)
+		ep, err := scanEpisodeRowNoEmbedding(rows)
 		if err != nil {
 			continue
 		}
@@ -498,6 +499,37 @@ func scanEpisodeRow(rows *sql.Rows) (*Episode, error) {
 	if len(embeddingBytes) > 0 {
 		json.Unmarshal(embeddingBytes, &ep.Embedding)
 	}
+
+	return &ep, nil
+}
+
+// scanEpisodeRowNoEmbedding scans episode rows from queries that omit the embedding column.
+// Use with queries that SELECT without embedding to avoid the JSON-unmarshal overhead.
+func scanEpisodeRowNoEmbedding(rows *sql.Rows) (*Episode, error) {
+	var ep Episode
+	var shortID sql.NullString
+	var author, authorID, channel, dialogueAct, replyTo sql.NullString
+	var entropyScore sql.NullFloat64
+	var authChecked, hasAuth sql.NullBool
+
+	err := rows.Scan(
+		&ep.ID, &shortID, &ep.Content, &ep.TokenCount, &ep.Source, &author, &authorID, &channel,
+		&ep.TimestampEvent, &ep.TimestampIngested, &dialogueAct, &entropyScore,
+		&replyTo, &authChecked, &hasAuth, &ep.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	ep.ShortID = shortID.String
+	ep.Author = author.String
+	ep.AuthorID = authorID.String
+	ep.Channel = channel.String
+	ep.DialogueAct = dialogueAct.String
+	ep.ReplyTo = replyTo.String
+	ep.EntropyScore = entropyScore.Float64
+	ep.AuthorizationChecked = authChecked.Bool
+	ep.HasAuthorization = hasAuth.Bool
 
 	return &ep, nil
 }
