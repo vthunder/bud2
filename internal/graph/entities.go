@@ -428,6 +428,52 @@ func (g *DB) GetTracesForEntity(entityID string) ([]string, error) {
 	return ids, nil
 }
 
+// GetTracesForEntitiesBatch returns up to capPerEntity trace IDs for each of the given
+// entity IDs in a single SQL query, deduplicated.
+func (g *DB) GetTracesForEntitiesBatch(entityIDs []string, capPerEntity int) ([]string, error) {
+	if len(entityIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(entityIDs))
+	args := make([]interface{}, len(entityIDs))
+	for i, id := range entityIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT entity_id, trace_id FROM trace_entities
+		WHERE entity_id IN (%s)
+		ORDER BY entity_id
+	`, strings.Join(placeholders, ","))
+
+	rows, err := g.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Collect up to capPerEntity per entity, deduplicate overall
+	seenTraces := make(map[string]bool)
+	countPerEntity := make(map[string]int)
+	var result []string
+	for rows.Next() {
+		var entityID, traceID string
+		if err := rows.Scan(&entityID, &traceID); err != nil {
+			continue
+		}
+		if countPerEntity[entityID] >= capPerEntity {
+			continue
+		}
+		if seenTraces[traceID] {
+			continue
+		}
+		countPerEntity[entityID]++
+		seenTraces[traceID] = true
+		result = append(result, traceID)
+	}
+	return result, nil
+}
+
 // GetEntityRelations returns relations to/from an entity
 func (g *DB) GetEntityRelations(entityID string) ([]Neighbor, error) {
 	rows, err := g.db.Query(`

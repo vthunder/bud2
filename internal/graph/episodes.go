@@ -290,6 +290,44 @@ func (g *DB) GetEpisodeNeighbors(id string) ([]Neighbor, error) {
 	return neighbors, nil
 }
 
+// GetUnconsolidatedEpisodeCount returns the count of episodes not yet linked to any trace.
+// Cheap query used by the consolidation trigger to decide whether to run.
+func (g *DB) GetUnconsolidatedEpisodeCount() (int, error) {
+	var count int
+	err := g.db.QueryRow(`
+		SELECT COUNT(*) FROM episodes e
+		WHERE NOT EXISTS (
+			SELECT 1 FROM trace_sources ts WHERE ts.episode_id = e.id
+		)
+	`).Scan(&count)
+	return count, err
+}
+
+// GetUnconsolidatedEpisodeIDsForChannel returns a set of unconsolidated episode IDs
+// for a specific channel. Used by the variable conversation buffer to extend coverage
+// beyond the base 30 episodes for episodes that haven't been consolidated yet.
+func (g *DB) GetUnconsolidatedEpisodeIDsForChannel(channelID string) (map[string]bool, error) {
+	rows, err := g.db.Query(`
+		SELECT e.id FROM episodes e
+		LEFT JOIN trace_sources ts ON ts.episode_id = e.id
+		WHERE e.channel = ? AND ts.trace_id IS NULL
+	`, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unconsolidated episode IDs: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		result[id] = true
+	}
+	return result, nil
+}
+
 // GetUnconsolidatedEpisodes returns episodes that haven't been linked to any trace yet.
 // These are candidates for consolidation.
 func (g *DB) GetUnconsolidatedEpisodes(limit int) ([]*Episode, error) {

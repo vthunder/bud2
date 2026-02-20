@@ -12,7 +12,7 @@ import (
 
 const (
 	// DefaultMaxTokens is the token threshold before summarization
-	DefaultMaxTokens = 3000
+	DefaultMaxTokens = 5000
 	// DefaultMaxAge is the age threshold before summarization
 	DefaultMaxAge = 10 * time.Minute
 	// TokensPerChar is a rough estimate for token counting

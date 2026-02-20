@@ -496,11 +496,16 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 // buildRecentConversation retrieves recent episodes for the channel and formats them
 // as a conversation log using pyramid summaries. Excludes the current focus item.
+//
+// Variable buffer: min 30, max 100 episodes.
+// - Episodes 1-30: tiered compression (last 5 full, next 10 at C32, next 15 at C8)
+// - Episodes 31-100: C8 only, and ONLY for unconsolidated episodes (safety net so
+//   nothing is lost between consolidation cycles)
+//
 // Returns the formatted content and whether authorization patterns were detected.
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
-	// Query last 30 episodes for recent conversation
-	// GetRecentEpisodes returns DESC order (newest first) which is what we want
-	episodes, err := e.graph.GetRecentEpisodes(channelID, 30)
+	// Fetch up to 100 episodes for variable buffer (min 30, max 100 for unconsolidated)
+	episodes, err := e.graph.GetRecentEpisodes(channelID, 100)
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
 		return "", false
@@ -510,16 +515,18 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		return "", false
 	}
 
-	// Process episodes in DESC order (newest first) to prioritize recent messages in budget
-	// Pyramid policy: Full text for last 5, compressed for next 10, highly compressed for next 15
-	// Token budget: 2000 tokens
-	tokenBudget := 2000
+	// Fetch unconsolidated episode IDs for the extended buffer (episodes 31-100).
+	// Errors are non-fatal: we just won't extend beyond the base 30.
+	unconsolidated, _ := e.graph.GetUnconsolidatedEpisodeIDsForChannel(channelID)
+
+	// Token budget raised to accommodate extended unconsolidated episodes
+	tokenBudget := 5000
 	tokenUsed := 0
 	var parts []string
 	hasAuth := false
 
 	// Define tier policy (level 0 = full text from episodes.content)
-	// Applied to newest messages first
+	// Applied to newest messages first (episodes are DESC order from DB)
 	tiers := []struct {
 		count int
 		level int
@@ -530,8 +537,13 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	}
 
 	episodeIdx := 0
+	budgetExceeded := false
 
+	// Phase 1: Apply tier policy to the base 30 episodes
 	for _, tier := range tiers {
+		if budgetExceeded {
+			break
+		}
 		for i := 0; i < tier.count && episodeIdx < len(episodes); i++ {
 			ep := episodes[episodeIdx]
 			episodeIdx++
@@ -556,10 +568,11 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				}
 			}
 
-			// Check token budget - if exceeded, stop (ensures we always have latest messages)
+			// Check token budget - if exceeded, stop
 			if tokenUsed+tokens > tokenBudget {
 				log.Printf("[executive] Hit token budget (%d/%d), stopping at episode %d", tokenUsed, tokenBudget, episodeIdx)
-				goto done // Break out of nested loops
+				budgetExceeded = true
+				break
 			}
 
 			// Format with ID, timestamp, and compression indicator
@@ -574,7 +587,6 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			// Check DB for authorization (only in full text tier)
 			if tier.level == 0 && ep.HasAuthorization {
 				hasAuth = true
-				// Try to get C8 summary, fallback to truncated content without newlines
 				logContent := ep.Content
 				if summary, err := e.graph.GetEpisodeSummary(ep.ID, 8); err == nil && summary != nil {
 					logContent = summary.Summary
@@ -589,7 +601,49 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		}
 	}
 
-done:
+	// Phase 2: Extended buffer — episodes 31-100, unconsolidated only, at C8.
+	// Skipped if Phase 1 already hit the budget.
+	if !budgetExceeded {
+		for episodeIdx < len(episodes) {
+			ep := episodes[episodeIdx]
+			episodeIdx++
+
+			if ep.ID == excludeID {
+				continue
+			}
+
+			// Only include unconsolidated episodes in the extension
+			if !unconsolidated[ep.ID] {
+				continue
+			}
+
+			// Use C8 summary for compactness
+			content := ep.Content
+			tokens := ep.TokenCount
+			compressionLevel := 0
+			if summary, err := e.graph.GetEpisodeSummary(ep.ID, graph.CompressionLevel8); err == nil && summary != nil {
+				content = summary.Summary
+				tokens = summary.Tokens
+				compressionLevel = summary.CompressionLevel
+			}
+
+			if tokenUsed+tokens > tokenBudget {
+				break
+			}
+
+			timeStr := formatMemoryTimestamp(ep.TimestampEvent)
+			var formatted string
+			if compressionLevel > 0 {
+				formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", ep.ShortID, compressionLevel, timeStr, ep.Author, content)
+			} else {
+				formatted = fmt.Sprintf("[%s] [%s] %s: %s", ep.ShortID, timeStr, ep.Author, content)
+			}
+
+			parts = append(parts, formatted)
+			tokenUsed += tokens
+		}
+	}
+
 	if len(parts) == 0 {
 		return "", false
 	}
@@ -745,8 +799,10 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	// Memory self-eval instruction (only if memories were shown)
 	if len(bundle.Memories) > 0 {
 		prompt.WriteString("## Memory Eval\n")
-		prompt.WriteString("When calling signal_done, include memory_eval with usefulness ratings.\n")
+		prompt.WriteString("When calling signal_done, include memory_eval with knowledge value ratings.\n")
 		prompt.WriteString("Format: `{\"tr_a3f9c\": 5, \"tr_b2e1d\": 1}` (1=not useful, 5=very useful)\n")
+		prompt.WriteString("Rate each memory for how valuable the KNOWLEDGE is for future reference — not whether it was useful for this specific task.\n")
+		prompt.WriteString("A memory containing implementation decisions, bug fixes, or architectural context should rate highly even if the current task didn't need it.\n")
 		prompt.WriteString("This helps improve memory retrieval.\n\n")
 	}
 

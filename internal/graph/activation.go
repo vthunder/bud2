@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
 // Activation parameters (from Synapse paper - arxiv:2601.02744)
@@ -88,48 +90,65 @@ func (g *DB) SpreadActivation(seedIDs []string, iterations int) (map[string]floa
 		seedSet[id] = true
 	}
 
-	// Build neighbor cache and compute fan-out degrees
+	// Batch-load neighbors for all seeds in 2 SQL queries (vs 2*N queries previously)
 	neighborCache := make(map[string][]Neighbor)
 	fanOut := make(map[string]float64)
-	for id := range activation {
-		neighbors, err := g.GetTraceNeighbors(id)
-		if err == nil {
+	if batchResult, err := g.GetTraceNeighborsBatch(seedIDs); err == nil {
+		for id, neighbors := range batchResult {
 			neighborCache[id] = neighbors
 			fanOut[id] = math.Max(1.0, float64(len(neighbors)))
+		}
+	} else {
+		// Fallback: per-node loading if batch fails
+		for id := range activation {
+			if neighbors, err := g.GetTraceNeighbors(id); err == nil {
+				neighborCache[id] = neighbors
+				fanOut[id] = math.Max(1.0, float64(len(neighbors)))
+			}
 		}
 	}
 
 	// Iterate spreading activation (T=3 iterations)
 	for iter := 0; iter < iterations; iter++ {
+		// Batch-load neighbors for newly activated nodes not yet in cache.
+		// Nodes discovered in the previous iteration enter activation but lack cached neighbors.
+		var uncached []string
+		for id := range activation {
+			if _, ok := neighborCache[id]; !ok {
+				uncached = append(uncached, id)
+			}
+		}
+		if len(uncached) > 0 {
+			if batchResult, err := g.GetTraceNeighborsBatch(uncached); err == nil {
+				for id, neighbors := range batchResult {
+					neighborCache[id] = neighbors
+					fanOut[id] = math.Max(1.0, float64(len(neighbors)))
+				}
+			} else {
+				// Fallback: per-node loading
+				for _, id := range uncached {
+					if neighbors, err := g.GetTraceNeighbors(id); err == nil {
+						neighborCache[id] = neighbors
+						fanOut[id] = math.Max(1.0, float64(len(neighbors)))
+					}
+				}
+			}
+		}
+
 		newActivation := make(map[string]float64)
 
 		for id, a := range activation {
-			// Get neighbors (lazy load if not cached)
-			neighbors, ok := neighborCache[id]
-			if !ok {
-				var err error
-				neighbors, err = g.GetTraceNeighbors(id)
-				if err != nil {
-					continue
-				}
-				neighborCache[id] = neighbors
-				fanOut[id] = math.Max(1.0, float64(len(neighbors)))
-			}
+			neighbors := neighborCache[id] // nil if no neighbors (key exists after batch load)
 
 			// Spread to neighbors with fan effect
 			// Formula: S * w_ji * a_j / fan(j)
+			fo := fanOut[id]
+			if fo == 0 {
+				fo = 1.0
+			}
 			for _, neighbor := range neighbors {
-				contribution := SpreadFactor * neighbor.Weight * a / fanOut[id]
+				contribution := SpreadFactor * neighbor.Weight * a / fo
 				newActivation[neighbor.ID] += contribution
-
-				// Cache neighbor's neighbors for next iteration
-				if _, ok := neighborCache[neighbor.ID]; !ok {
-					nNeighbors, err := g.GetTraceNeighbors(neighbor.ID)
-					if err == nil {
-						neighborCache[neighbor.ID] = nNeighbors
-						fanOut[neighbor.ID] = math.Max(1.0, float64(len(nNeighbors)))
-					}
-				}
 			}
 
 			// Self-activation with decay: (1-δ) * a_i(t)
@@ -157,44 +176,63 @@ func (g *DB) SpreadActivation(seedIDs []string, iterations int) (map[string]floa
 // SpreadActivationFromEmbedding spreads activation using dual-trigger seeding
 // Dual trigger: combines lexical matching (BM25-style) AND semantic embedding
 func (g *DB) SpreadActivationFromEmbedding(queryEmb []float64, queryText string, topK int, iterations int) (map[string]float64, error) {
-	seedSet := make(map[string]bool)
-
-	// Trigger 1: Semantic similarity (embedding-based)
-	semanticSeeds, err := g.FindSimilarTraces(queryEmb, topK)
-	if err == nil {
-		for _, id := range semanticSeeds {
-			seedSet[id] = true
-		}
+	// Run all 3 triggers concurrently — they're independent reads on WAL-mode SQLite.
+	type triggerResult struct {
+		ids []string
 	}
+	ch := make(chan triggerResult, 3)
 
-	// Trigger 2: Lexical matching (BM25-style keyword matching)
-	if queryText != "" {
-		lexicalSeeds, err := g.FindTracesWithKeywords(queryText, topK)
-		if err == nil {
-			for _, id := range lexicalSeeds {
-				seedSet[id] = true
-			}
+	// Trigger 1: Semantic similarity (embedding-based, uses sqlite-vec KNN)
+	go func() {
+		ids, err := g.FindSimilarTraces(queryEmb, topK)
+		if err != nil {
+			ids = nil
 		}
-	}
+		ch <- triggerResult{ids: ids}
+	}()
+
+	// Trigger 2: Lexical matching (BM25-style, uses FTS5)
+	go func() {
+		if queryText == "" {
+			ch <- triggerResult{}
+			return
+		}
+		ids, err := g.FindTracesWithKeywords(queryText, topK)
+		if err != nil {
+			ids = nil
+		}
+		ch <- triggerResult{ids: ids}
+	}()
 
 	// Trigger 3: Entity-based seeding — match entity names/aliases in query text
-	if queryText != "" {
+	go func() {
+		if queryText == "" {
+			ch <- triggerResult{}
+			return
+		}
 		matchedEntities, err := g.FindEntitiesByText(queryText, 5)
-		if err == nil {
-			for _, entity := range matchedEntities {
-				traceIDs, err := g.GetTracesForEntity(entity.ID)
-				if err != nil {
-					continue
-				}
-				// Cap at 5 traces per entity
-				cap := 5
-				if len(traceIDs) < cap {
-					cap = len(traceIDs)
-				}
-				for _, id := range traceIDs[:cap] {
-					seedSet[id] = true
-				}
-			}
+		if err != nil || len(matchedEntities) == 0 {
+			ch <- triggerResult{}
+			return
+		}
+		entityIDs := make([]string, len(matchedEntities))
+		for i, e := range matchedEntities {
+			entityIDs[i] = e.ID
+		}
+		// Batch-load traces for all entities in a single SQL query
+		ids, err := g.GetTracesForEntitiesBatch(entityIDs, 5)
+		if err != nil {
+			ids = nil
+		}
+		ch <- triggerResult{ids: ids}
+	}()
+
+	// Merge results from all 3 triggers
+	seedSet := make(map[string]bool)
+	for i := 0; i < 3; i++ {
+		result := <-ch
+		for _, id := range result.ids {
+			seedSet[id] = true
 		}
 	}
 
@@ -333,14 +371,62 @@ func extractKeywords(query string) []string {
 // Minimum similarity threshold for seeding
 const MinSimilarityThreshold = 0.3
 
-// FindSimilarTraces finds traces similar to the query embedding
-// Scores combine semantic similarity with stored activation to prefer recent/active memories.
+// FindSimilarTraces finds traces similar to the query embedding.
+// Uses sqlite-vec KNN when available and dimension matches; falls back to O(n) Go scan.
 // Only returns traces with similarity above MinSimilarityThreshold.
 func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
-	// Get all traces with embeddings and activation
+	if g.vecAvailable && g.vecDim > 0 && len(queryEmb) == g.vecDim {
+		return g.findSimilarTracesVec(queryEmb, topK)
+	}
+	return g.findSimilarTracesScan(queryEmb, topK)
+}
+
+// findSimilarTracesVec uses the vec0 virtual table for fast cosine-equivalent KNN.
+// vec0 uses L2 distance; vectors are stored normalized so L2 relates to cosine:
+//   cosine_dist = L2_dist² / 2  →  L2_threshold = sqrt(2 * cosine_dist_threshold)
+func (g *DB) findSimilarTracesVec(queryEmb []float64, topK int) ([]string, error) {
+	emb32 := normalizeFloat32(float64ToFloat32(queryEmb)) // normalize to match stored vectors
+	serialized, err := sqlite_vec.SerializeFloat32(emb32)
+	if err != nil {
+		return g.findSimilarTracesScan(queryEmb, topK)
+	}
+	// Convert cosine similarity threshold to L2 distance threshold for normalized vectors
+	maxL2Distance := cosineDistToL2(1.0 - MinSimilarityThreshold)
+
+	// Fetch topK*3 candidates then apply threshold filter.
 	rows, err := g.db.Query(`
-		SELECT id, embedding, activation FROM traces WHERE embedding IS NOT NULL
-	`)
+		SELECT trace_id, distance
+		FROM trace_vec
+		WHERE embedding MATCH ?
+		  AND k = ?
+		ORDER BY distance ASC
+	`, serialized, topK*3)
+	if err != nil {
+		return g.findSimilarTracesScan(queryEmb, topK)
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var id string
+		var distance float64
+		if err := rows.Scan(&id, &distance); err != nil {
+			continue
+		}
+		if distance > maxL2Distance {
+			break // sorted by distance; can stop early
+		}
+		result = append(result, id)
+		if len(result) >= topK {
+			break
+		}
+	}
+	return result, nil
+}
+
+// findSimilarTracesScan is the O(n) fallback used when sqlite-vec is unavailable.
+func (g *DB) findSimilarTracesScan(queryEmb []float64, topK int) ([]string, error) {
+	rows, err := g.db.Query(`SELECT id, embedding FROM traces WHERE embedding IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
@@ -355,8 +441,7 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 	for rows.Next() {
 		var id string
 		var embBytes []byte
-		var activation float64
-		if err := rows.Scan(&id, &embBytes, &activation); err != nil {
+		if err := rows.Scan(&id, &embBytes); err != nil {
 			continue
 		}
 
@@ -366,30 +451,19 @@ func (g *DB) FindSimilarTraces(queryEmb []float64, topK int) ([]string, error) {
 		}
 
 		sim := cosineSimilarity(queryEmb, embedding)
-		// Only include traces above minimum similarity threshold
 		if sim >= MinSimilarityThreshold {
-			// Use pure semantic similarity for seeding (no stored activation blend).
-			// Temporal dynamics emerge naturally from spreading activation:
-			// - Seeds get initial boost (SeedBoost = 0.5)
-			// - Connected traces spread activation
-			// - Lateral inhibition and sigmoid transform shape final distribution
-			// Using stored activation here created a feedback loop where recently-active
-			// traces dominated all queries regardless of semantic relevance.
 			candidates = append(candidates, scored{id: id, score: sim})
 		}
 	}
 
-	// Sort by blended score descending
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
 
-	// Return top K
 	result := make([]string, 0, topK)
 	for i := 0; i < len(candidates) && i < topK; i++ {
 		result = append(result, candidates[i].id)
 	}
-
 	return result, nil
 }
 
@@ -400,9 +474,58 @@ type SimilarTrace struct {
 }
 
 // FindSimilarTracesAboveThreshold finds all traces with cosine similarity above the given threshold.
-// Returns trace IDs with their raw similarity scores (not blended with activation).
-// Used for creating SIMILAR_TO edges during consolidation.
+// Returns trace IDs with their raw similarity scores. Used for creating SIMILAR_TO edges.
 func (g *DB) FindSimilarTracesAboveThreshold(queryEmb []float64, threshold float64, excludeID string) ([]SimilarTrace, error) {
+	if g.vecAvailable && g.vecDim > 0 && len(queryEmb) == g.vecDim {
+		return g.findSimilarTracesAboveThresholdVec(queryEmb, threshold, excludeID)
+	}
+	return g.findSimilarTracesAboveThresholdScan(queryEmb, threshold, excludeID)
+}
+
+// findSimilarTracesAboveThresholdVec uses vec0 for fast threshold-filtered cosine search.
+// Vectors stored normalized → L2_threshold = sqrt(2 * cosine_dist_threshold).
+// Similarity returned as cosine_sim = 1 - L2²/2.
+func (g *DB) findSimilarTracesAboveThresholdVec(queryEmb []float64, threshold float64, excludeID string) ([]SimilarTrace, error) {
+	emb32 := normalizeFloat32(float64ToFloat32(queryEmb))
+	serialized, err := sqlite_vec.SerializeFloat32(emb32)
+	if err != nil {
+		return g.findSimilarTracesAboveThresholdScan(queryEmb, threshold, excludeID)
+	}
+	// Convert cosine threshold to L2 distance threshold for normalized vectors
+	maxL2Distance := cosineDistToL2(1.0 - threshold)
+
+	rows, err := g.db.Query(`
+		SELECT trace_id, distance
+		FROM trace_vec
+		WHERE embedding MATCH ?
+		  AND k = 200
+		ORDER BY distance ASC
+	`, serialized)
+	if err != nil {
+		return g.findSimilarTracesAboveThresholdScan(queryEmb, threshold, excludeID)
+	}
+	defer rows.Close()
+
+	var result []SimilarTrace
+	for rows.Next() {
+		var id string
+		var distance float64
+		if err := rows.Scan(&id, &distance); err != nil {
+			continue
+		}
+		if distance > maxL2Distance {
+			break
+		}
+		if id == excludeID {
+			continue
+		}
+		result = append(result, SimilarTrace{ID: id, Similarity: l2ToCosineSim(distance)})
+	}
+	return result, nil
+}
+
+// findSimilarTracesAboveThresholdScan is the O(n) fallback.
+func (g *DB) findSimilarTracesAboveThresholdScan(queryEmb []float64, threshold float64, excludeID string) ([]SimilarTrace, error) {
 	rows, err := g.db.Query(`SELECT id, embedding FROM traces WHERE embedding IS NOT NULL AND id != ?`, excludeID)
 	if err != nil {
 		return nil, err
@@ -427,7 +550,6 @@ func (g *DB) FindSimilarTracesAboveThreshold(queryEmb []float64, threshold float
 			result = append(result, SimilarTrace{ID: id, Similarity: sim})
 		}
 	}
-
 	return result, nil
 }
 

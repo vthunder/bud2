@@ -7,7 +7,8 @@ package ner
 // Known spaCy en_core_web_sm limitations discovered by these tests:
 // - Non-Western names (Anjan, Anurag) often misclassified or missed
 // - Common tech terms (CI, Stripe) may be misclassified
-// - Money entities returned without currency symbol ($50,000 → "50,000")
+// - MONEY, DATE, TIME, CARDINAL etc. are excluded from HIGH_VALUE_TYPES (noise filter)
+//   so money-only text like "$50,000" does not trigger entity extraction
 //
 // These limitations are acceptable because spaCy is only a fast pre-filter;
 // Ollama handles full extraction for messages that pass the NER gate.
@@ -76,11 +77,11 @@ func TestNERSidecar_Detection(t *testing.T) {
 			wantEntity: true, // CI detected as ORG
 		},
 		{
-			// spaCy returns "50,000" without the "$" prefix.
-			name:       "money amount detected",
+			// MONEY is excluded from HIGH_VALUE_TYPES (noise type) — "$50,000" alone
+			// does not trigger entity extraction. Only PERSON/ORG/GPE/etc do.
+			name:       "money amount not extracted (noise type)",
 			text:       "The project budget is $50,000",
-			wantEntity: true,
-			wantLabels: map[string]string{"50,000": "MONEY"},
+			wantEntity: false,
 		},
 		{
 			// spaCy doesn't recognize "Stripe" as ORG but does detect AWS.

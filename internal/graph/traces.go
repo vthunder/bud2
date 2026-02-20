@@ -4,9 +4,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"sort"
+	"strings"
 	"time"
+
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 )
 
 // AddTrace adds a new trace to the graph
@@ -66,6 +70,16 @@ func (g *DB) AddTrace(tr *Trace) error {
 		if err := g.AddTraceSummary(tr.ID, CompressionLevelVerbatim, tr.Summary, tokens); err != nil {
 			// Non-fatal: trace is stored, summary will be available via compress-traces
 			_ = err
+		}
+	}
+
+	// Sync to vec index if available.
+	// Uses traces.rowid as the vec0 integer key for stable KNN lookups.
+	if g.vecAvailable && len(tr.Embedding) > 0 {
+		// Ensure vec table exists for this embedding dimension (lazy creation)
+		_ = g.ensureVecTable(len(tr.Embedding))
+		if g.vecDim == len(tr.Embedding) {
+			g.syncTraceToVec(tr.ID, tr.Embedding)
 		}
 	}
 
@@ -330,8 +344,16 @@ func (g *DB) ReinforceTrace(id string, newEmbedding []float64, alpha float64) er
 			last_accessed = ?
 		WHERE id = ?
 	`, embeddingBytes, time.Now(), id)
+	if err != nil {
+		return err
+	}
 
-	return err
+	// Sync updated embedding to vec index
+	if g.vecAvailable && len(trace.Embedding) > 0 && g.vecDim == len(trace.Embedding) {
+		g.syncTraceToVec(id, trace.Embedding)
+	}
+
+	return nil
 }
 
 // DecayActivation decays all trace activations by the given factor
@@ -564,6 +586,126 @@ func (g *DB) GetTraceNeighborsThroughEntities(traceID string, maxNeighbors int) 
 	return neighbors, nil
 }
 
+// GetTraceNeighborsBatch returns neighbors for a set of trace IDs using 2 SQL queries
+// regardless of how many IDs are requested (vs 2*N queries for per-node calls).
+// All requested IDs appear in the returned map; IDs with no neighbors map to nil.
+func (g *DB) GetTraceNeighborsBatch(ids []string) (map[string][]Neighbor, error) {
+	if len(ids) == 0 {
+		return make(map[string][]Neighbor), nil
+	}
+
+	result := make(map[string][]Neighbor, len(ids))
+	for _, id := range ids {
+		result[id] = nil // pre-initialize so key exists even if no neighbors found
+	}
+
+	// Build IN-clause placeholder string: ?,?,?,...
+	ph := strings.Repeat("?,", len(ids))
+	ph = ph[:len(ph)-1]
+
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	// Query 1: direct trace-to-trace relations (bidirectional in one pass).
+	// Column order: (source_id, neighbor_id, weight, relation_type)
+	directSQL := fmt.Sprintf(`
+		SELECT from_id, to_id, weight, relation_type FROM trace_relations WHERE from_id IN (%s)
+		UNION ALL
+		SELECT to_id, from_id, weight, relation_type FROM trace_relations WHERE to_id IN (%s)
+	`, ph, ph)
+
+	directArgs := make([]interface{}, len(args)*2)
+	copy(directArgs, args)
+	copy(directArgs[len(args):], args)
+
+	rows, err := g.db.Query(directSQL, directArgs...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Track direct neighbors per source for dedup with entity-bridged query
+	seen := make(map[string]map[string]bool)
+	for rows.Next() {
+		var sourceID, neighborID string
+		var weight float64
+		var relType string
+		if err := rows.Scan(&sourceID, &neighborID, &weight, &relType); err != nil {
+			continue
+		}
+		if _, ok := result[sourceID]; !ok {
+			continue // source not in our requested set
+		}
+		if seen[sourceID] == nil {
+			seen[sourceID] = make(map[string]bool)
+		}
+		if seen[sourceID][neighborID] {
+			continue // dedup: edge may appear from both UNION halves
+		}
+		seen[sourceID][neighborID] = true
+		result[sourceID] = append(result[sourceID], Neighbor{
+			ID:     neighborID,
+			Weight: weight,
+			Type:   EdgeType(relType),
+		})
+	}
+	rows.Close()
+
+	// Query 2: entity-bridged neighbors for all IDs at once.
+	bridgedSQL := fmt.Sprintf(`
+		SELECT te1.trace_id, te2.trace_id, COUNT(DISTINCT te1.entity_id) as shared, AVG(e.salience) as sal
+		FROM trace_entities te1
+		JOIN trace_entities te2 ON te1.entity_id = te2.entity_id
+		JOIN entities e ON e.id = te1.entity_id
+		WHERE te1.trace_id IN (%s) AND te2.trace_id != te1.trace_id
+		GROUP BY te1.trace_id, te2.trace_id
+		ORDER BY te1.trace_id, shared DESC, sal DESC
+	`, ph)
+
+	bridgedRows, err := g.db.Query(bridgedSQL, args...)
+	if err == nil {
+		perSourceCount := make(map[string]int)
+		for bridgedRows.Next() {
+			var sourceID, neighborID string
+			var sharedCount int
+			var salience float64
+			if err := bridgedRows.Scan(&sourceID, &neighborID, &sharedCount, &salience); err != nil {
+				continue
+			}
+			if _, ok := result[sourceID]; !ok {
+				continue
+			}
+			if seen[sourceID] != nil && seen[sourceID][neighborID] {
+				continue // already a direct neighbor
+			}
+			if perSourceCount[sourceID] >= MaxEdgesPerNode {
+				continue // cap entity-bridged fill per source
+			}
+			weight := math.Min(1.0, float64(sharedCount)*0.3)
+			result[sourceID] = append(result[sourceID], Neighbor{
+				ID:     neighborID,
+				Weight: weight,
+				Type:   EdgeSharedEntity,
+			})
+			perSourceCount[sourceID]++
+		}
+		bridgedRows.Close()
+	}
+
+	// Sort and cap each source at MaxEdgesPerNode (strongest edges first)
+	for id, neighbors := range result {
+		if len(neighbors) > MaxEdgesPerNode {
+			sort.Slice(neighbors, func(i, j int) bool {
+				return neighbors[i].Weight > neighbors[j].Weight
+			})
+			result[id] = neighbors[:MaxEdgesPerNode]
+		}
+	}
+
+	return result, nil
+}
+
 // GetTraceEntities returns the entity IDs linked to a trace
 func (g *DB) GetTraceEntities(traceID string) ([]string, error) {
 	rows, err := g.db.Query(`
@@ -663,6 +805,10 @@ func (g *DB) DeleteTrace(id string) error {
 	g.db.Exec(`DELETE FROM trace_relations WHERE from_id = ? OR to_id = ?`, id, id)
 	g.db.Exec(`DELETE FROM trace_entities WHERE trace_id = ?`, id)
 	g.db.Exec(`DELETE FROM trace_sources WHERE trace_id = ?`, id)
+	if g.vecAvailable {
+		// Delete from vec index using the traces rowid BEFORE deleting from traces
+		g.db.Exec(`DELETE FROM trace_vec WHERE rowid = (SELECT rowid FROM traces WHERE id = ?)`, id)
+	}
 
 	result, err := g.db.Exec(`DELETE FROM traces WHERE id = ?`, id)
 	if err != nil {
@@ -793,6 +939,27 @@ func (g *DB) GetTracesNeedingReconsolidation() ([]string, error) {
 	return traceIDs, rows.Err()
 }
 
+// syncTraceToVec inserts or replaces a trace in the vec0 index using the trace's
+// integer rowid from the traces table. Called after any trace write operation.
+func (g *DB) syncTraceToVec(traceID string, embedding []float64) {
+	emb32 := normalizeFloat32(float64ToFloat32(embedding)) // normalize for cosine-compatible L2
+	serialized, serErr := sqlite_vec.SerializeFloat32(emb32)
+	if serErr != nil {
+		log.Printf("[graph] vec sync: SerializeFloat32 failed for %s: %v", traceID, serErr)
+		return
+	}
+
+	// Get the integer rowid from the traces table for use as the vec0 key
+	var rowid int64
+	if err := g.db.QueryRow(`SELECT rowid FROM traces WHERE id = ?`, traceID).Scan(&rowid); err != nil {
+		return
+	}
+
+	// DELETE + INSERT because vec0 INSERT OR REPLACE may not be reliable in all versions
+	g.db.Exec(`DELETE FROM trace_vec WHERE rowid = ?`, rowid)
+	g.db.Exec(`INSERT INTO trace_vec(rowid, embedding, trace_id) VALUES (?, ?, ?)`, rowid, serialized, traceID)
+}
+
 // ClearReconsolidationFlag removes the needs_reconsolidation flag from a trace
 func (g *DB) ClearReconsolidationFlag(traceID string) error {
 	_, err := g.db.Exec(`UPDATE traces SET needs_reconsolidation = 0 WHERE id = ?`, traceID)
@@ -811,5 +978,14 @@ func (g *DB) UpdateTrace(traceID, summary string, embedding []float64, traceType
 		SET summary = ?, embedding = ?, trace_type = ?, strength = ?, last_accessed = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, summary, embeddingJSON, traceType, strength, traceID)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Sync updated embedding to vec index
+	if g.vecAvailable && len(embedding) > 0 && g.vecDim == len(embedding) {
+		g.syncTraceToVec(traceID, embedding)
+	}
+
+	return nil
 }

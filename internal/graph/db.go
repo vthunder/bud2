@@ -10,13 +10,20 @@ import (
 	"path/filepath"
 	"time"
 
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 )
 
+func init() {
+	sqlite_vec.Auto() // registers the vec0 virtual table with go-sqlite3
+}
+
 // DB wraps the SQLite database connection for the memory graph
 type DB struct {
-	db   *sql.DB
-	path string
+	db           *sql.DB
+	path         string
+	vecAvailable bool
+	vecDim       int // embedding dimension used in trace_vec (0 = not yet determined)
 }
 
 // Open opens or creates the memory graph database
@@ -51,6 +58,22 @@ func Open(statePath string) (*DB, error) {
 	if err := g.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate: %w", err)
+	}
+
+	// Check if sqlite-vec extension is available
+	var vecVersion string
+	if err := db.QueryRow("SELECT vec_version()").Scan(&vecVersion); err != nil {
+		log.Printf("[graph] sqlite-vec not available: %v — falling back to full scan", err)
+	} else {
+		log.Printf("[graph] sqlite-vec %s loaded", vecVersion)
+		g.vecAvailable = true
+		// Ensure vec table exists and set vecDim from existing data (handles restarts
+		// where migration v18 already ran but vecDim needs to be restored in memory).
+		if g.vecDim == 0 {
+			if err := g.initVecTableFromTraces(); err != nil {
+				log.Printf("[graph] vec init warning: %v", err)
+			}
+		}
 	}
 
 	return g, nil
@@ -670,7 +693,152 @@ func (g *DB) runMigrations() error {
 		log.Println("[graph] Migration to v17 completed successfully")
 	}
 
+	// Migration v18: Add sqlite-vec ANN index for trace embedding search.
+	// Creates a vec0 virtual table for fast cosine KNN queries, replacing the O(n)
+	// Go-side scan in FindSimilarTraces. Backfills from the traces table on first run.
+	// Skipped gracefully if sqlite-vec extension is not compiled in or no embeddings exist.
+	// The vec table dimension is determined dynamically from existing trace embeddings.
+	if version < 18 {
+		log.Println("[graph] Migrating to schema v18: sqlite-vec trace_vec index")
+		// Detect embedding dimension from existing traces (if any)
+		if err := g.initVecTableFromTraces(); err != nil {
+			log.Printf("[graph] Migration v18 warning: %v — vec index deferred to first AddTrace", err)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (18)")
+		log.Println("[graph] Migration to v18 completed successfully")
+	}
+
 	return nil
+}
+
+// initVecTableFromTraces reads the embedding dimension from existing traces, creates the
+// trace_vec virtual table with that dimension (if it doesn't already exist), and backfills
+// all existing trace embeddings. No-ops if no traces with embeddings exist yet.
+func (g *DB) initVecTableFromTraces() error {
+	// Read one embedding to determine dimension
+	var embBytes []byte
+	err := g.db.QueryRow(`SELECT embedding FROM traces WHERE embedding IS NOT NULL AND LENGTH(embedding) > 4 LIMIT 1`).Scan(&embBytes)
+	if err != nil {
+		return nil // no traces with embeddings yet; defer to first AddTrace
+	}
+	var emb64 []float64
+	if err := json.Unmarshal(embBytes, &emb64); err != nil || len(emb64) == 0 {
+		return nil
+	}
+	return g.ensureVecTable(len(emb64))
+}
+
+// ensureVecTable creates the trace_vec virtual table for the given embedding dimension
+// (if not yet created) and backfills all existing traces. Idempotent for the same dim.
+//
+// Schema uses integer rowid (from the traces table) + auxiliary +trace_id column,
+// avoiding vec0's TEXT PRIMARY KEY partitioning behaviour which breaks KNN queries.
+func (g *DB) ensureVecTable(dim int) error {
+	if g.vecDim == dim {
+		return nil // already set up for this dimension
+	}
+	if g.vecDim != 0 && g.vecDim != dim {
+		// Dimension mismatch — can't use vec for this embedding
+		return fmt.Errorf("embedding dim %d doesn't match vec table dim %d", dim, g.vecDim)
+	}
+
+	// Create the vec table with the correct dimension.
+	// Use integer rowid (mapped from traces.rowid) and +trace_id as auxiliary text.
+	_, err := g.db.Exec(fmt.Sprintf(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS trace_vec USING vec0(
+			embedding float[%d],
+			+trace_id TEXT
+		)
+	`, dim))
+	if err != nil {
+		return fmt.Errorf("failed to create trace_vec(float[%d]): %w", dim, err)
+	}
+	g.vecDim = dim
+
+	// Backfill all existing traces into the new index.
+	// Use the traces.rowid as the vec0 rowid for stable integer keying.
+	rows, err := g.db.Query(`SELECT rowid, id, embedding FROM traces WHERE embedding IS NOT NULL`)
+	if err != nil {
+		return nil // backfill failure is non-fatal
+	}
+	defer rows.Close()
+
+	tx, err := g.db.Begin()
+	if err != nil {
+		return nil
+	}
+
+	var count int
+	for rows.Next() {
+		var rowid int64
+		var id string
+		var emb []byte
+		if err := rows.Scan(&rowid, &id, &emb); err != nil {
+			continue
+		}
+		var emb64 []float64
+		if err := json.Unmarshal(emb, &emb64); err != nil || len(emb64) != dim {
+			continue
+		}
+		emb32 := normalizeFloat32(float64ToFloat32(emb64)) // normalize for cosine-compatible L2
+		serialized, serErr := sqlite_vec.SerializeFloat32(emb32)
+		if serErr != nil {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO trace_vec(rowid, embedding, trace_id) VALUES (?, ?, ?)`, rowid, serialized, id); err != nil {
+			log.Printf("[graph] vec backfill failed for %s: %v", id, err)
+			continue
+		}
+		count++
+	}
+	if err := tx.Commit(); err != nil {
+		return nil
+	}
+	if count > 0 {
+		log.Printf("[graph] vec backfill: indexed %d traces (dim=%d)", count, dim)
+	}
+	return nil
+}
+
+// float64ToFloat32 converts a float64 slice to float32
+func float64ToFloat32(in []float64) []float32 {
+	out := make([]float32, len(in))
+	for i, v := range in {
+		out[i] = float32(v)
+	}
+	return out
+}
+
+// normalizeFloat32 returns a unit-length copy of the vector.
+// Normalizing before storing in vec0 makes L2 distance equivalent to cosine distance:
+//   cosine_dist = L2_dist² / 2   (for unit vectors)
+//   L2_threshold = sqrt(2 * cosine_dist_threshold)
+func normalizeFloat32(v []float32) []float32 {
+	var norm float64
+	for _, x := range v {
+		norm += float64(x) * float64(x)
+	}
+	if norm == 0 {
+		return v
+	}
+	norm = math.Sqrt(norm)
+	out := make([]float32, len(v))
+	for i, x := range v {
+		out[i] = float32(float64(x) / norm)
+	}
+	return out
+}
+
+// cosineDistToL2 converts a cosine distance threshold to an L2 distance threshold
+// for unit-normalized vectors: L2_threshold = sqrt(2 * cosine_dist_threshold)
+func cosineDistToL2(cosineDist float64) float64 {
+	return math.Sqrt(2.0 * cosineDist)
+}
+
+// l2ToCosineSim converts an L2 distance (on normalized vectors) to cosine similarity:
+// cosine_sim = 1 - L2²/2
+func l2ToCosineSim(l2dist float64) float64 {
+	return 1.0 - (l2dist*l2dist)/2.0
 }
 
 // Stats returns database statistics
