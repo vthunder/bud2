@@ -519,6 +519,29 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	// Errors are non-fatal: we just won't extend beyond the base 30.
 	unconsolidated, _ := e.graph.GetUnconsolidatedEpisodeIDsForChannel(channelID)
 
+	// Pre-fetch all summaries in batch (2 queries instead of N+1 individual lookups).
+	// Replaces per-episode GetEpisodeSummary calls inside the tier loops.
+	allIDs := make([]string, len(episodes))
+	for i, ep := range episodes {
+		allIDs[i] = ep.ID
+	}
+	c32Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel32)
+	c8Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel8)
+
+	// lookupSummary returns (content, tokens, compressionLevel) for an episode.
+	// For C32 tier: prefers C32, falls back to C8. For C8 tier: uses C8 only.
+	lookupSummary := func(episodeID string, level int) (string, int, int) {
+		if level == graph.CompressionLevel32 {
+			if s, ok := c32Map[episodeID]; ok {
+				return s.Summary, s.Tokens, s.CompressionLevel
+			}
+		}
+		if s, ok := c8Map[episodeID]; ok {
+			return s.Summary, s.Tokens, s.CompressionLevel
+		}
+		return "", 0, 0
+	}
+
 	// Token budget raised to accommodate extended unconsolidated episodes
 	tokenBudget := 5000
 	tokenUsed := 0
@@ -560,11 +583,10 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			compressionLevel := 0
 
 			if tier.level > 0 {
-				summary, err := e.graph.GetEpisodeSummary(ep.ID, tier.level)
-				if err == nil && summary != nil {
-					content = summary.Summary
-					tokens = summary.Tokens
-					compressionLevel = summary.CompressionLevel
+				if s, t, lvl := lookupSummary(ep.ID, tier.level); s != "" {
+					content = s
+					tokens = t
+					compressionLevel = lvl
 				}
 			}
 
@@ -588,8 +610,8 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			if tier.level == 0 && ep.HasAuthorization {
 				hasAuth = true
 				logContent := ep.Content
-				if summary, err := e.graph.GetEpisodeSummary(ep.ID, 8); err == nil && summary != nil {
-					logContent = summary.Summary
+				if s, ok := c8Map[ep.ID]; ok {
+					logContent = s.Summary
 				} else {
 					logContent = strings.ReplaceAll(truncate(logContent, 80), "\n", " ")
 				}
@@ -621,10 +643,10 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			content := ep.Content
 			tokens := ep.TokenCount
 			compressionLevel := 0
-			if summary, err := e.graph.GetEpisodeSummary(ep.ID, graph.CompressionLevel8); err == nil && summary != nil {
-				content = summary.Summary
-				tokens = summary.Tokens
-				compressionLevel = summary.CompressionLevel
+			if s, ok := c8Map[ep.ID]; ok {
+				content = s.Summary
+				tokens = s.Tokens
+				compressionLevel = s.CompressionLevel
 			}
 
 			if tokenUsed+tokens > tokenBudget {
