@@ -732,6 +732,56 @@ func (g *DB) runMigrations() error {
 		log.Println("[graph] Migration to v19 completed successfully")
 	}
 
+	// Migration v20: Repair FTS5 table if it was skipped during v17 due to missing build tag.
+	// v17 marked itself complete even when FTS5 creation failed, leaving trace_fts absent.
+	// This migration re-attempts FTS5 setup idempotently; it's a no-op if trace_fts exists.
+	if version < 20 {
+		log.Println("[graph] Migrating to schema v20: FTS5 repair (idempotent re-attempt)")
+		migrations := []string{
+			`CREATE VIRTUAL TABLE IF NOT EXISTS trace_fts USING fts5(
+				trace_id UNINDEXED,
+				summary,
+				content=trace_summaries,
+				content_rowid=id
+			)`,
+			`INSERT OR IGNORE INTO trace_fts(rowid, trace_id, summary)
+				SELECT id, trace_id, summary FROM trace_summaries WHERE compression_level = 32`,
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_ai
+				AFTER INSERT ON trace_summaries
+				WHEN NEW.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(rowid, trace_id, summary) VALUES (NEW.id, NEW.trace_id, NEW.summary);
+				END`,
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_au
+				AFTER UPDATE ON trace_summaries
+				WHEN NEW.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(trace_fts, rowid, trace_id, summary) VALUES ('delete', OLD.id, OLD.trace_id, OLD.summary);
+					INSERT INTO trace_fts(rowid, trace_id, summary) VALUES (NEW.id, NEW.trace_id, NEW.summary);
+				END`,
+			`CREATE TRIGGER IF NOT EXISTS trace_summaries_ad
+				AFTER DELETE ON trace_summaries
+				WHEN OLD.compression_level = 32
+				BEGIN
+					INSERT INTO trace_fts(trace_fts, rowid, trace_id, summary) VALUES ('delete', OLD.id, OLD.trace_id, OLD.summary);
+				END`,
+		}
+		ftsOK := true
+		for _, sql := range migrations {
+			if _, err := g.db.Exec(sql); err != nil {
+				log.Printf("[graph] Migration v20 warning (FTS5 may be unavailable): %v", err)
+				ftsOK = false
+				break
+			}
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (20)")
+		if ftsOK {
+			log.Println("[graph] Migration to v20 completed: FTS5 table created/repaired")
+		} else {
+			log.Println("[graph] Migration to v20 skipped: FTS5 not available (rebuild with -tags fts5)")
+		}
+	}
+
 	return nil
 }
 
