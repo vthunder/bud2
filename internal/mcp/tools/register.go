@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -193,7 +192,10 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		Description: "List all memory traces with their IDs and content preview.",
 		Properties:  map[string]mcp.PropDef{},
 	}, func(ctx any, args map[string]any) (string, error) {
-		traces, err := deps.GraphDB.GetAllTraces()
+		if deps.EngramClient == nil {
+			return "", fmt.Errorf("engram client not configured")
+		}
+		traces, err := deps.EngramClient.ListTraces()
 		if err != nil {
 			return "", fmt.Errorf("failed to load traces: %w", err)
 		}
@@ -212,8 +214,8 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 	})
 
 
-	// search_memory (if embedder is available)
-	if deps.StateInspector != nil && deps.Embedder != nil {
+	// search_memory (if engram client is available)
+	if deps.EngramClient != nil {
 		server.RegisterTool("search_memory", mcp.ToolDef{
 			Description: "Search memory traces by semantic similarity. Returns traces most relevant to the query, optionally biased by current activation levels.",
 			Properties: map[string]mcp.PropDef{
@@ -233,12 +235,7 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				limit = int(l)
 			}
 
-			useContext := true
-			if uc, ok := args["use_context"].(bool); ok {
-				useContext = uc
-			}
-
-			results, err := deps.StateInspector.SearchMemoryWithContext(query, limit, useContext)
+			results, err := deps.EngramClient.Search(query, limit)
 			if err != nil {
 				return "", fmt.Errorf("search failed: %w", err)
 			}
@@ -259,12 +256,12 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", fmt.Errorf("trace_id is required")
 			}
 
-			context, err := deps.StateInspector.GetTraceContext(traceID)
+			traceCtx, err := deps.EngramClient.GetTraceContext(traceID)
 			if err != nil {
 				return "", err
 			}
 
-			data, _ := json.MarshalIndent(context, "", "  ")
+			data, _ := json.MarshalIndent(traceCtx, "", "  ")
 			return string(data), nil
 		})
 
@@ -282,20 +279,19 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", fmt.Errorf("trace_id is required")
 			}
 
-			question, _ := args["question"].(string)
-
 			// Parse level parameter (default to 1 for L1 compression)
 			level := 1
 			if lvl, ok := args["level"].(float64); ok {
 				level = int(lvl)
 			}
 
-			result, err := deps.StateInspector.QueryTrace(traceID, question, level)
+			trace, err := deps.EngramClient.GetTrace(traceID, level)
 			if err != nil {
 				return "", err
 			}
 
-			return result, nil
+			data, _ := json.MarshalIndent(trace, "", "  ")
+			return string(data), nil
 		})
 
 		// query_episode - query specific episode by short ID or full ID
@@ -311,16 +307,7 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", fmt.Errorf("id is required")
 			}
 
-			var episode *graph.Episode
-			var err error
-
-			// Try short ID first (5 chars), then fall back to full ID
-			if len(id) == 5 {
-				episode, err = deps.GraphDB.GetEpisodeByShortID(id)
-			} else {
-				episode, err = deps.GraphDB.GetEpisode(id)
-			}
-
+			episode, err := deps.EngramClient.GetEpisode(id)
 			if err != nil {
 				return "", fmt.Errorf("failed to get episode: %w", err)
 			}
@@ -328,16 +315,17 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", fmt.Errorf("episode not found: %s", id)
 			}
 
-			// Get available summaries
+			// Get available summaries via batch API
 			summaries := []map[string]any{}
-			for level := 1; level <= 2; level++ {
-				summary, _ := deps.GraphDB.GetEpisodeSummary(episode.ID, level)
-				if summary != nil {
-					summaries = append(summaries, map[string]any{
-						"level":   summary.CompressionLevel,
-						"summary": summary.Summary,
-						"tokens":  summary.Tokens,
-					})
+			for _, level := range []int{1, 2} {
+				batch, err := deps.EngramClient.GetEpisodeSummariesBatch([]string{episode.ID}, level)
+				if err == nil {
+					if text, ok := batch[episode.ID]; ok && text != "" {
+						summaries = append(summaries, map[string]any{
+							"level":   level,
+							"summary": text,
+						})
+					}
 				}
 			}
 

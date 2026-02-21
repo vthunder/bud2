@@ -386,10 +386,9 @@ func main() {
 	var exec *executive.ExecutiveV2
 
 	mcpDeps := &tools.Dependencies{
-		GraphDB:        graphDB,
+		EngramClient:   engramClient,
 		ActivityLog:    activityLog,
 		StateInspector: stateInspector,
-		Embedder:       ollamaClient,
 		StatePath:      statePath,
 		SystemPath:     systemPath,
 		QueuesPath:     queuesPath,
