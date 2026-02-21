@@ -25,6 +25,7 @@ import (
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/authorize"
+	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/consolidate"
 	"github.com/vthunder/bud2/internal/effectors"
@@ -245,6 +246,17 @@ func main() {
 	defer graphDB.Close()
 	log.Println("[main] Graph database initialized")
 
+	// Engram HTTP client - used by executive for memory retrieval
+	engramURL := os.Getenv("ENGRAM_URL")
+	engramAPIKey := os.Getenv("ENGRAM_API_KEY")
+	var engramClient *engram.Client
+	if engramURL != "" {
+		engramClient = engram.NewClient(engramURL, engramAPIKey)
+		log.Printf("[main] Engram client initialized: %s", engramURL)
+	} else {
+		log.Println("[main] Warning: ENGRAM_URL not set, executive memory retrieval disabled")
+	}
+
 	// Entity extractor - using Ollama with qwen2.5:7b for NER
 	ollamaClient := embedding.NewClient("", "") // defaults: localhost:11434, nomic-embed-text
 	ollamaClient.SetGenerationModel("qwen2.5:7b")
@@ -449,10 +461,9 @@ func main() {
 	// Initialize v2 executive with focus-based attention
 	// Note: exec is already declared above so OnMCPToolCall can reference it
 	exec = executive.NewExecutiveV2(
-		graphDB,
+		engramClient, // HTTP client for memory retrieval (nil = disabled)
 		reflexLog,
-		ollamaClient, // for query-based memory retrieval
-		statePath,    // Executive will construct paths like state/system/core.md from this
+		statePath, // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
 			Model:              claudeModel,
 			WorkDir:            statePath, // Run Claude from state/ to pick up .mcp.json

@@ -11,17 +11,12 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/budget"
+	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/focus"
-	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/reflex"
 )
-
-// Embedder generates text embeddings for semantic similarity
-type Embedder interface {
-	Embed(text string) ([]float64, error)
-}
 
 // ExecutiveV2 is the simplified executive using focus-based attention
 // Key simplifications:
@@ -36,9 +31,8 @@ type ExecutiveV2 struct {
 	attention *focus.Attention
 	queue     *focus.Queue
 
-	// Memory systems
-	graph    *graph.DB
-	embedder Embedder
+	// Memory system (Engram HTTP client)
+	memory *engram.Client
 
 	// Reflex log for context
 	reflexLog *reflex.Log
@@ -79,9 +73,8 @@ type ExecutiveV2Config struct {
 
 // NewExecutiveV2 creates a new v2 executive
 func NewExecutiveV2(
-	graph *graph.DB,
+	memory *engram.Client,
 	reflexLog *reflex.Log,
-	embedder Embedder,
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
@@ -89,8 +82,7 @@ func NewExecutiveV2(
 		session:       NewSimpleSession(statePath),
 		attention:     focus.New(),
 		queue:         focus.NewQueue(statePath, 100),
-		graph:         graph,
-		embedder:      embedder,
+		memory:        memory,
 		reflexLog:     reflexLog,
 		mcpToolCalled: make(map[string]bool),
 		config:        cfg,
@@ -432,7 +424,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 	bundle.CoreIdentity = e.coreIdentity
 
 	// Get recent conversation from episodes (last 20 episodes within 10 minutes)
-	if e.graph != nil && item.ChannelID != "" {
+	if e.memory != nil && item.ChannelID != "" {
 		var content string
 		var hasAuth bool
 		func() {
@@ -468,41 +460,35 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		memoryLimit = 0
 	}
 
-	if e.graph != nil && e.embedder != nil && item.Content != "" && memoryLimit > 0 {
+	if e.memory != nil && item.Content != "" && memoryLimit > 0 {
 		var allMemories []focus.MemorySummary
 
 		func() {
 			defer profiling.Get().Start(item.ID, "context.memory_retrieval")()
-			// Generate embedding for the query
-			stopEmb := profiling.Get().Start(item.ID, "context.memory_retrieval.embedding")
-			queryEmb, err := e.embedder.Embed(item.Content)
-			stopEmb()
-			if err == nil && len(queryEmb) > 0 {
-				// Use dual-trigger spreading activation (semantic + lexical)
-				stopRetrieve := profiling.Get().Start(item.ID, "context.memory_retrieval.retrieve")
-				result, err := e.graph.Retrieve(queryEmb, item.Content, memoryLimit)
-				stopRetrieve()
-				if err == nil && result != nil {
-					for _, t := range result.Traces {
-						allMemories = append(allMemories, focus.MemorySummary{
-							ID:        t.ID,
-							Summary:   t.Summary,
-							Relevance: t.Activation,
-							Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
-						})
-					}
+			// Search via Engram (embedding handled server-side)
+			stopRetrieve := profiling.Get().Start(item.ID, "context.memory_retrieval.retrieve")
+			result, err := e.memory.Search(item.Content, memoryLimit)
+			stopRetrieve()
+			if err == nil && result != nil {
+				for _, t := range result.Traces {
+					allMemories = append(allMemories, focus.MemorySummary{
+						ID:        t.ID,
+						Summary:   t.Summary,
+						Relevance: t.Activation,
+						Timestamp: t.CreatedAt,
+					})
 				}
 			}
-			// Fallback: if embedding fails, use activation-based retrieval
+			// Fallback: if search fails, use activation-based retrieval
 			if len(allMemories) == 0 {
-				traces, err := e.graph.GetActivatedTraces(0.1, memoryLimit)
+				traces, err := e.memory.GetActivatedTraces(0.1, memoryLimit)
 				if err == nil {
 					for _, t := range traces {
 						allMemories = append(allMemories, focus.MemorySummary{
 							ID:        t.ID,
 							Summary:   t.Summary,
 							Relevance: t.Activation,
-							Timestamp: t.CreatedAt, // Use creation time for understanding when memory was formed
+							Timestamp: t.CreatedAt,
 						})
 					}
 				}
@@ -519,7 +505,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			for i, mem := range bundle.Memories {
 				shownIDs[i] = mem.ID
 			}
-			e.graph.BoostTraceAccess(shownIDs, 0.1)
+			e.memory.BoostTraces(shownIDs, 0.1, 0)
 		}
 	}
 
@@ -538,7 +524,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
 	// Fetch up to 100 episodes for variable buffer (min 30, max 100 for unconsolidated)
 	stopGetEpisodes := profiling.Get().Start(excludeID, "context.conversation_load.get_episodes")
-	episodes, err := e.graph.GetRecentEpisodes(channelID, 100)
+	episodes, err := e.memory.GetRecentEpisodes(channelID, 100)
 	stopGetEpisodes()
 	if err != nil {
 		log.Printf("[executive] Failed to get recent episodes: %v", err)
@@ -552,7 +538,7 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	// Fetch unconsolidated episode IDs for the extended buffer (episodes 31-100).
 	// Errors are non-fatal: we just won't extend beyond the base 30.
 	stopGetUnconsolidated := profiling.Get().Start(excludeID, "context.conversation_load.get_unconsolidated")
-	unconsolidated, _ := e.graph.GetUnconsolidatedEpisodeIDsForChannel(channelID)
+	unconsolidated, _ := e.memory.GetUnconsolidatedEpisodeIDs(channelID)
 	stopGetUnconsolidated()
 
 	// Pre-fetch all summaries in batch (2 queries instead of N+1 individual lookups).
@@ -562,20 +548,21 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		allIDs[i] = ep.ID
 	}
 	stopGetSummaries := profiling.Get().Start(excludeID, "context.conversation_load.get_summaries")
-	c32Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel32)
-	c8Map, _ := e.graph.GetEpisodeSummariesBatch(allIDs, graph.CompressionLevel8)
+	c32Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 1) // L1 ~32 words
+	c8Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 2) // L2 ~8 words
 	stopGetSummaries()
 
 	// lookupSummary returns (content, tokens, compressionLevel) for an episode.
 	// For C32 tier: prefers C32, falls back to C8. For C8 tier: uses C8 only.
+	// Tokens are estimated (4 chars ≈ 1 token) since the Engram API returns text only.
 	lookupSummary := func(episodeID string, level int) (string, int, int) {
-		if level == graph.CompressionLevel32 {
+		if level == 32 {
 			if s, ok := c32Map[episodeID]; ok {
-				return s.Summary, s.Tokens, s.CompressionLevel
+				return s, estimateTokens(s), 32
 			}
 		}
 		if s, ok := c8Map[episodeID]; ok {
-			return s.Summary, s.Tokens, s.CompressionLevel
+			return s, estimateTokens(s), 8
 		}
 		return "", 0, 0
 	}
@@ -592,9 +579,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		count int
 		level int
 	}{
-		{5, 0},                         // Last 5: full text
-		{10, graph.CompressionLevel32}, // Next 10: ~32 words
-		{15, graph.CompressionLevel8},  // Next 15: ~8 words
+		{5, 0},  // Last 5: full text
+		{10, 32}, // Next 10: ~32 words (L1)
+		{15, 8},  // Next 15: ~8 words (L2)
 	}
 
 	episodeIdx := 0
@@ -644,18 +631,6 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 				formatted = fmt.Sprintf("[%s] [%s] %s: %s", ep.ShortID, timeStr, ep.Author, content)
 			}
 
-			// Check DB for authorization (only in full text tier)
-			if tier.level == 0 && ep.HasAuthorization {
-				hasAuth = true
-				logContent := ep.Content
-				if s, ok := c8Map[ep.ID]; ok {
-					logContent = s.Summary
-				} else {
-					logContent = strings.ReplaceAll(truncate(logContent, 80), "\n", " ")
-				}
-				log.Printf("[executive] Authorization detected in episode: %s", logContent)
-			}
-
 			parts = append(parts, formatted)
 			tokenUsed += tokens
 		}
@@ -682,9 +657,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			tokens := ep.TokenCount
 			compressionLevel := 0
 			if s, ok := c8Map[ep.ID]; ok {
-				content = s.Summary
-				tokens = s.Tokens
-				compressionLevel = s.CompressionLevel
+				content = s
+				tokens = estimateTokens(s)
+				compressionLevel = 8
 			}
 
 			if tokenUsed+tokens > tokenBudget {
