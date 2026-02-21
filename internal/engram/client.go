@@ -233,6 +233,36 @@ func (c *Client) ReinforceTrace(id string, embedding []float64, alpha float64) e
 	return c.post("/v1/traces/"+url.PathEscape(id)+"/reinforce", body, nil)
 }
 
+// GetActivatedTraces returns traces with activation above threshold.
+// threshold=0 returns all traces sorted by activation.
+func (c *Client) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
+	params := url.Values{}
+	params.Set("threshold", strconv.FormatFloat(threshold, 'f', -1, 64))
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
+	var traces []*Trace
+	if err := c.get("/v1/traces", params, &traces); err != nil {
+		return nil, err
+	}
+	return traces, nil
+}
+
+// BoostTraces boosts activation for a set of traces.
+// boost=0 uses the server default (0.1).
+func (c *Client) BoostTraces(traceIDs []string, boost, threshold float64) error {
+	body := map[string]any{
+		"trace_ids": traceIDs,
+	}
+	if boost > 0 {
+		body["boost"] = boost
+	}
+	if threshold > 0 {
+		body["threshold"] = threshold
+	}
+	return c.post("/v1/traces/boost", body, nil)
+}
+
 // --- Episodes ---
 
 // GetEpisode fetches an episode by full ID or short ID.
@@ -242,6 +272,58 @@ func (c *Client) GetEpisode(id string) (*Episode, error) {
 		return nil, err
 	}
 	return &ep, nil
+}
+
+// GetRecentEpisodes returns the most recent episodes for a channel.
+// channel="" returns episodes across all channels.
+func (c *Client) GetRecentEpisodes(channel string, limit int) ([]*Episode, error) {
+	params := url.Values{}
+	if channel != "" {
+		params.Set("channel", channel)
+	}
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
+	var episodes []*Episode
+	if err := c.get("/v1/episodes", params, &episodes); err != nil {
+		return nil, err
+	}
+	return episodes, nil
+}
+
+// GetUnconsolidatedEpisodeIDs returns the set of unconsolidated episode IDs for a channel.
+func (c *Client) GetUnconsolidatedEpisodeIDs(channel string) (map[string]bool, error) {
+	params := url.Values{}
+	params.Set("unconsolidated", "true")
+	if channel != "" {
+		params.Set("channel", channel)
+	}
+	var resp struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.get("/v1/episodes", params, &resp); err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(resp.IDs))
+	for _, id := range resp.IDs {
+		result[id] = true
+	}
+	return result, nil
+}
+
+// GetEpisodeSummariesBatch fetches summaries for multiple episodes at a compression level.
+// level: 1=L1 (~32 words), 2=L2 (~8 words).
+// Returns a map of episodeID → summary string.
+func (c *Client) GetEpisodeSummariesBatch(episodeIDs []string, level int) (map[string]string, error) {
+	body := map[string]any{
+		"episode_ids": episodeIDs,
+		"level":       level,
+	}
+	var result map[string]string
+	if err := c.post("/v1/episodes/summaries", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // --- Entities ---
