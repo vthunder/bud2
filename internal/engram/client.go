@@ -65,12 +65,12 @@ type Entity struct {
 }
 
 // Trace represents a consolidated memory (Tier 3).
+// JSON field names match Engram's "engram" type.
 type Trace struct {
 	ID           string    `json:"id"`
-	ShortID      string    `json:"short_id"`
 	Summary      string    `json:"summary"`
 	Topic        string    `json:"topic,omitempty"`
-	TraceType    string    `json:"trace_type,omitempty"`
+	TraceType    string    `json:"engram_type,omitempty"`
 	Activation   float64   `json:"activation"`
 	Strength     int       `json:"strength"`
 	Embedding    []float64 `json:"embedding,omitempty"`
@@ -82,8 +82,9 @@ type Trace struct {
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
+// JSON field names match Engram's context response.
 type TraceContext struct {
-	Trace    *Trace    `json:"trace"`
+	Trace    *Trace    `json:"engram"`
 	Sources  []Episode `json:"source_episodes"`
 	Entities []*Entity `json:"linked_entities"`
 }
@@ -115,7 +116,7 @@ type IngestResult struct {
 
 // ConsolidateResult is the response from POST /v1/consolidate.
 type ConsolidateResult struct {
-	TracesCreated int   `json:"traces_created"`
+	TracesCreated int   `json:"engrams_created"`
 	DurationMS    int64 `json:"duration_ms"`
 }
 
@@ -173,26 +174,31 @@ func (c *Client) Consolidate() (*ConsolidateResult, error) {
 
 // --- Search ---
 
-// Search retrieves relevant memories for the given query.
+// Search retrieves relevant memories for the given query via Engram's semantic search.
 // limit <= 0 uses the server default (10).
+// Returns a RetrievalResult with Traces populated; Episodes and Entities are empty.
 func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
-	body := map[string]any{"query": query}
+	params := url.Values{}
+	params.Set("query", query)
+	params.Set("detail", "full")
 	if limit > 0 {
-		body["limit"] = limit
+		params.Set("limit", strconv.Itoa(limit))
 	}
-	var result RetrievalResult
-	if err := c.post("/v1/search", body, &result); err != nil {
+	var traces []*Trace
+	if err := c.get("/v1/engrams", params, &traces); err != nil {
 		return nil, err
 	}
-	return &result, nil
+	return &RetrievalResult{Traces: traces}, nil
 }
 
 // --- Traces ---
 
 // ListTraces returns all consolidated memory traces.
 func (c *Client) ListTraces() ([]*Trace, error) {
+	params := url.Values{}
+	params.Set("detail", "full")
 	var traces []*Trace
-	if err := c.get("/v1/traces", nil, &traces); err != nil {
+	if err := c.get("/v1/engrams", params, &traces); err != nil {
 		return nil, err
 	}
 	return traces, nil
@@ -202,11 +208,12 @@ func (c *Client) ListTraces() ([]*Trace, error) {
 // level: 0=raw, 1=L1 summary (default), 2=L2 summary.
 func (c *Client) GetTrace(id string, level int) (*Trace, error) {
 	params := url.Values{}
+	params.Set("detail", "full")
 	if level >= 0 {
 		params.Set("level", strconv.Itoa(level))
 	}
 	var trace Trace
-	if err := c.get("/v1/traces/"+url.PathEscape(id), params, &trace); err != nil {
+	if err := c.get("/v1/engrams/"+url.PathEscape(id), params, &trace); err != nil {
 		return nil, err
 	}
 	return &trace, nil
@@ -214,11 +221,31 @@ func (c *Client) GetTrace(id string, level int) (*Trace, error) {
 
 // GetTraceContext fetches a trace with its source episodes and linked entities.
 func (c *Client) GetTraceContext(id string) (*TraceContext, error) {
+	params := url.Values{}
+	params.Set("detail", "full")
 	var ctx TraceContext
-	if err := c.get("/v1/traces/"+url.PathEscape(id)+"/context", nil, &ctx); err != nil {
+	if err := c.get("/v1/engrams/"+url.PathEscape(id)+"/context", params, &ctx); err != nil {
 		return nil, err
 	}
 	return &ctx, nil
+}
+
+// DeleteTrace deletes a trace by ID.
+func (c *Client) DeleteTrace(id string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.baseURL+"/v1/engrams/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	return c.parseError(resp)
 }
 
 // ReinforceTrace boosts a trace's activation. alpha=0 uses the server default (0.3).
@@ -230,19 +257,20 @@ func (c *Client) ReinforceTrace(id string, embedding []float64, alpha float64) e
 	if alpha > 0 {
 		body["alpha"] = alpha
 	}
-	return c.post("/v1/traces/"+url.PathEscape(id)+"/reinforce", body, nil)
+	return c.post("/v1/engrams/"+url.PathEscape(id)+"/reinforce", body, nil)
 }
 
 // GetActivatedTraces returns traces with activation above threshold.
 // threshold=0 returns all traces sorted by activation.
 func (c *Client) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	params := url.Values{}
+	params.Set("detail", "full")
 	params.Set("threshold", strconv.FormatFloat(threshold, 'f', -1, 64))
 	if limit > 0 {
 		params.Set("limit", strconv.Itoa(limit))
 	}
 	var traces []*Trace
-	if err := c.get("/v1/traces", params, &traces); err != nil {
+	if err := c.get("/v1/engrams", params, &traces); err != nil {
 		return nil, err
 	}
 	return traces, nil
@@ -252,7 +280,7 @@ func (c *Client) GetActivatedTraces(threshold float64, limit int) ([]*Trace, err
 // boost=0 uses the server default (0.1).
 func (c *Client) BoostTraces(traceIDs []string, boost, threshold float64) error {
 	body := map[string]any{
-		"trace_ids": traceIDs,
+		"engram_ids": traceIDs,
 	}
 	if boost > 0 {
 		body["boost"] = boost
@@ -260,7 +288,7 @@ func (c *Client) BoostTraces(traceIDs []string, boost, threshold float64) error 
 	if threshold > 0 {
 		body["threshold"] = threshold
 	}
-	return c.post("/v1/traces/boost", body, nil)
+	return c.post("/v1/engrams/boost", body, nil)
 }
 
 // --- Episodes ---
@@ -309,6 +337,33 @@ func (c *Client) GetUnconsolidatedEpisodeIDs(channel string) (map[string]bool, e
 		result[id] = true
 	}
 	return result, nil
+}
+
+// GetUnconsolidatedEpisodeCount returns the number of episodes not yet linked to any trace.
+func (c *Client) GetUnconsolidatedEpisodeCount() (int, error) {
+	params := url.Values{}
+	params.Set("unconsolidated", "true")
+	var result struct {
+		Count int `json:"count"`
+	}
+	if err := c.get("/v1/episodes/count", params, &result); err != nil {
+		return 0, err
+	}
+	return result.Count, nil
+}
+
+// AddEpisodeEdge creates a directed edge between two episodes (e.g. FOLLOWS).
+// edgeType should be "follows" or another semantic label.
+// confidence should be 0.0–1.0; 0 is treated as 1.0 by the server.
+func (c *Client) AddEpisodeEdge(fromID, toID, edgeType string, confidence float64) error {
+	body := map[string]any{
+		"to_id":     toID,
+		"edge_type": edgeType,
+	}
+	if confidence > 0 {
+		body["confidence"] = confidence
+	}
+	return c.post("/v1/episodes/"+url.PathEscape(fromID)+"/edges", body, nil)
 }
 
 // GetEpisodeSummariesBatch fetches summaries for multiple episodes at a compression level.
