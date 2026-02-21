@@ -3,9 +3,8 @@ package tools
 
 import (
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/embedding"
+	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/eval"
-	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -17,10 +16,9 @@ import (
 // Optional fields may be nil.
 type Dependencies struct {
 	// Core services (required)
-	GraphDB        *graph.DB
+	EngramClient   *engram.Client
 	ActivityLog    *activity.Log
 	StateInspector *state.Inspector
-	Embedder       *embedding.Client
 
 	// Paths
 	StatePath      string
