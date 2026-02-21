@@ -24,16 +24,12 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/authorize"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/budget"
-	"github.com/vthunder/bud2/internal/consolidate"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
-	"github.com/vthunder/bud2/internal/extract"
-	"github.com/vthunder/bud2/internal/filter"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/gtd"
@@ -43,7 +39,6 @@ import (
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
-	"github.com/vthunder/bud2/internal/ner"
 	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
@@ -257,36 +252,8 @@ func main() {
 		log.Println("[main] Warning: ENGRAM_URL not set, executive memory retrieval disabled")
 	}
 
-	// Entity extractor - using Ollama with qwen2.5:7b for NER
+	// Ollama embedding client - used by stateInspector and memoryJudge
 	ollamaClient := embedding.NewClient("", "") // defaults: localhost:11434, nomic-embed-text
-	ollamaClient.SetGenerationModel("qwen2.5:7b")
-	entityExtractor := extract.NewDeepExtractor(ollamaClient)
-	invalidator := extract.NewInvalidator(ollamaClient)
-	entityResolver := extract.NewResolver(graphDB, ollamaClient)
-	log.Println("[main] Entity extractor initialized (Ollama qwen2.5:7b)")
-
-	// Authorization classifier - detects stale authorizations on session reset
-	authClassifier := authorize.NewClassifier(ollamaClient)
-	log.Println("[main] Authorization classifier initialized")
-
-	// NER sidecar client - fast entity pre-check (spaCy)
-	nerClient := ner.NewClient("http://127.0.0.1:8099")
-	if nerClient.Healthy() {
-		log.Println("[main] NER sidecar connected (spaCy)")
-	} else {
-		log.Println("[main] NER sidecar not available - entity extraction will fall back to Ollama for all messages")
-	}
-
-	// Entropy filter - kept as fallback when NER sidecar is down
-	entropyFilter := filter.NewEntropyFilter(ollamaClient)
-	_ = entropyFilter // suppress unused warning - available as fallback
-
-	// Memory consolidator - groups related episodes into traces
-	// Claude is now required for edge inference (not optional)
-	claudeInference := consolidate.NewClaudeInference(claudeModel, ".", false)
-	memoryConsolidator := consolidate.NewConsolidator(graphDB, ollamaClient, claudeInference)
-
-	log.Println("[main] Memory consolidator initialized with Claude inference")
 
 	// Ensure core.md exists in state/system directory (copy from seed if missing)
 	coreFile := filepath.Join(systemPath, "core.md")
@@ -564,241 +531,65 @@ func main() {
 		}
 	}
 
-	// Track last episode per channel for FOLLOWS edges
+	// Track last Engram episode ID per channel for FOLLOWS edges
 	var lastEpisodeMu sync.Mutex
-	lastEpisodeByChannel := make(map[string]string) // channel → episode ID
+	lastEngramIDByChannel := make(map[string]string) // channel → Engram episode ID (ep-{uuid})
 
 	// Track last episode creation time for idle-based consolidation triggering (unix nanos, atomic)
 	var lastEpisodeTimeNs int64 = time.Now().UnixNano()
 
-	// Ingest message as episode and extract entities (Tier 1 + 2 of memory graph)
-	// Phase 1 (sync): episode store + summaries + NER check (~2s total)
-	// Phase 2 (async): entity extraction + relationship storage (~18s, runs in background)
+	// Ingest message as episode into Engram (Tier 1). Engram handles NER entity linking on ingest.
 	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
-		// L1: Overall ingestion time (covers sync phase only; async phase has its own timing)
 		defer profiling.Get().Start(msg.ID, "ingest.total")()
 
 		if msg == nil || msg.Content == "" {
 			return
 		}
 
-		// Create episode (Tier 1)
-		episode := &graph.Episode{
-			ID:                msg.ID,
-			Content:           msg.Content,
-			Source:            "discord",
-			Author:            msg.Author,
-			AuthorID:          msg.AuthorID,
-			Channel:           msg.ChannelID,
-			TimestampEvent:    msg.Timestamp,
-			TimestampIngested: time.Now(),
-			CreatedAt:         time.Now(),
+		if engramClient == nil {
+			logging.Debug("ingest", "ENGRAM_URL not set, skipping episode ingest")
+			return
 		}
 
-		// Extract v2 metadata from Extra
+		var replyTo string
 		if msg.Extra != nil {
-			if dialogueAct, ok := msg.Extra["dialogue_act"].(string); ok {
-				episode.DialogueAct = dialogueAct
-			}
-			if replyTo, ok := msg.Extra["reply_to"].(string); ok {
-				episode.ReplyTo = replyTo
+			if r, ok := msg.Extra["reply_to"].(string); ok {
+				replyTo = r
 			}
 		}
 
-		// Always store episodes — episode creation is decoupled from extraction
-		var addErr error
+		req := engram.IngestEpisodeRequest{
+			Content:        msg.Content,
+			Source:         "discord",
+			Author:         msg.Author,
+			AuthorID:       msg.AuthorID,
+			Channel:        msg.ChannelID,
+			TimestampEvent: msg.Timestamp,
+			ReplyTo:        replyTo,
+		}
+
+		var result *engram.IngestResult
+		var ingestErr error
 		func() {
 			defer profiling.Get().Start(msg.ID, "ingest.episode_store")()
-			addErr = graphDB.AddEpisode(episode)
+			result, ingestErr = engramClient.IngestEpisode(req)
 		}()
-		if addErr != nil {
-			log.Printf("[ingest] Failed to store episode: %v", addErr)
+		if ingestErr != nil {
+			log.Printf("[ingest] Failed to store episode: %v", ingestErr)
 			return
 		}
 		atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
 
-		// Check for authorization async (user messages only)
-		if msg.Author != "Bud" {
-			authClassifier.CheckEpisodeAsync(graphDB, episode.ID, episode.Content)
-		}
-
-		// Generate episode summaries (async for level 1-2)
-		func() {
-			defer profiling.Get().Start(msg.ID, "ingest.summary_gen")()
-			if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
-				log.Printf("[ingest] Warning: failed to generate summaries for episode: %v", err)
-			}
-		}()
-
 		// Create FOLLOWS edge from previous episode in same channel
 		lastEpisodeMu.Lock()
-		prevID := lastEpisodeByChannel[msg.ChannelID]
-		lastEpisodeByChannel[msg.ChannelID] = episode.ID
+		prevID := lastEngramIDByChannel[msg.ChannelID]
+		lastEngramIDByChannel[msg.ChannelID] = result.ID
 		lastEpisodeMu.Unlock()
 		if prevID != "" {
-			if err := graphDB.AddEpisodeEdge(prevID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
+			if err := engramClient.AddEpisodeEdge(prevID, result.ID, "follows", 1.0); err != nil {
 				log.Printf("[ingest] Failed to add FOLLOWS edge: %v", err)
 			}
 		}
-
-		// Fast NER pre-check: use spaCy sidecar to detect entities (~10ms)
-		// If no entities found, skip the expensive Ollama extraction (~6s)
-		var nerResult *ner.ExtractResponse
-		var nerErr error
-		func() {
-			defer profiling.Get().Start(msg.ID, "ingest.ner_check")()
-			nerResult, nerErr = nerClient.Extract(msg.Content)
-		}()
-		if nerErr != nil {
-			// NER sidecar down — fall back to always running Ollama extraction
-			logging.Debug("ingest", "NER sidecar unavailable, falling back to Ollama")
-		} else if !nerResult.HasEntities {
-			logging.Debug("ingest", "No entities detected by NER: %s", logging.Truncate(msg.Content, 40))
-			return
-		} else {
-			logging.Debug("ingest", "NER found %d entities", len(nerResult.Entities))
-		}
-
-		// Fetch entity context for NER-detected entities (synchronous, fast — graph DB lookups)
-		// This runs before the goroutine so context is captured safely.
-		entityContexts := make(map[string]*graph.EntityContext)
-		if nerResult != nil {
-			for _, nerEnt := range nerResult.Entities {
-				ec, err := graphDB.GetEntityContext(nerEnt.Text, 3)
-				if err == nil && ec != nil && len(ec.Relations) > 0 {
-					entityContexts[strings.ToLower(nerEnt.Text)] = ec
-					logging.Debug("ingest", "Context for %s: %d relations", nerEnt.Text, len(ec.Relations))
-				}
-			}
-		}
-
-		// Phase 2 (async): Extract entities and relationships via Ollama (~18s)
-		// Captured variables are safe to use in goroutine: episodeID and content are
-		// local copies, graphDB/entityExtractor/etc are immutable after init.
-		episodeID := msg.ID
-		msgContent := msg.Content
-		capturedContexts := entityContexts
-		go func() {
-			defer profiling.Get().Start(episodeID, "ingest.entity_extract")() // NOTE: async background goroutine — duration does NOT block ingest or affect user-visible latency
-
-			result, err := entityExtractor.ExtractAllWithContext(msgContent, capturedContexts)
-			if err != nil {
-				log.Printf("[ingest] Entity extraction failed: %v", err)
-				result = &extract.ExtractionResult{} // empty result
-			}
-
-			// Resolve and store entities using fuzzy matching
-			entityIDMap := make(map[string]string) // name -> entityID for relationship linking
-			for _, ext := range result.Entities {
-				// Use resolver for fuzzy matching and deduplication
-				resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
-				if err != nil {
-					logging.Debug("ingest", "Failed to resolve entity %s: %v", ext.Name, err)
-					continue
-				}
-				if resolveResult == nil || resolveResult.Entity == nil {
-					logging.Debug("ingest", "Failed to resolve entity %s: nil result", ext.Name)
-					continue
-				}
-
-				entity := resolveResult.Entity
-				entityIDMap[strings.ToLower(ext.Name)] = entity.ID
-
-				// Log resolution method for debugging
-				if resolveResult.MatchedBy == "embedding" {
-					logging.Debug("ingest", "Merged '%s' with existing entity '%s'", ext.Name, entity.Name)
-				}
-
-				// Link episode to entity
-				if err := graphDB.LinkEpisodeToEntity(episodeID, entity.ID); err != nil {
-					logging.Debug("ingest", "Failed to link episode to entity: %v", err)
-				}
-			}
-
-			// Store relationships with temporal invalidation detection
-			logging.Debug("ingest", "Processing %d extracted relationships", len(result.Relationships))
-			for _, rel := range result.Relationships {
-				logging.Debug("ingest", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
-
-				subjectID := entityIDMap[strings.ToLower(rel.Subject)]
-				objectID := entityIDMap[strings.ToLower(rel.Object)]
-
-				// Handle "speaker" reference - map to owner entity
-				speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true}
-				if speakerTerms[strings.ToLower(rel.Subject)] {
-					subjectID = "entity-PERSON-owner"
-					// Ensure owner entity exists
-					graphDB.AddEntity(&graph.Entity{
-						ID:   "entity-PERSON-owner",
-						Name: "Owner",
-						Type: graph.EntityPerson,
-					})
-				}
-				if speakerTerms[strings.ToLower(rel.Object)] {
-					objectID = "entity-PERSON-owner"
-					// Ensure owner entity exists
-					graphDB.AddEntity(&graph.Entity{
-						ID:   "entity-PERSON-owner",
-						Name: "Owner",
-						Type: graph.EntityPerson,
-					})
-				}
-
-				// Skip if we still don't have both entities
-				if subjectID == "" || objectID == "" {
-					logging.Debug("ingest", "Cannot resolve entities for relationship: %s -> %s", rel.Subject, rel.Object)
-					continue
-				}
-
-				edgeType := extract.PredicateToEdgeType(rel.Predicate)
-
-				// Check for invalidation candidates (existing relations that might be contradicted)
-				candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
-				if err != nil {
-					logging.Debug("ingest", "Failed to find invalidation candidates: %v", err)
-				}
-
-				// Add the new relationship first to get its ID
-				newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, episodeID)
-				if err != nil {
-					logging.Debug("ingest", "Failed to store relationship: %v", err)
-					continue
-				}
-
-				// If there are candidates and this is an exclusive relation type, check for contradictions
-				if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
-					// Build entity name map for the invalidation prompt
-					entityNames := make(map[string]string)
-					for name, id := range entityIDMap {
-						entityNames[id] = name
-					}
-
-					invResult, err := invalidator.CheckInvalidation(
-						rel.Subject, rel.Predicate, rel.Object,
-						candidates, entityNames,
-					)
-					if err != nil {
-						logging.Debug("ingest", "Invalidation check failed: %v", err)
-					} else if len(invResult.InvalidatedIDs) > 0 {
-						for _, oldID := range invResult.InvalidatedIDs {
-							if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
-								logging.Debug("ingest", "Failed to invalidate relation: %v", err)
-							} else {
-								logging.Debug("ingest", "Invalidated relation %d", oldID)
-							}
-						}
-					}
-				}
-			}
-
-			if len(result.Entities) > 0 || len(result.Relationships) > 0 {
-				logging.Debug("ingest", "Stored episode with %d entities, %d relationships", len(result.Entities), len(result.Relationships))
-			}
-		}()
-
-		// Traces (Tier 3) are created by consolidation, not on ingest.
-		// Episodes stay unconsolidated until memory_flush or periodic consolidation runs.
-		// This allows grouping related messages into single meaningful traces.
 	}
 
 	// Process percept helper - checks reflexes first, then routes to focus queue
@@ -955,17 +746,7 @@ func main() {
 			}
 
 		default: // "message" or empty (backward compat)
-			// Pre-warm embedding cache: start Ollama embedding immediately so the executive
-			// finds a cache hit when it builds context (~250-500ms later via 500ms ticker).
-			if msg.Content != "" && ollamaClient != nil {
-				go func(c string) {
-					if _, err := ollamaClient.Embed(c); err != nil {
-						logging.Debug("main", "embedding prefetch: %v", err)
-					}
-				}(msg.Content)
-			}
-
-			// Ingest to memory graph asynchronously (Tier 1: episode, Tier 2: entities)
+			// Ingest to memory graph asynchronously (Tier 1: episode)
 			// Fire-and-forget: episode store runs in background so processPercept runs immediately.
 			// Executive reads from conversation history context, not the live episode store.
 			go ingestToMemoryGraph(msg)
@@ -1005,166 +786,34 @@ func main() {
 		return nil
 	}
 
-	// Capture outgoing response helper
+	// Capture outgoing response as episode in Engram
 	captureResponse := func(channelID, content string) {
-		now := time.Now()
-		responseID := fmt.Sprintf("bud-response-%d", now.UnixNano())
+		if engramClient == nil {
+			return
+		}
 
-		// Store Bud's response as an episode in memory graph
-		// This enables consolidation to capture Bud's observations and decisions
-		if graphDB != nil {
-			episode := &graph.Episode{
-				ID:                responseID,
-				Content:           content,
-				Source:            "bud",
-				Author:            "Bud",
-				AuthorID:          "bud",
-				Channel:           channelID,
-				TimestampEvent:    now,
-				TimestampIngested: now,
-				DialogueAct:       "response",
-				CreatedAt:         now,
-			}
-			if err := graphDB.AddEpisode(episode); err != nil {
-				log.Printf("Warning: failed to store Bud episode: %v", err)
-			} else {
-				logging.Debug("main", "Stored Bud response as episode")
-				atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
+		result, err := engramClient.IngestEpisode(engram.IngestEpisodeRequest{
+			Content:        content,
+			Source:         "bud",
+			Author:         "Bud",
+			AuthorID:       "bud",
+			Channel:        channelID,
+			TimestampEvent: time.Now(),
+		})
+		if err != nil {
+			log.Printf("Warning: failed to store Bud episode: %v", err)
+			return
+		}
+		logging.Debug("main", "Stored Bud response as episode")
+		atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
 
-				// Generate episode summaries (async for level 1-2)
-				if err := graphDB.GenerateEpisodeSummaries(*episode, ollamaClient); err != nil {
-					logging.Debug("main", "Failed to generate summaries: %v", err)
-				}
-				// Create FOLLOWS edge from previous episode in same channel
-				lastEpisodeMu.Lock()
-				prevBudID := lastEpisodeByChannel[channelID]
-				lastEpisodeByChannel[channelID] = episode.ID
-				lastEpisodeMu.Unlock()
-				if prevBudID != "" {
-					if err := graphDB.AddEpisodeEdge(prevBudID, episode.ID, graph.EdgeFollows, 1.0); err != nil {
-						logging.Debug("main", "Failed to add FOLLOWS edge: %v", err)
-					}
-				}
-
-				// Extract entities from Bud's responses — use NER pre-check to skip
-				// low-entity content like meeting reminders ("starts in 13 minutes")
-				nerResult, nerErr := nerClient.Extract(content)
-				skipExtraction := nerErr == nil && !nerResult.HasEntities
-
-				go func(episodeID, text string, skip bool) {
-					if skip {
-						logging.Debug("ingest-bud", "NER: no entities, skipping extraction")
-						return
-					}
-					result, err := entityExtractor.ExtractAll(text)
-					if err != nil {
-						logging.Debug("ingest-bud", "Entity extraction failed: %v", err)
-						return
-					}
-
-					// Build entity ID map for relationship resolution
-					entityIDMap := make(map[string]string)
-					for _, ext := range result.Entities {
-						resolveResult, err := entityResolver.Resolve(ext, extract.DefaultResolveConfig())
-						if err != nil || resolveResult == nil || resolveResult.Entity == nil {
-							continue
-						}
-						if err := graphDB.LinkEpisodeToEntity(episodeID, resolveResult.Entity.ID); err != nil {
-							logging.Debug("ingest-bud", "Failed to link episode to entity: %v", err)
-						}
-						entityIDMap[strings.ToLower(ext.Name)] = resolveResult.Entity.ID
-					}
-					if len(result.Entities) > 0 {
-						logging.Debug("ingest-bud", "Extracted %d entities", len(result.Entities))
-					}
-
-					// Store relationships with temporal invalidation detection
-					logging.Debug("ingest-bud", "Processing %d extracted relationships", len(result.Relationships))
-					for _, rel := range result.Relationships {
-						logging.Debug("ingest-bud", "Relationship: %s -[%s]-> %s", rel.Subject, rel.Predicate, rel.Object)
-
-						subjectID := entityIDMap[strings.ToLower(rel.Subject)]
-						objectID := entityIDMap[strings.ToLower(rel.Object)]
-
-						// Handle "speaker" reference - map to bud entity.
-						// Include "bud" itself to prevent self-referential object noise
-						// (e.g. "X LOCATED_IN Bud" from first-person narrative).
-						speakerTerms := map[string]bool{"speaker": true, "user": true, "i": true, "me": true, "bud": true}
-						if speakerTerms[strings.ToLower(rel.Subject)] {
-							subjectID = "entity-PERSON-bud"
-							// Ensure bud entity exists
-							graphDB.AddEntity(&graph.Entity{
-								ID:   "entity-PERSON-bud",
-								Name: "Bud",
-								Type: graph.EntityPerson,
-							})
-						}
-						if speakerTerms[strings.ToLower(rel.Object)] {
-							objectID = "entity-PERSON-bud"
-							// Ensure bud entity exists
-							graphDB.AddEntity(&graph.Entity{
-								ID:   "entity-PERSON-bud",
-								Name: "Bud",
-								Type: graph.EntityPerson,
-							})
-						}
-
-						// Skip if we still don't have both entities
-						if subjectID == "" || objectID == "" {
-							logging.Debug("ingest-bud", "Cannot resolve entities for relationship")
-							continue
-						}
-
-						// Skip relationships where Bud is the object but not the subject.
-						// Bud's first-person narrative produces many false positives like
-						// "BCS LOCATED_IN Bud" or "traces table AFFILIATED_WITH Bud" because
-						// the LLM conflates proximity in text with a relationship to Bud.
-						if objectID == "entity-PERSON-bud" && subjectID != "entity-PERSON-bud" {
-							logging.Debug("ingest-bud", "Skipping likely spurious object=Bud relationship: %s -[%s]-> Bud", rel.Subject, rel.Predicate)
-							continue
-						}
-
-						edgeType := extract.PredicateToEdgeType(rel.Predicate)
-
-						// Check for invalidation candidates (existing relations that might be contradicted)
-						candidates, err := graphDB.FindInvalidationCandidates(subjectID, edgeType)
-						if err != nil {
-							logging.Debug("ingest-bud", "Failed to find invalidation candidates: %v", err)
-						}
-
-						// Add the new relationship first to get its ID
-						newRelID, err := graphDB.AddEntityRelationWithSource(subjectID, objectID, edgeType, rel.Confidence, episodeID)
-						if err != nil {
-							logging.Debug("ingest-bud", "Failed to store relationship: %v", err)
-							continue
-						}
-
-						// If there are candidates and this is an exclusive relation type, check for contradictions
-						if len(candidates) > 0 && extract.IsExclusiveRelation(edgeType) {
-							// Build entity name map for the invalidation prompt
-							entityNames := make(map[string]string)
-							for name, id := range entityIDMap {
-								entityNames[id] = name
-							}
-
-							invResult, err := invalidator.CheckInvalidation(
-								rel.Subject, rel.Predicate, rel.Object,
-								candidates, entityNames,
-							)
-							if err != nil {
-								logging.Debug("ingest-bud", "Invalidation check failed: %v", err)
-							} else if len(invResult.InvalidatedIDs) > 0 {
-								for _, oldID := range invResult.InvalidatedIDs {
-									if err := graphDB.InvalidateRelation(oldID, newRelID); err != nil {
-										logging.Debug("ingest-bud", "Failed to invalidate relation: %v", err)
-									} else {
-										logging.Debug("ingest-bud", "Invalidated relation %d", oldID)
-									}
-								}
-							}
-						}
-					}
-				}(responseID, content, skipExtraction)
+		lastEpisodeMu.Lock()
+		prevBudID := lastEngramIDByChannel[channelID]
+		lastEngramIDByChannel[channelID] = result.ID
+		lastEpisodeMu.Unlock()
+		if prevBudID != "" {
+			if err := engramClient.AddEpisodeEdge(prevBudID, result.ID, "follows", 1.0); err != nil {
+				logging.Debug("main", "Failed to add FOLLOWS edge: %v", err)
 			}
 		}
 	}
@@ -1555,12 +1204,16 @@ func main() {
 				// Check for consolidation trigger (written by MCP memory_flush)
 				if _, err := os.Stat(consolidationTriggerFile); err == nil {
 					os.Remove(consolidationTriggerFile)
+					if engramClient == nil {
+						log.Printf("[consolidate] Engram client not available, skipping consolidation")
+						continue
+					}
 					log.Printf("[consolidate] Running memory consolidation (trigger: memory_flush)...")
-					count, err := memoryConsolidator.Run()
+					result, err := engramClient.Consolidate()
 					if err != nil {
 						log.Printf("[consolidate] Error: %v", err)
-					} else if count > 0 {
-						log.Printf("[consolidate] Created %d traces from unconsolidated episodes", count)
+					} else if result.TracesCreated > 0 {
+						log.Printf("[consolidate] Created %d traces from unconsolidated episodes", result.TracesCreated)
 					} else {
 						log.Println("[consolidate] No unconsolidated episodes found")
 					}
@@ -1589,7 +1242,10 @@ func main() {
 			case <-stopChan:
 				return
 			case <-checkTicker.C:
-				pendingCount, err := graphDB.GetUnconsolidatedEpisodeCount()
+				if engramClient == nil {
+					continue
+				}
+				pendingCount, err := engramClient.GetUnconsolidatedEpisodeCount()
 				if err != nil || pendingCount == 0 {
 					continue
 				}
@@ -1613,11 +1269,11 @@ func main() {
 				}
 
 				log.Printf("[consolidate] Triggering consolidation (pending=%d, trigger=%s)", pendingCount, trigger)
-				count, err := memoryConsolidator.Run()
+				result, err := engramClient.Consolidate()
 				if err != nil {
 					log.Printf("[consolidate] Error: %v", err)
-				} else if count > 0 {
-					log.Printf("[consolidate] Created %d traces from unconsolidated episodes", count)
+				} else if result.TracesCreated > 0 {
+					log.Printf("[consolidate] Created %d traces from unconsolidated episodes", result.TracesCreated)
 				} else {
 					log.Println("[consolidate] No unconsolidated episodes found")
 				}
@@ -1639,11 +1295,14 @@ func main() {
 			case <-stopChan:
 				return
 			case <-decayTicker.C:
-				decayed, err := graphDB.DecayActivationByAge(0.01, 0.1)
+				if engramClient == nil {
+					continue
+				}
+				result, err := engramClient.DecayActivation(0.01, 0.1)
 				if err != nil {
 					log.Printf("[consolidate] Activation decay error: %v", err)
-				} else if decayed > 0 {
-					log.Printf("[consolidate] Decayed activation for %d traces", decayed)
+				} else if result.Updated > 0 {
+					log.Printf("[consolidate] Decayed activation for %d traces", result.Updated)
 				}
 			}
 		}
