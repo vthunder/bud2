@@ -560,6 +560,9 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			"id":     {Type: "string", Description: "Trace ID (for show/delete)"},
 		},
 	}, func(ctx any, args map[string]any) (string, error) {
+		if deps.EngramClient == nil {
+			return "", fmt.Errorf("Engram client not configured")
+		}
 		action, _ := args["action"].(string)
 		if action == "" {
 			action = "list"
@@ -567,7 +570,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 
 		switch action {
 		case "list":
-			traces, err := deps.StateInspector.ListTraces()
+			traces, err := deps.EngramClient.ListTraces()
 			if err != nil {
 				return "", err
 			}
@@ -579,7 +582,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			if !ok {
 				return "", fmt.Errorf("id required for show action")
 			}
-			trace, err := deps.StateInspector.GetTrace(id)
+			trace, err := deps.EngramClient.GetTrace(id, 0)
 			if err != nil {
 				return "", err
 			}
@@ -591,7 +594,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			if !ok {
 				return "", fmt.Errorf("id required for delete action")
 			}
-			if err := deps.StateInspector.DeleteTrace(id); err != nil {
+			if err := deps.EngramClient.DeleteTrace(id); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("Deleted trace: %s", id), nil

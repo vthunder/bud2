@@ -31,8 +31,7 @@ import (
 	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/focus"
-	"github.com/vthunder/bud2/internal/graph"
-	"github.com/vthunder/bud2/internal/gtd"
+"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/logging"
@@ -232,15 +231,6 @@ func main() {
 	queuesPath := filepath.Join(systemPath, "queues")
 	os.MkdirAll(queuesPath, 0755)
 
-	// Initialize v2 memory systems
-	// Graph DB (SQLite) - replaces tracePool
-	graphDB, err := graph.Open(statePath)
-	if err != nil {
-		log.Fatalf("Failed to initialize graph database: %v", err)
-	}
-	defer graphDB.Close()
-	log.Println("[main] Graph database initialized")
-
 	// Engram HTTP client - used by executive for memory retrieval
 	engramURL := os.Getenv("ENGRAM_URL")
 	engramAPIKey := os.Getenv("ENGRAM_API_KEY")
@@ -338,11 +328,10 @@ func main() {
 	}
 
 	// Initialize state inspector for MCP tools
-	stateInspector := state.NewInspector(statePath, graphDB)
-	stateInspector.SetEmbedder(ollamaClient)
+	stateInspector := state.NewInspector(statePath, nil)
 
 	// Initialize memory judge for MCP eval tools
-	memoryJudge := eval.NewJudge(ollamaClient, graphDB)
+	memoryJudge := eval.NewJudge(ollamaClient, engramClient)
 
 	// Initialize MCP HTTP server (for Claude Code integration)
 	mcpServer := mcp.NewServer()

@@ -13,21 +13,21 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/embedding"
-	"github.com/vthunder/bud2/internal/graph"
+	"github.com/vthunder/bud2/internal/engram"
 	"github.com/zeebo/blake3"
 )
 
 // Judge evaluates memory relevance independently of self-eval.
 type Judge struct {
-	llm     *embedding.Client
-	graphDB *graph.DB
+	llm    *embedding.Client
+	engram *engram.Client
 }
 
 // NewJudge creates a new memory judge.
-func NewJudge(llm *embedding.Client, graphDB *graph.DB) *Judge {
+func NewJudge(llm *embedding.Client, engram *engram.Client) *Judge {
 	return &Judge{
-		llm:     llm,
-		graphDB: graphDB,
+		llm:    llm,
+		engram: engram,
 	}
 }
 
@@ -133,7 +133,7 @@ func displayIDToTraceID(traceID string) string {
 // traces currently in the DB. This lets us resolve self-eval entries even when the
 // in-memory memoryIDMap was cleared before signal_done was processed.
 func (j *Judge) buildDisplayIDLookup() (map[string]string, error) {
-	allTraces, err := j.graphDB.GetAllTraces()
+	allTraces, err := j.engram.ListTraces()
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (j *Judge) EvaluateSample(activityPath string, sampleSize int) (*SampleRepo
 			}
 
 			// Get trace content
-			trace, err := j.graphDB.GetTrace(traceID)
+			trace, err := j.engram.GetTrace(traceID, 0)
 			if err != nil || trace == nil {
 				continue // skip if trace not found
 			}
