@@ -876,7 +876,9 @@ func (g *DB) ensureVecTable(dim int) error {
 		if serErr != nil {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO trace_vec(rowid, embedding, trace_id) VALUES (?, ?, ?)`, rowid, serialized, id); err != nil {
+		// vec0 does not reliably support INSERT OR REPLACE; use DELETE + INSERT.
+		tx.Exec(`DELETE FROM trace_vec WHERE rowid = ?`, rowid)
+		if _, err := tx.Exec(`INSERT INTO trace_vec(rowid, embedding, trace_id) VALUES (?, ?, ?)`, rowid, serialized, id); err != nil {
 			log.Printf("[graph] vec backfill failed for %s: %v", id, err)
 			continue
 		}
