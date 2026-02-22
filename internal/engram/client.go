@@ -181,14 +181,15 @@ func (c *Client) Consolidate() (*ConsolidateResult, error) {
 // limit <= 0 uses the server default (10).
 // Returns a RetrievalResult with Traces populated; Episodes and Entities are empty.
 func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("detail", "full")
+	body := map[string]any{
+		"query":  query,
+		"detail": "full",
+	}
 	if limit > 0 {
-		params.Set("limit", strconv.Itoa(limit))
+		body["limit"] = limit
 	}
 	var traces []*Trace
-	if err := c.get("/v1/engrams", params, &traces); err != nil {
+	if err := c.post("/v1/engrams/search", body, &traces); err != nil {
 		return nil, err
 	}
 	return &RetrievalResult{Traces: traces}, nil
