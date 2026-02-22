@@ -782,6 +782,23 @@ func (g *DB) runMigrations() error {
 		}
 	}
 
+	// Migration v21: Add completion tracking fields to traces
+	if version < 21 {
+		log.Println("[graph] Migrating to schema v21: trace completion tracking")
+		migrations := []string{
+			"ALTER TABLE traces ADD COLUMN done BOOLEAN DEFAULT 0",
+			"ALTER TABLE traces ADD COLUMN resolution TEXT",
+			"ALTER TABLE traces ADD COLUMN done_at DATETIME",
+			"CREATE INDEX IF NOT EXISTS idx_traces_done ON traces(done)",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (21)")
+		log.Println("[graph] Migration to v21 completed successfully")
+	}
+
 	return nil
 }
 

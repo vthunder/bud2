@@ -40,6 +40,8 @@ type Dependencies struct {
 	AddReaction func(channelID, messageID, emoji string) error
 	// If set, save_thought will use this instead of writing to file
 	AddThought func(content string) error
+	// If set, save_thought(completes=[...]) will use this to mark traces as done
+	MarkTraceDone func(traceShortID, resolutionEpisodeShortID string) error
 	// If set, signal_done will use this to send completion signals
 	SendSignal func(signalType, content string, extra map[string]any) error
 	// If set, MCP tools will call this to notify that they've been executed

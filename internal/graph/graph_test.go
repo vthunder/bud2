@@ -1029,3 +1029,69 @@ func TestEpisodeTraceEdges(t *testing.T) {
 		t.Errorf("Duplicate edge insert should be ignored, still expected 1 edge, got %d", len(edges))
 	}
 }
+
+// TestMarkTraceDone tests the completion tracking feature
+func TestMarkTraceDone(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Add two traces: one to be marked done, one to remain active
+	active := &Trace{ID: "trace-active", ShortID: "tr_act", Summary: "Active ongoing work", Activation: 0.8}
+	done := &Trace{ID: "trace-done", ShortID: "tr_don", Summary: "Completed task", Activation: 0.7}
+
+	if err := addTestTrace(t, db, active); err != nil {
+		t.Fatalf("AddTrace(active) failed: %v", err)
+	}
+	if err := addTestTrace(t, db, done); err != nil {
+		t.Fatalf("AddTrace(done) failed: %v", err)
+	}
+
+	// Before marking: both traces appear in activated traces
+	traces, err := db.GetActivatedTraces(0.5, 10)
+	if err != nil {
+		t.Fatalf("GetActivatedTraces failed: %v", err)
+	}
+	if len(traces) != 2 {
+		t.Fatalf("Expected 2 activated traces, got %d", len(traces))
+	}
+
+	// Mark the done trace as completed
+	if err := db.MarkTraceDone("tr_don", "ep_abc"); err != nil {
+		t.Fatalf("MarkTraceDone failed: %v", err)
+	}
+
+	// After marking: only the active trace appears in activated traces
+	traces, err = db.GetActivatedTraces(0.5, 10)
+	if err != nil {
+		t.Fatalf("GetActivatedTraces after done failed: %v", err)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("Expected 1 activated trace after done, got %d", len(traces))
+	}
+	if traces[0].ShortID != "tr_act" {
+		t.Errorf("Expected active trace, got %s", traces[0].ShortID)
+	}
+
+	// Done trace is still directly retrievable by short_id
+	tr, err := db.GetTraceByShortID("tr_don")
+	if err != nil {
+		t.Fatalf("GetTraceByShortID failed: %v", err)
+	}
+	if tr == nil {
+		t.Fatal("Done trace should still be retrievable by short_id")
+	}
+	if !tr.Done {
+		t.Error("Expected Done=true on retrieved trace")
+	}
+	if tr.Resolution != "ep_abc" {
+		t.Errorf("Expected Resolution='ep_abc', got %q", tr.Resolution)
+	}
+	if tr.DoneAt.IsZero() {
+		t.Error("Expected DoneAt to be set")
+	}
+
+	// Mark non-existent trace should return error
+	if err := db.MarkTraceDone("tr_nope", ""); err == nil {
+		t.Error("Expected error for non-existent trace, got nil")
+	}
+}

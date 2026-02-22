@@ -164,7 +164,8 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("save_thought", mcp.ToolDef{
 		Description: "Save a thought or observation to memory. Use this to remember decisions, observations, or anything worth recalling later. These get consolidated with other memories over time.",
 		Properties: map[string]mcp.PropDef{
-			"content": {Type: "string", Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')"},
+			"content":   {Type: "string", Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')"},
+			"completes": {Type: "array", Description: "Optional list of trace short_ids (e.g. 'tr_abc12') that this thought resolves. Marked traces are excluded from future active retrieval but remain queryable."},
 		},
 		Required: []string{"content"},
 	}, func(ctx any, args map[string]any) (string, error) {
@@ -182,6 +183,27 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		}
 
 		log.Printf("Saved thought: %s", truncate(content, 50))
+
+		// Handle optional completion marking
+		var completedIDs []string
+		if completes, ok := args["completes"].([]any); ok && len(completes) > 0 && deps.MarkTraceDone != nil {
+			for _, item := range completes {
+				traceShortID, ok := item.(string)
+				if !ok || traceShortID == "" {
+					continue
+				}
+				if err := deps.MarkTraceDone(traceShortID, ""); err != nil {
+					log.Printf("Failed to mark trace %s as done: %v", traceShortID, err)
+				} else {
+					completedIDs = append(completedIDs, traceShortID)
+					log.Printf("Marked trace %s as done", traceShortID)
+				}
+			}
+		}
+
+		if len(completedIDs) > 0 {
+			return fmt.Sprintf("Thought saved. Marked %d trace(s) as done: %s", len(completedIDs), strings.Join(completedIDs, ", ")), nil
+		}
 		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
 	})
 }

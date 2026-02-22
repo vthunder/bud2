@@ -25,6 +25,7 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/budget"
+	"github.com/vthunder/bud2/internal/graph"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/eval"
@@ -329,6 +330,16 @@ func main() {
 	// Initialize state inspector for MCP tools
 	stateInspector := state.NewInspector(statePath)
 
+	// Open graph DB for direct write operations (e.g. mark trace done).
+	// This is safe alongside the consolidate CLI since both use SQLite WAL mode.
+	// Non-fatal: if it fails, graph write operations (e.g. MarkTraceDone) are skipped.
+	graphDB, graphDBErr := graph.Open(statePath)
+	if graphDBErr != nil {
+		log.Printf("[main] Warning: failed to open graph DB: %v (completion marking disabled)", graphDBErr)
+	} else {
+		defer graphDB.Close()
+	}
+
 	// Initialize memory judge for MCP eval tools
 	memoryJudge := eval.NewJudge(ollamaClient, engramClient)
 
@@ -366,6 +377,12 @@ func main() {
 			return fmt.Errorf("Discord effector not yet initialized")
 		},
 		AddThought: nil, // Will be set after processInboxMessage is defined
+		MarkTraceDone: func(traceShortID, resolutionEpisodeShortID string) error {
+			if graphDB == nil {
+				return fmt.Errorf("graph DB not available")
+			}
+			return graphDB.MarkTraceDone(traceShortID, resolutionEpisodeShortID)
+		},
 		OnMCPToolCall: func(toolName string) {
 			if exec != nil {
 				exec.GetMCPToolCallback()(toolName)

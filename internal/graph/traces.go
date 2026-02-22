@@ -104,7 +104,8 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
 		WHERE t.id = ?
 	`, id)
@@ -127,7 +128,8 @@ func (g *DB) GetTraceByShortID(shortID string) (*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
 		WHERE t.short_id = ?
 	`, shortID)
@@ -141,7 +143,8 @@ func (g *DB) GetCoreTraces() ([]*Trace, error) {
 	return []*Trace{}, nil
 }
 
-// GetActivatedTraces retrieves traces with activation above threshold
+// GetActivatedTraces retrieves traces with activation above threshold.
+// Done traces are excluded — they've been resolved and should not clutter active retrieval.
 // Tries compression levels preferring higher detail: 64, 32, 16, 8, 4 (most→least detail)
 func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	rows, err := g.db.Query(`
@@ -156,9 +159,10 @@ func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) 
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
-		WHERE t.activation >= ?
+		WHERE t.activation >= ? AND COALESCE(t.done, 0) = 0
 		ORDER BY t.activation DESC
 		LIMIT ?
 	`, threshold, limit)
@@ -205,7 +209,8 @@ func (g *DB) GetTracesBatch(ids []string) (map[string]*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
 		WHERE t.id IN (`+string(placeholders)+`)
 	`, args...)
@@ -258,7 +263,8 @@ func (g *DB) GetTracesBatchAtLevel(ids []string, level int) (map[string]*Trace, 
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
 		WHERE t.id IN (`+string(placeholders)+`)
 	`, args...)
@@ -281,6 +287,7 @@ func (g *DB) GetTracesBatchAtLevel(ids []string, level int) (map[string]*Trace, 
 
 // GetActivatedTracesWithLevel retrieves traces with activation above threshold,
 // loading only the specified compression level summary (e.g. level=8 for 8-word headlines).
+// Done traces are excluded — they've been resolved and should not appear in active retrieval.
 // Used for Phase 1 of funnel retrieval to cheaply screen many candidates.
 func (g *DB) GetActivatedTracesWithLevel(threshold float64, limit, level int) ([]*Trace, error) {
 	rows, err := g.db.Query(`
@@ -291,9 +298,10 @@ func (g *DB) GetActivatedTracesWithLevel(threshold float64, limit, level int) ([
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
-		WHERE t.activation >= ?
+		WHERE t.activation >= ? AND COALESCE(t.done, 0) = 0
 		ORDER BY t.activation DESC
 		LIMIT ?
 	`, level, threshold, limit)
@@ -786,7 +794,8 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
+			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at
 		FROM traces t
 		ORDER BY t.created_at DESC
 	`)
@@ -838,10 +847,14 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	var topic sql.NullString
 	var traceType sql.NullString
 	var labileUntil sql.NullTime
+	var done sql.NullBool
+	var resolution sql.NullString
+	var doneAt sql.NullTime
 
 	err := row.Scan(
 		&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 		&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
+		&done, &resolution, &doneAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -858,6 +871,15 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	}
 	if labileUntil.Valid {
 		tr.LabileUntil = labileUntil.Time
+	}
+	if done.Valid {
+		tr.Done = done.Bool
+	}
+	if resolution.Valid {
+		tr.Resolution = resolution.String
+	}
+	if doneAt.Valid {
+		tr.DoneAt = doneAt.Time
 	}
 
 	if len(embeddingBytes) > 0 {
@@ -877,10 +899,14 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		var topic sql.NullString
 		var traceType sql.NullString
 		var labileUntil sql.NullTime
+		var done sql.NullBool
+		var resolution sql.NullString
+		var doneAt sql.NullTime
 
 		err := rows.Scan(
 			&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 			&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
+			&done, &resolution, &doneAt,
 		)
 		if err != nil {
 			continue
@@ -894,6 +920,15 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		}
 		if labileUntil.Valid {
 			tr.LabileUntil = labileUntil.Time
+		}
+		if done.Valid {
+			tr.Done = done.Bool
+		}
+		if resolution.Valid {
+			tr.Resolution = resolution.String
+		}
+		if doneAt.Valid {
+			tr.DoneAt = doneAt.Time
 		}
 
 		if len(embeddingBytes) > 0 {
@@ -964,6 +999,23 @@ func (g *DB) syncTraceToVec(traceID string, embedding []float64) {
 func (g *DB) ClearReconsolidationFlag(traceID string) error {
 	_, err := g.db.Exec(`UPDATE traces SET needs_reconsolidation = 0 WHERE id = ?`, traceID)
 	return err
+}
+
+// MarkTraceDone marks a trace as resolved/completed. The trace is not deleted but will
+// be excluded from active retrieval queries. The resolution field records which episode
+// short_id provided the resolution context (optional, pass "" if not known).
+func (g *DB) MarkTraceDone(traceShortID, resolutionEpisodeShortID string) error {
+	result, err := g.db.Exec(`
+		UPDATE traces SET done = 1, resolution = ?, done_at = ? WHERE short_id = ?
+	`, resolutionEpisodeShortID, time.Now(), traceShortID)
+	if err != nil {
+		return fmt.Errorf("failed to mark trace done: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("trace not found: %s", traceShortID)
+	}
+	return nil
 }
 
 // UpdateTrace updates a trace's summary, embedding, type, and strength after reconsolidation

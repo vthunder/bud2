@@ -141,6 +141,11 @@ type Trace struct {
 	LastAccessed time.Time `json:"last_accessed"`
 	LabileUntil  time.Time `json:"labile_until,omitempty"`
 
+	// Completion tracking (set when a topic is resolved)
+	Done       bool      `json:"done,omitempty"`
+	Resolution string    `json:"resolution,omitempty"` // Episode short_id that resolved this trace
+	DoneAt     time.Time `json:"done_at,omitempty"`
+
 	// Related data (populated on retrieval)
 	SourceIDs []string `json:"source_ids,omitempty"`
 	EntityIDs []string `json:"entity_ids,omitempty"`
