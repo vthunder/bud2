@@ -383,6 +383,25 @@ func main() {
 			}
 			return graphDB.MarkTraceDone(traceShortID, resolutionEpisodeShortID)
 		},
+		GetTraceInfo: func(traceShortID string) (*tools.LocalTraceInfo, error) {
+			if graphDB == nil {
+				return nil, fmt.Errorf("graph DB not available")
+			}
+			trace, err := graphDB.GetTraceByShortID(traceShortID)
+			if err != nil || trace == nil {
+				return nil, err
+			}
+			summaries, err := graphDB.GetTraceSummariesAll(trace.ID)
+			if err != nil {
+				summaries = nil
+			}
+			return &tools.LocalTraceInfo{
+				Done:             trace.Done,
+				Resolution:       trace.Resolution,
+				DoneAt:           trace.DoneAt,
+				PyramidSummaries: summaries,
+			}, nil
+		},
 		OnMCPToolCall: func(toolName string) {
 			if exec != nil {
 				exec.GetMCPToolCallback()(toolName)

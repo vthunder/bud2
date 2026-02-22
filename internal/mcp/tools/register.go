@@ -312,6 +312,28 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", err
 			}
 
+			// Augment with local done status + pyramid summaries if available
+			if deps.GetTraceInfo != nil {
+				info, infoErr := deps.GetTraceInfo(traceID)
+				if infoErr == nil && info != nil {
+					result := map[string]any{
+						"trace": trace,
+					}
+					if info.Done {
+						result["done_status"] = map[string]any{
+							"is_done":     true,
+							"resolved_by": info.Resolution,
+							"resolved_at": info.DoneAt,
+						}
+					}
+					if len(info.PyramidSummaries) > 0 {
+						result["pyramid_summaries"] = info.PyramidSummaries
+					}
+					data, _ := json.MarshalIndent(result, "", "  ")
+					return string(data), nil
+				}
+			}
+
 			data, _ := json.MarshalIndent(trace, "", "  ")
 			return string(data), nil
 		})

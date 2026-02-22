@@ -315,6 +315,32 @@ func (g *DB) AddTraceSummary(traceID string, level int, summary string, tokens i
 	return err
 }
 
+// GetTraceSummariesAll returns all available pyramid summaries for a trace as a map of
+// compression_level → summary. Only levels that actually exist in the DB are included.
+func (g *DB) GetTraceSummariesAll(traceID string) (map[int]string, error) {
+	rows, err := g.db.Query(`
+		SELECT compression_level, summary
+		FROM trace_summaries
+		WHERE trace_id = ?
+		ORDER BY compression_level DESC
+	`, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int]string)
+	for rows.Next() {
+		var level int
+		var summary string
+		if err := rows.Scan(&level, &summary); err != nil {
+			return nil, err
+		}
+		result[level] = summary
+	}
+	return result, rows.Err()
+}
+
 // DeleteAllTraceSummaries removes all trace summaries from the database
 func (g *DB) DeleteAllTraceSummaries() error {
 	_, err := g.db.Exec(`DELETE FROM trace_summaries`)

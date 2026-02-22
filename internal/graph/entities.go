@@ -249,9 +249,9 @@ func (g *DB) AddEntityRelationWithSource(fromID, toID string, relType EdgeType, 
 		`, fromID, toID, relType, weight)
 	} else {
 		result, err = g.db.Exec(`
-			INSERT INTO entity_relations (from_id, to_id, relation_type, weight, source_episode_id)
-			VALUES (?, ?, ?, ?, ?)
-		`, fromID, toID, relType, weight, sourceEpisodeID)
+			INSERT INTO entity_relations (from_id, to_id, relation_type, weight, source_episode_id, valid_at)
+			VALUES (?, ?, ?, ?, ?, COALESCE((SELECT timestamp_event FROM episodes WHERE id = ?), CURRENT_TIMESTAMP))
+		`, fromID, toID, relType, weight, sourceEpisodeID, sourceEpisodeID)
 	}
 
 	if err != nil {
