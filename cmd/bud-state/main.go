@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/graph"
-	"github.com/vthunder/bud2/internal/state"
+	"github.com/vthunder/bud2/internal/state/graphdb"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -34,7 +34,7 @@ func main() {
 	}
 	defer graphDB.Close()
 
-	inspector := state.NewInspector(statePath, graphDB)
+	inspector := graphdb.NewInspector(statePath, graphDB)
 	cmd := os.Args[1]
 
 	switch cmd {
@@ -121,7 +121,7 @@ Environment:
   BUD_STATE_PATH       State directory (default: "state")`)
 }
 
-func handleSummary(inspector *state.Inspector) {
+func handleSummary(inspector *graphdb.Inspector) {
 	summary, err := inspector.Summary()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -150,7 +150,7 @@ func handleSummary(inspector *state.Inspector) {
 	fmt.Printf("  Activity:  %d entries\n", summary.Activity)
 }
 
-func handleHealth(inspector *state.Inspector) {
+func handleHealth(inspector *graphdb.Inspector) {
 	health, err := inspector.Health()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -172,7 +172,7 @@ func handleHealth(inspector *state.Inspector) {
 	}
 }
 
-func handleTraces(inspector *state.Inspector, statePath string, args []string) {
+func handleTraces(inspector *graphdb.Inspector, statePath string, args []string) {
 	fs := flag.NewFlagSet("traces", flag.ExitOnError)
 	deleteID := fs.String("d", "", "Delete trace by ID")
 	fs.Parse(args)
@@ -212,7 +212,7 @@ func handleTraces(inspector *state.Inspector, statePath string, args []string) {
 	}
 }
 
-func handleEpisodes(inspector *state.Inspector, args []string) {
+func handleEpisodes(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("episodes", flag.ExitOnError)
 	limit := fs.Int("n", 100, "Number of episodes to show")
 	countOnly := fs.Bool("count", false, "Just show count")
@@ -265,7 +265,7 @@ func handleEpisodes(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handleEntities(inspector *state.Inspector, args []string) {
+func handleEntities(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("entities", flag.ExitOnError)
 	limit := fs.Int("n", 100, "Number of entities to show")
 	countOnly := fs.Bool("count", false, "Just show count")
@@ -317,7 +317,7 @@ func handleEntities(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handleGraph(inspector *state.Inspector, args []string) {
+func handleGraph(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("graph", flag.ExitOnError)
 	asJSON := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
@@ -399,7 +399,7 @@ func handleGraph(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handlePercepts(inspector *state.Inspector, args []string) {
+func handlePercepts(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("percepts", flag.ExitOnError)
 	countOnly := fs.Bool("count", false, "Just show count")
 	clear := fs.Bool("clear", false, "Clear percepts")
@@ -448,7 +448,7 @@ func handlePercepts(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handleThreads(inspector *state.Inspector, args []string) {
+func handleThreads(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("threads", flag.ExitOnError)
 	clear := fs.Bool("clear", false, "Clear threads")
 	status := fs.String("status", "", "Filter by status (active, paused, frozen, complete)")
@@ -499,7 +499,7 @@ func handleThreads(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handleLogs(inspector *state.Inspector, args []string) {
+func handleLogs(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	truncate := fs.Int("truncate", 0, "Keep only last N entries")
 	count := fs.Int("n", 20, "Number of entries to show")
@@ -537,7 +537,7 @@ func handleLogs(inspector *state.Inspector, args []string) {
 	}
 }
 
-func handleQueues(inspector *state.Inspector, args []string) {
+func handleQueues(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("queues", flag.ExitOnError)
 	clear := fs.Bool("clear", false, "Clear all queues")
 	fs.Parse(args)
@@ -564,7 +564,7 @@ func handleQueues(inspector *state.Inspector, args []string) {
 	fmt.Printf("Signals: %d\n", queues.Signals)
 }
 
-func handleSessions(inspector *state.Inspector, args []string) {
+func handleSessions(inspector *graphdb.Inspector, args []string) {
 	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
 	clear := fs.Bool("clear", false, "Clear session tracking")
 	fs.Parse(args)

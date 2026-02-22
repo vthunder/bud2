@@ -328,7 +328,7 @@ func main() {
 	}
 
 	// Initialize state inspector for MCP tools
-	stateInspector := state.NewInspector(statePath, nil)
+	stateInspector := state.NewInspector(statePath)
 
 	// Initialize memory judge for MCP eval tools
 	memoryJudge := eval.NewJudge(ollamaClient, engramClient)
