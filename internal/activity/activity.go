@@ -282,6 +282,23 @@ func (l *Log) Range(start, end time.Time) ([]Entry, error) {
 	return result, nil
 }
 
+// LastUserInputTime returns the timestamp of the most recent user-initiated input
+// (TypeInput entries that are not from impulse:system). Returns zero time if none found.
+func (l *Log) LastUserInputTime() time.Time {
+	entries, err := l.readAll()
+	if err != nil {
+		return time.Time{}
+	}
+	// Walk backwards for efficiency
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Type == TypeInput && e.Source != "impulse:system" {
+			return e.Timestamp
+		}
+	}
+	return time.Time{}
+}
+
 // readAll reads all entries from the log file
 func (l *Log) readAll() ([]Entry, error) {
 	l.mu.Lock()

@@ -554,3 +554,52 @@ func TestConcurrentWrites(t *testing.T) {
 		t.Errorf("expected %d entries, got %d (possible corruption)", n, len(entries))
 	}
 }
+
+// --- LastUserInputTime ---
+
+func TestLastUserInputTime_Empty(t *testing.T) {
+	log, _ := newTestLog(t)
+	ts := log.LastUserInputTime()
+	if !ts.IsZero() {
+		t.Errorf("expected zero time, got %v", ts)
+	}
+}
+
+func TestLastUserInputTime_OnlySystemInputs(t *testing.T) {
+	log, _ := newTestLog(t)
+	log.Log(Entry{Type: TypeInput, Source: "impulse:system", Summary: "system wake"})
+	ts := log.LastUserInputTime()
+	if !ts.IsZero() {
+		t.Errorf("system inputs should be ignored, got %v", ts)
+	}
+}
+
+func TestLastUserInputTime_UserInput(t *testing.T) {
+	log, _ := newTestLog(t)
+	before := time.Now().Add(-time.Second)
+	log.Log(Entry{Type: TypeInput, Source: "impulse:system", Summary: "system wake"})
+	log.Log(Entry{Type: TypeAction, Source: "discord", Summary: "not an input"})
+	log.Log(Entry{Type: TypeInput, Source: "discord", Summary: "user said hello"})
+	after := time.Now().Add(time.Second)
+	ts := log.LastUserInputTime()
+	if ts.IsZero() {
+		t.Fatal("expected non-zero time")
+	}
+	if ts.Before(before) || ts.After(after) {
+		t.Errorf("timestamp %v out of expected range [%v, %v]", ts, before, after)
+	}
+}
+
+func TestLastUserInputTime_ReturnsLatest(t *testing.T) {
+	log, _ := newTestLog(t)
+	log.Log(Entry{Type: TypeInput, Source: "discord", Summary: "first"})
+	time.Sleep(2 * time.Millisecond)
+	log.Log(Entry{Type: TypeInput, Source: "discord", Summary: "second"})
+	ts := log.LastUserInputTime()
+	// Should return the most recent entry — check indirectly via the log content
+	entries, _ := log.ByType(TypeInput, 10)
+	latest := entries[0].Timestamp // ByType returns most-recent first
+	if !ts.Equal(latest) {
+		t.Errorf("expected %v (latest), got %v", latest, ts)
+	}
+}

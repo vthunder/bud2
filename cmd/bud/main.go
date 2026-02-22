@@ -1138,21 +1138,30 @@ func main() {
 		}
 	}()
 
-	// Start autonomous wake-up goroutine (periodic self-initiated work)
+	// Start autonomous wake-up goroutine (periodic self-initiated work).
+	// Uses adaptive intervals: active mode (base interval) when the user has been
+	// present recently, quiet mode (2× interval) when idle for 4+ hours.
 	if autonomousEnabled {
-		log.Printf("[main] Autonomous mode enabled (interval: %v)", autonomousInterval)
+		log.Printf("[main] Autonomous mode enabled (base interval: %v)", autonomousInterval)
 		go func() {
-			periodicTicker := time.NewTicker(autonomousInterval)
-			defer periodicTicker.Stop()
-
 			time.Sleep(10 * time.Second)
 
 			for {
+				// Adaptive interval: double base if no user input for 4+ hours.
+				interval := autonomousInterval
+				lastInput := activityLog.LastUserInputTime()
+				if !lastInput.IsZero() && time.Since(lastInput) > 4*time.Hour {
+					interval = autonomousInterval * 2
+					log.Printf("[autonomous] Quiet mode (last input %v ago) — next wake in %v", time.Since(lastInput).Round(time.Minute), interval)
+				}
+
+				timer := time.NewTimer(interval)
 				select {
 				case <-stopChan:
+					timer.Stop()
 					return
 
-				case <-periodicTicker.C:
+				case <-timer.C:
 					// Skip wake during quiet hours (23:00–07:00 local time) to avoid
 					// wasting resources while the user is sleeping.
 					tz := userTimezone
