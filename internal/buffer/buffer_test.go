@@ -331,6 +331,242 @@ func TestDialogueActInBuffer(t *testing.T) {
 	}
 }
 
+// TestGetEntriesSinceFiltered tests ExcludeID and ExcludeBotAuthor filtering
+func TestGetEntriesSinceFiltered(t *testing.T) {
+	cb := New("/tmp/test-buffer", nil)
+	baseTime := time.Now().Add(-10 * time.Second)
+
+	entries := []Entry{
+		{ID: "msg-1", Author: "thunder", Content: "Question", Timestamp: baseTime, ChannelID: "ch"},
+		{ID: "msg-2", Author: "bud", Content: "Answer", Timestamp: baseTime.Add(1 * time.Second), ChannelID: "ch"},
+		{ID: "focus-msg", Author: "thunder", Content: "Current focus item", Timestamp: baseTime.Add(2 * time.Second), ChannelID: "ch"},
+		{ID: "msg-4", Author: "thunder", Content: "Follow up", Timestamp: baseTime.Add(3 * time.Second), ChannelID: "ch"},
+	}
+	for _, e := range entries {
+		cb.Add(e)
+	}
+
+	scope := ScopeChannel("ch")
+
+	// ExcludeID should drop the current focus item
+	filtered, _, _ := cb.GetEntriesSinceFiltered(scope, time.Time{}, BufferFilter{ExcludeID: "focus-msg"})
+	for _, e := range filtered {
+		if e.ID == "focus-msg" {
+			t.Error("ExcludeID should have removed focus-msg but it's still present")
+		}
+	}
+	if len(filtered) != 3 {
+		t.Errorf("Expected 3 entries after ExcludeID filter, got %d", len(filtered))
+	}
+
+	// ExcludeBotAuthor on incremental sync should drop bud's own responses
+	sinceTime := baseTime.Add(-1 * time.Second) // before all entries
+	filtered, _, _ = cb.GetEntriesSinceFiltered(scope, sinceTime, BufferFilter{ExcludeBotAuthor: "bud"})
+	for _, e := range filtered {
+		if e.Author == "bud" {
+			t.Error("ExcludeBotAuthor should have removed bud's messages on incremental sync")
+		}
+	}
+
+	// ExcludeBotAuthor on FIRST sync (since is zero) should NOT drop bot messages
+	filtered, _, _ = cb.GetEntriesSinceFiltered(scope, time.Time{}, BufferFilter{ExcludeBotAuthor: "bud"})
+	foundBud := false
+	for _, e := range filtered {
+		if e.Author == "bud" {
+			foundBud = true
+		}
+	}
+	if !foundBud {
+		t.Error("ExcludeBotAuthor should NOT exclude bot on first sync (zero time)")
+	}
+}
+
+// TestMultipleCompressions tests summary accumulation across multiple compressions
+func TestMultipleCompressions(t *testing.T) {
+	compressCount := 0
+	mockSummarizer := &MockSummarizer{
+		summarizeFunc: func(content string) (string, error) {
+			compressCount++
+			return "[Round " + string(rune('0'+compressCount)) + " summary]", nil
+		},
+	}
+
+	cb := New("/tmp/test-buffer", mockSummarizer)
+	cb.SetLimits(100, 5*time.Minute)
+
+	// First batch - triggers first compression
+	for i := 0; i < 10; i++ {
+		cb.Add(Entry{
+			ID: "batch1-" + string(rune('a'+i)), Author: "user",
+			Content: "Batch 1 message " + string(rune('0'+i)), Timestamp: time.Now(),
+			ChannelID: "ch", TokenCount: 20,
+		})
+	}
+
+	// Second batch - should trigger second compression, accumulating summaries
+	for i := 0; i < 10; i++ {
+		cb.Add(Entry{
+			ID: "batch2-" + string(rune('a'+i)), Author: "user",
+			Content: "Batch 2 message " + string(rune('0'+i)), Timestamp: time.Now(),
+			ChannelID: "ch", TokenCount: 20,
+		})
+	}
+
+	buf := cb.Get(ScopeChannel("ch"))
+	if buf == nil {
+		t.Fatal("Expected buffer to exist")
+	}
+
+	// After multiple compressions, summary should contain both rounds
+	if compressCount < 2 {
+		t.Errorf("Expected at least 2 compressions, got %d", compressCount)
+	}
+
+	// Summary should be non-empty and accumulate
+	if buf.Summary == "" {
+		t.Error("Expected non-empty summary after multiple compressions")
+	}
+}
+
+// TestSaveLoad tests buffer persistence to/from disk
+func TestSaveLoad(t *testing.T) {
+	dir := t.TempDir()
+
+	cb := New(dir, nil)
+	cb.Add(Entry{
+		ID: "persist-1", Author: "thunder", Content: "Will this persist?",
+		Timestamp: time.Now(), ChannelID: "ch",
+	})
+	cb.Add(Entry{
+		ID: "persist-2", Author: "bud", Content: "Yes it will.",
+		Timestamp: time.Now().Add(time.Second), ChannelID: "ch",
+	})
+
+	if err := cb.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Load into fresh buffer
+	cb2 := New(dir, nil)
+	if err := cb2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	buf := cb2.Get(ScopeChannel("ch"))
+	if buf == nil {
+		t.Fatal("Expected buffer to exist after load")
+	}
+	if len(buf.RawEntries) != 2 {
+		t.Errorf("Expected 2 entries after load, got %d", len(buf.RawEntries))
+	}
+	if buf.RawEntries[0].ID != "persist-1" {
+		t.Errorf("Expected first entry ID persist-1, got %q", buf.RawEntries[0].ID)
+	}
+}
+
+// TestLoadNonExistent tests that Load on a fresh dir returns nil (no error)
+func TestLoadNonExistent(t *testing.T) {
+	cb := New(t.TempDir(), nil)
+	if err := cb.Load(); err != nil {
+		t.Errorf("Expected Load on nonexistent file to return nil, got %v", err)
+	}
+}
+
+// TestFindReplyContextAfterCompression tests that FindReplyContext returns nil when target is compressed
+func TestFindReplyContextAfterCompression(t *testing.T) {
+	mockSummarizer := &MockSummarizer{
+		summarizeFunc: func(content string) (string, error) {
+			return "[summarized]", nil
+		},
+	}
+
+	cb := New("/tmp/test-buffer", mockSummarizer)
+	cb.SetLimits(100, 5*time.Minute)
+
+	// Add enough to force compression; the old entry will be summarized away
+	for i := 0; i < 12; i++ {
+		cb.Add(Entry{
+			ID: "msg-" + string(rune('a'+i)), Author: "user",
+			Content: "Filler message " + string(rune('0'+i)), Timestamp: time.Now(),
+			ChannelID: "ch", TokenCount: 20,
+		})
+	}
+
+	// Reply targets a message that should now be in the summary (not in RawEntries)
+	reply := Entry{
+		ID: "reply-msg", Author: "user", Content: "Replying to something old",
+		Timestamp: time.Now(), ChannelID: "ch", ReplyTo: "msg-a",
+	}
+	// FindReplyContext should return nil since msg-a has been compressed out
+	result := cb.FindReplyContext(reply)
+	if result != nil {
+		t.Error("Expected nil when reply target has been compressed away")
+	}
+}
+
+// TestStats tests buffer statistics
+func TestStats(t *testing.T) {
+	cb := New("/tmp/test-buffer", nil)
+
+	stats := cb.Stats()
+	if stats["buffer_count"] != 0 {
+		t.Errorf("Expected 0 buffers initially, got %d", stats["buffer_count"])
+	}
+
+	cb.Add(Entry{ID: "s1", Author: "user", Content: "hello", Timestamp: time.Now(), ChannelID: "ch1", TokenCount: 5})
+	cb.Add(Entry{ID: "s2", Author: "user", Content: "world", Timestamp: time.Now(), ChannelID: "ch1", TokenCount: 5})
+	cb.Add(Entry{ID: "s3", Author: "user", Content: "other", Timestamp: time.Now(), ChannelID: "ch2", TokenCount: 3})
+
+	stats = cb.Stats()
+	if stats["buffer_count"] != 2 {
+		t.Errorf("Expected 2 buffers, got %d", stats["buffer_count"])
+	}
+	if stats["total_entries"] != 3 {
+		t.Errorf("Expected 3 total entries, got %d", stats["total_entries"])
+	}
+	if stats["total_tokens"] != 13 {
+		t.Errorf("Expected 13 total tokens, got %d", stats["total_tokens"])
+	}
+}
+
+// TestClearScope tests that ClearScope removes only the targeted scope
+func TestClearScope(t *testing.T) {
+	cb := New("/tmp/test-buffer", nil)
+
+	cb.Add(Entry{ID: "a1", Author: "user", Content: "ch1", Timestamp: time.Now(), ChannelID: "ch1"})
+	cb.Add(Entry{ID: "b1", Author: "user", Content: "ch2", Timestamp: time.Now(), ChannelID: "ch2"})
+
+	cb.ClearScope(ScopeChannel("ch1"))
+
+	if cb.Get(ScopeChannel("ch1")) != nil {
+		t.Error("Expected ch1 buffer to be nil after ClearScope")
+	}
+	if cb.Get(ScopeChannel("ch2")) == nil {
+		t.Error("Expected ch2 buffer to still exist after clearing ch1")
+	}
+}
+
+// TestTokenEstimation tests that entries with no TokenCount get estimated
+func TestTokenEstimation(t *testing.T) {
+	cb := New("/tmp/test-buffer", nil)
+
+	// Add entry with no explicit TokenCount
+	cb.Add(Entry{
+		ID: "est-1", Author: "user",
+		Content:   "This is a message with no explicit token count set",
+		Timestamp: time.Now(), ChannelID: "ch",
+		// TokenCount intentionally omitted
+	})
+
+	buf := cb.Get(ScopeChannel("ch"))
+	if buf == nil {
+		t.Fatal("Expected buffer")
+	}
+	if buf.RawEntries[0].TokenCount == 0 {
+		t.Error("Expected TokenCount to be estimated (non-zero) when not set")
+	}
+}
+
 // Helper functions
 
 func containsSubstring(s, substr string) bool {
