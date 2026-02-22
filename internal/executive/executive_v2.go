@@ -548,8 +548,8 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 		allIDs[i] = ep.ID
 	}
 	stopGetSummaries := profiling.Get().Start(excludeID, "context.conversation_load.get_summaries")
-	c32Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 1) // L1 ~32 words
-	c8Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 2) // L2 ~8 words
+	c32Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 32) // ~32 word summaries
+	c8Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 8) // ~8 word summaries
 	stopGetSummaries()
 
 	// lookupSummary returns (content, tokens, compressionLevel) for an episode.
@@ -624,11 +624,15 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 
 			// Format with ID, timestamp, and compression indicator
 			timeStr := formatMemoryTimestamp(ep.TimestampEvent)
+			shortID := ep.ID
+			if len(shortID) > 5 {
+				shortID = shortID[:5]
+			}
 			var formatted string
 			if compressionLevel > 0 {
-				formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", ep.ShortID, compressionLevel, timeStr, ep.Author, content)
+				formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", shortID, compressionLevel, timeStr, ep.Author, content)
 			} else {
-				formatted = fmt.Sprintf("[%s] [%s] %s: %s", ep.ShortID, timeStr, ep.Author, content)
+				formatted = fmt.Sprintf("[%s] [%s] %s: %s", shortID, timeStr, ep.Author, content)
 			}
 
 			parts = append(parts, formatted)
@@ -667,11 +671,15 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			}
 
 			timeStr := formatMemoryTimestamp(ep.TimestampEvent)
+			shortID2 := ep.ID
+			if len(shortID2) > 5 {
+				shortID2 = shortID2[:5]
+			}
 			var formatted string
 			if compressionLevel > 0 {
-				formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", ep.ShortID, compressionLevel, timeStr, ep.Author, content)
+				formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", shortID2, compressionLevel, timeStr, ep.Author, content)
 			} else {
-				formatted = fmt.Sprintf("[%s] [%s] %s: %s", ep.ShortID, timeStr, ep.Author, content)
+				formatted = fmt.Sprintf("[%s] [%s] %s: %s", shortID2, timeStr, ep.Author, content)
 			}
 
 			parts = append(parts, formatted)

@@ -315,9 +315,9 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", fmt.Errorf("episode not found: %s", id)
 			}
 
-			// Get available summaries via batch API
+			// Get available summaries via batch API (word-count levels: 32 and 8)
 			summaries := []map[string]any{}
-			for _, level := range []int{1, 2} {
+			for _, level := range []int{32, 8} {
 				batch, err := deps.EngramClient.GetEpisodeSummariesBatch([]string{episode.ID}, level)
 				if err == nil {
 					if text, ok := batch[episode.ID]; ok && text != "" {
@@ -329,9 +329,13 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				}
 			}
 
+			epShortID := episode.ID
+			if len(epShortID) > 5 {
+				epShortID = epShortID[:5]
+			}
 			result := map[string]any{
 				"id":        episode.ID,
-				"short_id":  episode.ShortID,
+				"short_id":  epShortID,
 				"content":   episode.Content,
 				"tokens":    episode.TokenCount,
 				"author":    episode.Author,
@@ -642,14 +646,9 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		Description: "Flush the conversation buffer to memory. Clears conversation context but keeps session running. Pending thoughts will be extracted by main process.",
 		Properties:  map[string]mcp.PropDef{},
 	}, func(ctx any, args map[string]any) (string, error) {
-		// Trigger consolidation in main process
-		triggerPath := filepath.Join(deps.StatePath, "consolidate.trigger")
-		if err := os.WriteFile(triggerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
-			log.Printf("Warning: failed to write consolidation trigger: %v", err)
-		}
-
-		log.Printf("Memory flush: triggered consolidation")
-		return "Memory flushed. Consolidation triggered.", nil
+		// Engram handles consolidation automatically — no explicit trigger needed.
+		log.Printf("Memory flush: Engram will consolidate automatically")
+		return "Memory flushed. Engram handles consolidation automatically.", nil
 	})
 
 	// memory_reset - full session reset with coordination
@@ -663,12 +662,6 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 			log.Printf("Warning: failed to write reset pending flag: %v", err)
 		}
 		log.Printf("Memory reset: set reset.pending flag to block new sessions")
-
-		// Trigger consolidation
-		triggerPath := filepath.Join(deps.StatePath, "consolidate.trigger")
-		if err := os.WriteFile(triggerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
-			log.Printf("Warning: failed to write consolidation trigger: %v", err)
-		}
 
 		// Signal main process to clear in-memory buffer
 		bufferClearPath := filepath.Join(deps.StatePath, "buffer.clear")

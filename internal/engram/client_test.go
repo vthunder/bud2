@@ -57,7 +57,7 @@ func TestIngestEpisode(t *testing.T) {
 			t.Errorf("expected content 'hello', got %q", req.Content)
 		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(IngestResult{ID: "ep-abc", ShortID: "abc"})
+		json.NewEncoder(w).Encode(IngestResult{ID: "ep-abc"})
 	})
 
 	result, err := c.IngestEpisode(IngestEpisodeRequest{Content: "hello", Source: "test"})
@@ -268,10 +268,13 @@ func TestGetUnconsolidatedEpisodeIDs(t *testing.T) {
 		if r.URL.Query().Get("unconsolidated") != "true" {
 			t.Errorf("expected unconsolidated=true")
 		}
-		resp := struct {
-			IDs []string `json:"ids"`
-		}{IDs: []string{"ep-1", "ep-2", "ep-3"}}
-		json.NewEncoder(w).Encode(resp)
+		// Engram returns an array of episode objects
+		episodes := []map[string]any{
+			{"id": "ep-1", "content": "a"},
+			{"id": "ep-2", "content": "b"},
+			{"id": "ep-3", "content": "c"},
+		}
+		json.NewEncoder(w).Encode(episodes)
 	})
 
 	ids, err := c.GetUnconsolidatedEpisodeIDs("")

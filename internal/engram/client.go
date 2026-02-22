@@ -37,7 +37,6 @@ func NewClient(baseURL, apiKey string) *Client {
 // Episode represents a raw ingested memory (Tier 1).
 type Episode struct {
 	ID                string    `json:"id"`
-	ShortID           string    `json:"short_id"`
 	Content           string    `json:"content"`
 	TokenCount        int       `json:"token_count"`
 	Source            string    `json:"source"`
@@ -110,8 +109,7 @@ type IngestEpisodeRequest struct {
 
 // IngestResult is the response from episode/thought ingestion.
 type IngestResult struct {
-	ID      string `json:"id"`
-	ShortID string `json:"short_id,omitempty"`
+	ID string `json:"id"`
 }
 
 // ConsolidateResult is the response from POST /v1/consolidate.
@@ -204,8 +202,8 @@ func (c *Client) ListTraces() ([]*Trace, error) {
 	return traces, nil
 }
 
-// GetTrace fetches a trace by full ID or short ID.
-// level: 0=raw, 1=L1 summary (default), 2=L2 summary.
+// GetTrace fetches a trace by full ID or 5-char prefix.
+// level: 0=uncompressed, 4/8/16/32=word-count target for summary.
 func (c *Client) GetTrace(id string, level int) (*Trace, error) {
 	params := url.Values{}
 	params.Set("detail", "full")
@@ -293,7 +291,7 @@ func (c *Client) BoostTraces(traceIDs []string, boost, threshold float64) error 
 
 // --- Episodes ---
 
-// GetEpisode fetches an episode by full ID or short ID.
+// GetEpisode fetches an episode by full ID or 5-char prefix.
 func (c *Client) GetEpisode(id string) (*Episode, error) {
 	var ep Episode
 	if err := c.get("/v1/episodes/"+url.PathEscape(id), nil, &ep); err != nil {
@@ -320,21 +318,20 @@ func (c *Client) GetRecentEpisodes(channel string, limit int) ([]*Episode, error
 }
 
 // GetUnconsolidatedEpisodeIDs returns the set of unconsolidated episode IDs for a channel.
+// Engram returns a JSON array of episode objects; we extract just the IDs.
 func (c *Client) GetUnconsolidatedEpisodeIDs(channel string) (map[string]bool, error) {
 	params := url.Values{}
 	params.Set("unconsolidated", "true")
 	if channel != "" {
 		params.Set("channel", channel)
 	}
-	var resp struct {
-		IDs []string `json:"ids"`
-	}
-	if err := c.get("/v1/episodes", params, &resp); err != nil {
+	var episodes []*Episode
+	if err := c.get("/v1/episodes", params, &episodes); err != nil {
 		return nil, err
 	}
-	result := make(map[string]bool, len(resp.IDs))
-	for _, id := range resp.IDs {
-		result[id] = true
+	result := make(map[string]bool, len(episodes))
+	for _, ep := range episodes {
+		result[ep.ID] = true
 	}
 	return result, nil
 }
@@ -367,7 +364,7 @@ func (c *Client) AddEpisodeEdge(fromID, toID, edgeType string, confidence float6
 }
 
 // GetEpisodeSummariesBatch fetches summaries for multiple episodes at a compression level.
-// level: 1=L1 (~32 words), 2=L2 (~8 words).
+// level: 0=uncompressed, 4/8/16/32=word-count target (standard levels: 4, 8, 16, 32).
 // Returns a map of episodeID → summary string.
 func (c *Client) GetEpisodeSummariesBatch(episodeIDs []string, level int) (map[string]string, error) {
 	body := map[string]any{

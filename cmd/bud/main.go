@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -524,9 +523,6 @@ func main() {
 	var lastEpisodeMu sync.Mutex
 	lastEngramIDByChannel := make(map[string]string) // channel → Engram episode ID (ep-{uuid})
 
-	// Track last episode creation time for idle-based consolidation triggering (unix nanos, atomic)
-	var lastEpisodeTimeNs int64 = time.Now().UnixNano()
-
 	// Ingest message as episode into Engram (Tier 1). Engram handles NER entity linking on ingest.
 	ingestToMemoryGraph := func(msg *memory.InboxMessage) {
 		defer profiling.Get().Start(msg.ID, "ingest.total")()
@@ -567,8 +563,6 @@ func main() {
 			log.Printf("[ingest] Failed to store episode: %v", ingestErr)
 			return
 		}
-		atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
-
 		// Create FOLLOWS edge from previous episode in same channel
 		lastEpisodeMu.Lock()
 		prevID := lastEngramIDByChannel[msg.ChannelID]
@@ -794,7 +788,6 @@ func main() {
 			return
 		}
 		logging.Debug("main", "Stored Bud response as episode")
-		atomic.StoreInt64(&lastEpisodeTimeNs, time.Now().UnixNano())
 
 		lastEpisodeMu.Lock()
 		prevBudID := lastEngramIDByChannel[channelID]
@@ -1178,125 +1171,7 @@ func main() {
 		log.Println("[main] Autonomous mode disabled (set AUTONOMOUS_ENABLED=true to enable)")
 	}
 
-	// Start trigger file watcher goroutine (runs immediately, no delay)
-	// This handles consolidate.trigger signals from MCP
-	consolidationTriggerFile := filepath.Join(statePath, "consolidate.trigger")
-	go func() {
-		triggerCheckTicker := time.NewTicker(500 * time.Millisecond)
-		defer triggerCheckTicker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-triggerCheckTicker.C:
-				// Check for consolidation trigger (written by MCP memory_flush)
-				if _, err := os.Stat(consolidationTriggerFile); err == nil {
-					os.Remove(consolidationTriggerFile)
-					if engramClient == nil {
-						log.Printf("[consolidate] Engram client not available, skipping consolidation")
-						continue
-					}
-					log.Printf("[consolidate] Running memory consolidation (trigger: memory_flush)...")
-					result, err := engramClient.Consolidate()
-					if err != nil {
-						log.Printf("[consolidate] Error: %v", err)
-					} else if result.TracesCreated > 0 {
-						log.Printf("[consolidate] Created %d traces from unconsolidated episodes", result.TracesCreated)
-					} else {
-						log.Println("[consolidate] No unconsolidated episodes found")
-					}
-				}
-			}
-		}
-	}()
-	log.Printf("[main] Trigger file watcher started (buffer.clear, consolidate.trigger)")
-
-	// Start smart memory consolidation goroutine.
-	// Triggers based on three conditions (checked every minute):
-	//   (a) idle ≥ 20 min (no new episodes) AND pending ≥ 10
-	//   (b) pending ≥ 100 (flush backlog regardless of idle state)
-	//   (c) time since last consolidation > 4h AND pending ≥ 10 (safety fallback)
-	go func() {
-		checkTicker := time.NewTicker(1 * time.Minute)
-		defer checkTicker.Stop()
-
-		// Initial delay: let things settle before first check
-		time.Sleep(2 * time.Minute)
-
-		var lastConsolidationTime time.Time
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-checkTicker.C:
-				if engramClient == nil {
-					continue
-				}
-				pendingCount, err := engramClient.GetUnconsolidatedEpisodeCount()
-				if err != nil || pendingCount == 0 {
-					continue
-				}
-
-				lastEpNs := atomic.LoadInt64(&lastEpisodeTimeNs)
-				idleEnough := time.Since(time.Unix(0, lastEpNs)) >= 20*time.Minute
-				backlogFull := pendingCount >= 100
-				fallbackDue := !lastConsolidationTime.IsZero() &&
-					time.Since(lastConsolidationTime) >= 4*time.Hour &&
-					pendingCount >= 10
-
-				if !((idleEnough && pendingCount >= 10) || backlogFull || fallbackDue) {
-					continue
-				}
-
-				trigger := "idle"
-				if backlogFull {
-					trigger = "flush"
-				} else if fallbackDue {
-					trigger = "fallback"
-				}
-
-				log.Printf("[consolidate] Triggering consolidation (pending=%d, trigger=%s)", pendingCount, trigger)
-				result, err := engramClient.Consolidate()
-				if err != nil {
-					log.Printf("[consolidate] Error: %v", err)
-				} else if result.TracesCreated > 0 {
-					log.Printf("[consolidate] Created %d traces from unconsolidated episodes", result.TracesCreated)
-				} else {
-					log.Println("[consolidate] No unconsolidated episodes found")
-				}
-				lastConsolidationTime = time.Now()
-			}
-		}
-	}()
-
-	// Activation decay on its own 1-hour schedule, decoupled from consolidation.
-	// lambda=0.01 achieves ~21% decay per day: exp(-0.01*24) ≈ 0.787
-	// Creates 7-day half-life for boosted traces (0.6→0.1 in ~7 days)
-	// floor=0.1 prevents traces from fully disappearing
-	go func() {
-		decayTicker := time.NewTicker(1 * time.Hour)
-		defer decayTicker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-decayTicker.C:
-				if engramClient == nil {
-					continue
-				}
-				result, err := engramClient.DecayActivation(0.01, 0.1)
-				if err != nil {
-					log.Printf("[consolidate] Activation decay error: %v", err)
-				} else if result.Updated > 0 {
-					log.Printf("[consolidate] Decayed activation for %d traces", result.Updated)
-				}
-			}
-		}
-	}()
-	log.Printf("[main] Memory consolidation scheduled (smart trigger: idle=20m, flush=100, fallback=4h)")
+	// Activation decay is handled automatically by Engram.
 
 	// Periodic state sync: commit and push state/ to bud2-state repo every hour.
 	// This replaces the old impulse:task recurring mechanism removed in the Things 3 migration.
