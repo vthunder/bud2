@@ -97,13 +97,17 @@ func main() {
 			continue
 		}
 
+		ts := ep.TimestampEvent
+		if ts.IsZero() {
+			ts = ep.TimestampIngested
+		}
 		req := engram.IngestEpisodeRequest{
 			Content:        ep.Content,
 			Source:         ep.Source,
 			Author:         ep.Author,
 			AuthorID:       ep.AuthorID,
 			Channel:        ep.Channel,
-			TimestampEvent: ep.TimestampEvent,
+			TimestampEvent: ts,
 			ReplyTo:        ep.ReplyTo,
 		}
 		// Include embedding if available (saves Engram from re-embedding)
