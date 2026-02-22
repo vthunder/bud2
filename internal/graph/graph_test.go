@@ -1170,3 +1170,65 @@ func TestMarkTraceConflict(t *testing.T) {
 		t.Errorf("Expected short_id 'tr_drk', got %q", shortID)
 	}
 }
+
+// TestInjectConflictPartners verifies that retrieval results are augmented with
+// conflict partner traces when a conflicted trace is retrieved.
+func TestInjectConflictPartners(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Add two conflicting traces
+	trA := &Trace{ID: "trace-dark-mode", ShortID: "tr_dA", Summary: "User prefers dark mode", Activation: 0.8}
+	trB := &Trace{ID: "trace-light-mode", ShortID: "tr_lB", Summary: "User switched to light mode", Activation: 0.6}
+
+	if err := addTestTrace(t, db, trA); err != nil {
+		t.Fatalf("AddTrace(A): %v", err)
+	}
+	if err := addTestTrace(t, db, trB); err != nil {
+		t.Fatalf("AddTrace(B): %v", err)
+	}
+	if err := db.MarkTraceConflict("trace-dark-mode", "tr_lB"); err != nil {
+		t.Fatalf("MarkTraceConflict(A): %v", err)
+	}
+	if err := db.MarkTraceConflict("trace-light-mode", "tr_dA"); err != nil {
+		t.Fatalf("MarkTraceConflict(B): %v", err)
+	}
+
+	// Fetch A to confirm it has has_conflict set
+	fetchedA, err := db.GetTrace("trace-dark-mode")
+	if err != nil || fetchedA == nil {
+		t.Fatalf("GetTrace(A): %v", err)
+	}
+	fetchedA.Activation = 0.75
+
+	// Simulate a retrieval result that only contains trace A
+	result := &RetrievalResult{Traces: []*Trace{fetchedA}}
+
+	// injectConflictPartners should add trace B
+	db.injectConflictPartners(result)
+
+	if len(result.Traces) != 2 {
+		t.Fatalf("Expected 2 traces after injection, got %d", len(result.Traces))
+	}
+
+	// Find the injected partner
+	var partner *Trace
+	for _, tr := range result.Traces {
+		if tr.ID == "trace-light-mode" {
+			partner = tr
+		}
+	}
+	if partner == nil {
+		t.Fatal("Expected trace-light-mode to be injected as conflict partner")
+	}
+	// Partner should have the same activation as the conflicting trace
+	if partner.Activation != fetchedA.Activation {
+		t.Errorf("Expected partner activation=%.2f, got %.2f", fetchedA.Activation, partner.Activation)
+	}
+
+	// Already-present partners should not be duplicated
+	db.injectConflictPartners(result)
+	if len(result.Traces) != 2 {
+		t.Errorf("Second inject should not add duplicates, got %d traces", len(result.Traces))
+	}
+}
