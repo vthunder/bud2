@@ -146,6 +146,11 @@ type Trace struct {
 	Resolution string    `json:"resolution,omitempty"` // Episode short_id that resolved this trace
 	DoneAt     time.Time `json:"done_at,omitempty"`
 
+	// Conflict tracking (set when contradicting traces are detected during consolidation)
+	HasConflict        bool      `json:"has_conflict,omitempty"`
+	ConflictWith       string    `json:"conflict_with,omitempty"` // CSV of conflicting trace short_ids
+	ConflictResolvedAt time.Time `json:"conflict_resolved_at,omitempty"`
+
 	// Related data (populated on retrieval)
 	SourceIDs []string `json:"source_ids,omitempty"`
 	EntityIDs []string `json:"entity_ids,omitempty"`

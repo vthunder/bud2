@@ -799,6 +799,27 @@ func (g *DB) runMigrations() error {
 		log.Println("[graph] Migration to v21 completed successfully")
 	}
 
+	// Migration v22: Add conflict tracking fields to traces.
+	// Enables detection and flagging of contradicting trace pairs found during consolidation.
+	// has_conflict: true when another trace contains contradicting information.
+	// conflict_with: CSV of conflicting trace short_ids.
+	// conflict_resolved_at: when the conflict was resolved (NULL = unresolved).
+	if version < 22 {
+		log.Println("[graph] Migrating to schema v22: trace conflict tracking")
+		migrations := []string{
+			"ALTER TABLE traces ADD COLUMN has_conflict BOOLEAN DEFAULT 0",
+			"ALTER TABLE traces ADD COLUMN conflict_with TEXT",
+			"ALTER TABLE traces ADD COLUMN conflict_resolved_at DATETIME",
+			"CREATE INDEX IF NOT EXISTS idx_traces_has_conflict ON traces(has_conflict)",
+		}
+		for _, sql := range migrations {
+			// Ignore errors for columns that already exist
+			g.db.Exec(sql)
+		}
+		g.db.Exec("INSERT INTO schema_version (version) VALUES (22)")
+		log.Println("[graph] Migration to v22 completed successfully")
+	}
+
 	return nil
 }
 

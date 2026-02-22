@@ -1095,3 +1095,78 @@ func TestMarkTraceDone(t *testing.T) {
 		t.Error("Expected error for non-existent trace, got nil")
 	}
 }
+
+// TestMarkTraceConflict tests the conflict tracking feature
+func TestMarkTraceConflict(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Add two traces that will be marked as conflicting
+	trA := &Trace{ID: "trace-prefer-dark", ShortID: "tr_drk", Summary: "User prefers dark mode", Activation: 0.7}
+	trB := &Trace{ID: "trace-prefer-light", ShortID: "tr_lgt", Summary: "User switched to light mode", Activation: 0.7}
+
+	if err := addTestTrace(t, db, trA); err != nil {
+		t.Fatalf("AddTrace(A) failed: %v", err)
+	}
+	if err := addTestTrace(t, db, trB); err != nil {
+		t.Fatalf("AddTrace(B) failed: %v", err)
+	}
+
+	// Before marking: no conflicts
+	trAFetched, err := db.GetTraceByShortID("tr_drk")
+	if err != nil || trAFetched == nil {
+		t.Fatalf("GetTraceByShortID(tr_drk) failed: %v", err)
+	}
+	if trAFetched.HasConflict {
+		t.Error("Expected HasConflict=false before marking")
+	}
+
+	// Mark the conflict (caller must mark both directions)
+	if err := db.MarkTraceConflict("trace-prefer-dark", "tr_lgt"); err != nil {
+		t.Fatalf("MarkTraceConflict(A) failed: %v", err)
+	}
+	if err := db.MarkTraceConflict("trace-prefer-light", "tr_drk"); err != nil {
+		t.Fatalf("MarkTraceConflict(B) failed: %v", err)
+	}
+
+	// After marking: both traces show conflict info
+	trAFetched, err = db.GetTraceByShortID("tr_drk")
+	if err != nil || trAFetched == nil {
+		t.Fatalf("GetTraceByShortID(tr_drk) after conflict failed: %v", err)
+	}
+	if !trAFetched.HasConflict {
+		t.Error("Expected HasConflict=true on trace A")
+	}
+	if trAFetched.ConflictWith != "tr_lgt" {
+		t.Errorf("Expected ConflictWith='tr_lgt', got %q", trAFetched.ConflictWith)
+	}
+
+	trBFetched, err := db.GetTraceByShortID("tr_lgt")
+	if err != nil || trBFetched == nil {
+		t.Fatalf("GetTraceByShortID(tr_lgt) after conflict failed: %v", err)
+	}
+	if !trBFetched.HasConflict {
+		t.Error("Expected HasConflict=true on trace B")
+	}
+	if trBFetched.ConflictWith != "tr_drk" {
+		t.Errorf("Expected ConflictWith='tr_drk', got %q", trBFetched.ConflictWith)
+	}
+
+	// Marking the same conflict again is idempotent
+	if err := db.MarkTraceConflict("trace-prefer-dark", "tr_lgt"); err != nil {
+		t.Fatalf("Second MarkTraceConflict should be idempotent, got: %v", err)
+	}
+	trAFetched2, _ := db.GetTraceByShortID("tr_drk")
+	if trAFetched2.ConflictWith != "tr_lgt" {
+		t.Errorf("Idempotent re-mark should not duplicate entry, got %q", trAFetched2.ConflictWith)
+	}
+
+	// GetTraceShortID returns the correct short_id
+	shortID, err := db.GetTraceShortID("trace-prefer-dark")
+	if err != nil {
+		t.Fatalf("GetTraceShortID failed: %v", err)
+	}
+	if shortID != "tr_drk" {
+		t.Errorf("Expected short_id 'tr_drk', got %q", shortID)
+	}
+}
