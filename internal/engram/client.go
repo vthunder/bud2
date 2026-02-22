@@ -68,6 +68,7 @@ type Entity struct {
 // JSON field names match Engram's "engram" type.
 type Trace struct {
 	ID           string    `json:"id"`
+	ShortID      string    `json:"short_id,omitempty"`
 	Summary      string    `json:"summary"`
 	Topic        string    `json:"topic,omitempty"`
 	TraceType    string    `json:"engram_type,omitempty"`
@@ -79,6 +80,9 @@ type Trace struct {
 	LabileUntil  time.Time `json:"labile_until,omitempty"`
 	SourceIDs    []string  `json:"source_ids,omitempty"`
 	EntityIDs    []string  `json:"entity_ids,omitempty"`
+	// Conflict tracking (populated when contradicting traces are detected during consolidation)
+	HasConflict  bool      `json:"has_conflict,omitempty"`
+	ConflictWith string    `json:"conflict_with,omitempty"` // CSV of conflicting trace short_ids
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
