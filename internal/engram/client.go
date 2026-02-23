@@ -246,7 +246,7 @@ func (c *Client) DeleteTrace(id string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNoContent {
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
 		return nil
 	}
 	return c.parseError(resp)
