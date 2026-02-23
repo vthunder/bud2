@@ -383,6 +383,35 @@ func main() {
 			}
 			return graphDB.MarkTraceDone(traceShortID, resolutionEpisodeShortID)
 		},
+		ResolveConflict: func(traceAShortID, traceBShortID, keepWhich string) error {
+			if graphDB == nil {
+				return fmt.Errorf("graph DB not available")
+			}
+			// Resolve both sides (set conflict_resolved_at)
+			traceA, err := graphDB.GetTraceByShortID(traceAShortID)
+			if err != nil || traceA == nil {
+				return fmt.Errorf("trace not found: %s", traceAShortID)
+			}
+			traceB, err := graphDB.GetTraceByShortID(traceBShortID)
+			if err != nil || traceB == nil {
+				return fmt.Errorf("trace not found: %s", traceBShortID)
+			}
+			if err := graphDB.ResolveTraceConflict(traceA.ID); err != nil {
+				return fmt.Errorf("failed to resolve trace %s: %w", traceAShortID, err)
+			}
+			if err := graphDB.ResolveTraceConflict(traceB.ID); err != nil {
+				return fmt.Errorf("failed to resolve trace %s: %w", traceBShortID, err)
+			}
+			// Mark the superseded trace as done
+			switch keepWhich {
+			case "a":
+				return graphDB.MarkTraceDone(traceBShortID, "")
+			case "b":
+				return graphDB.MarkTraceDone(traceAShortID, "")
+			}
+			// "both": no additional done-marking
+			return nil
+		},
 		GetTraceInfo: func(traceShortID string) (*tools.LocalTraceInfo, error) {
 			if graphDB == nil {
 				return nil, fmt.Errorf("graph DB not available")

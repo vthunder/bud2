@@ -338,6 +338,53 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 			return string(data), nil
 		})
 
+		// resolve_conflict - manually resolve a conflict between two traces
+		if deps.ResolveConflict != nil {
+			server.RegisterTool("resolve_conflict", mcp.ToolDef{
+				Description: "Manually resolve a memory conflict between two traces. Use when the executive sees conflicting information and the user has clarified which is correct. keepWhich='a' keeps trace_a (marks b superseded), keepWhich='b' keeps trace_b (marks a superseded), keepWhich='both' accepts both as valid.",
+				Properties: map[string]mcp.PropDef{
+					"trace_a":    {Type: "string", Description: "Short ID of the first conflicting trace (e.g. 'tr_abc12')"},
+					"trace_b":    {Type: "string", Description: "Short ID of the second conflicting trace"},
+					"keep_which": {Type: "string", Description: "Which trace to keep: 'a', 'b', or 'both'"},
+				},
+				Required: []string{"trace_a", "trace_b", "keep_which"},
+			}, func(ctx any, args map[string]any) (string, error) {
+				traceA, ok := args["trace_a"].(string)
+				if !ok || traceA == "" {
+					return "", fmt.Errorf("trace_a is required")
+				}
+				traceB, ok := args["trace_b"].(string)
+				if !ok || traceB == "" {
+					return "", fmt.Errorf("trace_b is required")
+				}
+				keepWhich, ok := args["keep_which"].(string)
+				if !ok || keepWhich == "" {
+					return "", fmt.Errorf("keep_which is required ('a', 'b', or 'both')")
+				}
+				switch keepWhich {
+				case "a", "b", "both":
+				default:
+					return "", fmt.Errorf("keep_which must be 'a', 'b', or 'both'")
+				}
+
+				if err := deps.ResolveConflict(traceA, traceB, keepWhich); err != nil {
+					return "", fmt.Errorf("failed to resolve conflict: %w", err)
+				}
+
+				switch keepWhich {
+				case "a":
+					log.Printf("Conflict resolved: kept %s, superseded %s", traceA, traceB)
+					return fmt.Sprintf("Conflict resolved. Kept %s, marked %s as superseded.", traceA, traceB), nil
+				case "b":
+					log.Printf("Conflict resolved: kept %s, superseded %s", traceB, traceA)
+					return fmt.Sprintf("Conflict resolved. Kept %s, marked %s as superseded.", traceB, traceA), nil
+				default:
+					log.Printf("Conflict resolved: accepted both %s and %s", traceA, traceB)
+					return fmt.Sprintf("Conflict resolved. Both %s and %s accepted as valid.", traceA, traceB), nil
+				}
+			})
+		}
+
 		// query_episode - query specific episode by short ID or full ID
 		server.RegisterTool("query_episode", mcp.ToolDef{
 			Description: "Query a specific episode by its ID (short 5-char ID or full ID). Returns the full episode details including content, author, timestamp, and summaries if available.",

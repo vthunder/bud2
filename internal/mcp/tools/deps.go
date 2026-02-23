@@ -57,6 +57,9 @@ type Dependencies struct {
 	GetTraceInfo func(traceShortID string) (*LocalTraceInfo, error)
 	// If set, signal_done will use this to send completion signals
 	SendSignal func(signalType, content string, extra map[string]any) error
+	// If set, resolve_conflict tool uses this to manually resolve a conflict between two traces.
+	// keepWhich: "a" keeps trace_a (marks b as done), "b" keeps trace_b (marks a as done), "both" accepts both.
+	ResolveConflict func(traceAShortID, traceBShortID, keepWhich string) error
 	// If set, MCP tools will call this to notify that they've been executed
 	// Used to detect user responses (talk_to_user, discord_react) for validation
 	OnMCPToolCall func(toolName string)
