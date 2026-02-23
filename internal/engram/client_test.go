@@ -220,9 +220,9 @@ func TestBoostTraces(t *testing.T) {
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		ids, ok := body["engram_ids"].([]any)
+		ids, ok := body["ids"].([]any)
 		if !ok || len(ids) != 2 {
-			t.Errorf("expected 2 engram_ids, got %+v", body["engram_ids"])
+			t.Errorf("expected 2 ids, got %+v", body["ids"])
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -323,8 +323,8 @@ func TestAddEpisodeEdge(t *testing.T) {
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		if body["to_id"] != "ep-to" {
-			t.Errorf("expected to_id 'ep-to', got %v", body["to_id"])
+		if body["target_id"] != "ep-to" {
+			t.Errorf("expected target_id 'ep-to', got %v", body["target_id"])
 		}
 		if body["edge_type"] != "follows" {
 			t.Errorf("expected edge_type 'follows', got %v", body["edge_type"])

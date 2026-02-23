@@ -104,9 +104,7 @@ func (g *DB) GetTrace(id string) (*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		WHERE t.id = ?
 	`, id)
@@ -129,9 +127,7 @@ func (g *DB) GetTraceByShortID(shortID string) (*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		WHERE t.short_id = ?
 	`, shortID)
@@ -161,11 +157,9 @@ func (g *DB) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) 
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
-		WHERE t.activation >= ? AND COALESCE(t.done, 0) = 0
+		WHERE t.activation >= ?
 		ORDER BY t.activation DESC
 		LIMIT ?
 	`, threshold, limit)
@@ -212,9 +206,7 @@ func (g *DB) GetTracesBatch(ids []string) (map[string]*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		WHERE t.id IN (`+string(placeholders)+`)
 	`, args...)
@@ -267,9 +259,7 @@ func (g *DB) GetTracesBatchAtLevel(ids []string, level int) (map[string]*Trace, 
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		WHERE t.id IN (`+string(placeholders)+`)
 	`, args...)
@@ -303,11 +293,9 @@ func (g *DB) GetActivatedTracesWithLevel(threshold float64, limit, level int) ([
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
-		WHERE t.activation >= ? AND COALESCE(t.done, 0) = 0
+		WHERE t.activation >= ?
 		ORDER BY t.activation DESC
 		LIMIT ?
 	`, level, threshold, limit)
@@ -905,9 +893,7 @@ func (g *DB) GetAllTraces() ([]*Trace, error) {
 				''
 			) as summary,
 			t.topic, t.trace_type,
-			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until,
-			COALESCE(t.done, 0), COALESCE(t.resolution, ''), t.done_at,
-		COALESCE(t.has_conflict, 0), COALESCE(t.conflict_with, ''), t.conflict_resolved_at
+			t.activation, t.strength, t.embedding, t.created_at, t.last_accessed, t.labile_until
 		FROM traces t
 		ORDER BY t.created_at DESC
 	`)
@@ -959,18 +945,10 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	var topic sql.NullString
 	var traceType sql.NullString
 	var labileUntil sql.NullTime
-	var done sql.NullBool
-	var resolution sql.NullString
-	var doneAt sql.NullTime
-	var hasConflict sql.NullBool
-	var conflictWith sql.NullString
-	var conflictResolvedAt sql.NullTime
 
 	err := row.Scan(
 		&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 		&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
-		&done, &resolution, &doneAt,
-		&hasConflict, &conflictWith, &conflictResolvedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -987,24 +965,6 @@ func scanTrace(row *sql.Row) (*Trace, error) {
 	}
 	if labileUntil.Valid {
 		tr.LabileUntil = labileUntil.Time
-	}
-	if done.Valid {
-		tr.Done = done.Bool
-	}
-	if resolution.Valid {
-		tr.Resolution = resolution.String
-	}
-	if doneAt.Valid {
-		tr.DoneAt = doneAt.Time
-	}
-	if hasConflict.Valid {
-		tr.HasConflict = hasConflict.Bool
-	}
-	if conflictWith.Valid {
-		tr.ConflictWith = conflictWith.String
-	}
-	if conflictResolvedAt.Valid {
-		tr.ConflictResolvedAt = conflictResolvedAt.Time
 	}
 
 	if len(embeddingBytes) > 0 {
@@ -1024,18 +984,10 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		var topic sql.NullString
 		var traceType sql.NullString
 		var labileUntil sql.NullTime
-		var done sql.NullBool
-		var resolution sql.NullString
-		var doneAt sql.NullTime
-		var hasConflict sql.NullBool
-		var conflictWith sql.NullString
-		var conflictResolvedAt sql.NullTime
 
 		err := rows.Scan(
 			&tr.ID, &tr.ShortID, &summary, &topic, &traceType, &tr.Activation, &tr.Strength,
 			&embeddingBytes, &tr.CreatedAt, &tr.LastAccessed, &labileUntil,
-			&done, &resolution, &doneAt,
-			&hasConflict, &conflictWith, &conflictResolvedAt,
 		)
 		if err != nil {
 			continue
@@ -1049,24 +1001,6 @@ func scanTraceRows(rows *sql.Rows) ([]*Trace, error) {
 		}
 		if labileUntil.Valid {
 			tr.LabileUntil = labileUntil.Time
-		}
-		if done.Valid {
-			tr.Done = done.Bool
-		}
-		if resolution.Valid {
-			tr.Resolution = resolution.String
-		}
-		if doneAt.Valid {
-			tr.DoneAt = doneAt.Time
-		}
-		if hasConflict.Valid {
-			tr.HasConflict = hasConflict.Bool
-		}
-		if conflictWith.Valid {
-			tr.ConflictWith = conflictWith.String
-		}
-		if conflictResolvedAt.Valid {
-			tr.ConflictResolvedAt = conflictResolvedAt.Time
 		}
 
 		if len(embeddingBytes) > 0 {
@@ -1136,69 +1070,6 @@ func (g *DB) syncTraceToVec(traceID string, embedding []float64) {
 // ClearReconsolidationFlag removes the needs_reconsolidation flag from a trace
 func (g *DB) ClearReconsolidationFlag(traceID string) error {
 	_, err := g.db.Exec(`UPDATE traces SET needs_reconsolidation = 0 WHERE id = ?`, traceID)
-	return err
-}
-
-// MarkTraceDone marks a trace as resolved/completed. The trace is not deleted but will
-// be excluded from active retrieval queries. The resolution field records which episode
-// short_id provided the resolution context (optional, pass "" if not known).
-func (g *DB) MarkTraceDone(traceShortID, resolutionEpisodeShortID string) error {
-	result, err := g.db.Exec(`
-		UPDATE traces SET done = 1, resolution = ?, done_at = ? WHERE short_id = ?
-	`, resolutionEpisodeShortID, time.Now(), traceShortID)
-	if err != nil {
-		return fmt.Errorf("failed to mark trace done: %w", err)
-	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return fmt.Errorf("trace not found: %s", traceShortID)
-	}
-	return nil
-}
-
-// GetTraceShortID returns the short_id for a trace by its full ID (lightweight query).
-func (g *DB) GetTraceShortID(traceID string) (string, error) {
-	var shortID string
-	err := g.db.QueryRow(`SELECT short_id FROM traces WHERE id = ?`, traceID).Scan(&shortID)
-	return shortID, err
-}
-
-// MarkTraceConflict marks a trace as having a contradiction with another trace.
-// conflictWithShortID is appended to the conflict_with CSV if not already present.
-// Both traces in a contradicting pair should be marked (caller's responsibility).
-func (g *DB) MarkTraceConflict(traceID, conflictWithShortID string) error {
-	// Read current conflict_with to build the updated CSV
-	var current sql.NullString
-	g.db.QueryRow(`SELECT conflict_with FROM traces WHERE id = ?`, traceID).Scan(&current)
-
-	// Check if conflictWithShortID is already in the list
-	existing := current.String
-	if existing != "" {
-		for _, entry := range strings.Split(existing, ",") {
-			if strings.TrimSpace(entry) == conflictWithShortID {
-				return nil // already marked, nothing to do
-			}
-		}
-	}
-
-	newConflictWith := conflictWithShortID
-	if existing != "" {
-		newConflictWith = existing + "," + conflictWithShortID
-	}
-
-	_, err := g.db.Exec(`
-		UPDATE traces SET has_conflict = 1, conflict_with = ? WHERE id = ?
-	`, newConflictWith, traceID)
-	return err
-}
-
-// ResolveTraceConflict marks a conflict as resolved by setting conflict_resolved_at.
-// Both traces in a conflicting pair should be marked resolved.
-// The has_conflict flag is kept set for audit — conflict_resolved_at indicates it was handled.
-func (g *DB) ResolveTraceConflict(traceID string) error {
-	_, err := g.db.Exec(`
-		UPDATE traces SET conflict_resolved_at = ? WHERE id = ?
-	`, time.Now(), traceID)
 	return err
 }
 

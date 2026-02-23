@@ -131,24 +131,7 @@ func (c *Consolidator) Run() (int, error) {
 			c.printEdgeSummaries(episodes, episodeEdges)
 		}
 
-		// Separate contradiction edges from regular edges before clustering.
-		// Contradiction edges are stored to the DB for audit purposes but excluded from the
-		// clustering adjacency list so contradicting episodes form separate traces rather
-		// than being merged into a single trace (which would silently discard the conflict).
-		var contradictionEdges []EpisodeEdge
-		var regularEdges []EpisodeEdge
-		for _, edge := range episodeEdges {
-			if edge.Relationship == "contradicts" {
-				contradictionEdges = append(contradictionEdges, edge)
-			} else {
-				regularEdges = append(regularEdges, edge)
-			}
-		}
-		if len(contradictionEdges) > 0 {
-			log.Printf("[consolidate] Segregating %d contradiction edges from clustering", len(contradictionEdges))
-		}
-
-		// Store ALL edges in database (including contradictions, for audit/debugging)
+		// Store edges in database
 		episodeIDs := make(map[string]bool)
 		for _, ep := range episodes {
 			episodeIDs[ep.ID] = true
@@ -163,9 +146,8 @@ func (c *Consolidator) Run() (int, error) {
 			}
 		}
 
-		// Phase 2: Graph clustering using only regular (non-contradiction) edges.
-		// Contradiction edges are excluded so contradicting episodes land in separate traces.
-		newGroups, existingTracesWithNewEpisodes := c.clusterEpisodesByEdges(episodes, regularEdges)
+		// Phase 2: Graph clustering
+		newGroups, existingTracesWithNewEpisodes := c.clusterEpisodesByEdges(episodes, episodeEdges)
 
 		// Phase 3a: Add new episodes to existing traces and mark for reconsolidation
 		for traceID, newEpisodes := range existingTracesWithNewEpisodes {
@@ -201,21 +183,6 @@ func (c *Consolidator) Run() (int, error) {
 			log.Printf("[consolidate] Created %d episode→trace cross-reference edges", linked)
 		}
 
-		// Phase 3d: Mark conflicting traces from contradiction edges.
-		// Now that episodes have been assigned to traces, we can identify which traces
-		// contain contradicting information and flag them for executive review.
-		if len(contradictionEdges) > 0 {
-			// Build episode map for timestamp-based auto-resolution
-			episodeMap := make(map[string]*graph.Episode, len(episodes))
-			for _, ep := range episodes {
-				episodeMap[ep.ID] = ep
-			}
-			conflictPairs := c.markContradictionConflicts(contradictionEdges, episodeMap)
-			if conflictPairs > 0 {
-				log.Printf("[consolidate] Marked %d conflicting trace pairs from %d contradiction edges",
-					conflictPairs, len(contradictionEdges))
-			}
-		}
 
 		// Phase 4: Batch reconsolidation of traces with new episodes
 		tracesNeedingRecon, err := c.graph.GetTracesNeedingReconsolidation()
@@ -349,108 +316,6 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 	}
 
 	return newGroups, existingTracesWithNewEpisodes
-}
-
-// autoResolveThreshold is the minimum time difference between contradicting episodes
-// for automatic resolution (newer episode supersedes older one without user intervention).
-const autoResolveThreshold = time.Hour
-
-// markContradictionConflicts identifies trace pairs connected by "contradicts" edges and
-// marks both traces with has_conflict=true and the other's short_id in conflict_with.
-// When one episode is clearly newer (> autoResolveThreshold), auto-resolves by marking
-// the older trace as done (superseded). Returns the number of distinct trace pairs marked.
-func (c *Consolidator) markContradictionConflicts(contradictionEdges []EpisodeEdge, episodeMap map[string]*graph.Episode) int {
-	type tracePair struct{ a, b string }
-	seen := make(map[tracePair]bool)
-	marked := 0
-
-	for _, edge := range contradictionEdges {
-		// Find which trace each episode belongs to
-		tracesA, err := c.graph.GetEpisodeTraces(edge.FromID)
-		if err != nil || len(tracesA) == 0 {
-			continue
-		}
-		tracesB, err := c.graph.GetEpisodeTraces(edge.ToID)
-		if err != nil || len(tracesB) == 0 {
-			continue
-		}
-
-		traceA := tracesA[0]
-		traceB := tracesB[0]
-
-		// Skip if same trace or ephemeral
-		if traceA == traceB || traceA == "_ephemeral" || traceB == "_ephemeral" {
-			continue
-		}
-
-		// Skip duplicate pairs
-		pair := tracePair{traceA, traceB}
-		if traceA > traceB {
-			pair = tracePair{traceB, traceA}
-		}
-		if seen[pair] {
-			continue
-		}
-		seen[pair] = true
-
-		// Get short IDs for human-readable conflict_with field
-		shortA, err := c.graph.GetTraceShortID(traceA)
-		if err != nil || shortA == "" {
-			continue
-		}
-		shortB, err := c.graph.GetTraceShortID(traceB)
-		if err != nil || shortB == "" {
-			continue
-		}
-
-		// Mark both traces as conflicting with each other
-		if err := c.graph.MarkTraceConflict(traceA, shortB); err != nil {
-			log.Printf("[consolidate] Failed to mark conflict on trace %s: %v", shortA, err)
-			continue
-		}
-		if err := c.graph.MarkTraceConflict(traceB, shortA); err != nil {
-			log.Printf("[consolidate] Failed to mark conflict on trace %s: %v", shortB, err)
-			continue
-		}
-		marked++
-
-		// Auto-resolve if one episode is clearly newer than the other.
-		// The more recent episode is assumed correct for preference/state facts.
-		epFrom := episodeMap[edge.FromID]
-		epTo := episodeMap[edge.ToID]
-		if epFrom == nil || epTo == nil {
-			continue
-		}
-		tFrom := epFrom.TimestampEvent
-		tTo := epTo.TimestampEvent
-		if tFrom.IsZero() || tTo.IsZero() {
-			continue
-		}
-
-		diff := tTo.Sub(tFrom)
-		switch {
-		case diff > autoResolveThreshold:
-			// Episode B (ToID) is clearly newer — trace A is superseded by trace B
-			if err := c.graph.MarkTraceDone(shortA, epTo.ShortID); err != nil {
-				log.Printf("[consolidate] Failed to mark trace %s done (auto-resolve): %v", shortA, err)
-				continue
-			}
-			c.graph.ResolveTraceConflict(traceA)
-			c.graph.ResolveTraceConflict(traceB)
-			log.Printf("[consolidate] Auto-resolved conflict: %s superseded by %s (age diff: %v)", shortA, shortB, diff.Round(time.Minute))
-		case -diff > autoResolveThreshold:
-			// Episode A (FromID) is clearly newer — trace B is superseded by trace A
-			if err := c.graph.MarkTraceDone(shortB, epFrom.ShortID); err != nil {
-				log.Printf("[consolidate] Failed to mark trace %s done (auto-resolve): %v", shortB, err)
-				continue
-			}
-			c.graph.ResolveTraceConflict(traceA)
-			c.graph.ResolveTraceConflict(traceB)
-			log.Printf("[consolidate] Auto-resolved conflict: %s superseded by %s (age diff: %v)", shortB, shortA, (-diff).Round(time.Minute))
-		}
-	}
-
-	return marked
 }
 
 // reconsolidateTrace regenerates a trace's summary and metadata after new episodes are added

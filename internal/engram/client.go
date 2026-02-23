@@ -80,9 +80,6 @@ type Trace struct {
 	LabileUntil  time.Time `json:"labile_until,omitempty"`
 	SourceIDs    []string  `json:"source_ids,omitempty"`
 	EntityIDs    []string  `json:"entity_ids,omitempty"`
-	// Conflict tracking (populated when contradicting traces are detected during consolidation)
-	HasConflict  bool      `json:"has_conflict,omitempty"`
-	ConflictWith string    `json:"conflict_with,omitempty"` // CSV of conflicting trace short_ids
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
@@ -284,7 +281,7 @@ func (c *Client) GetActivatedTraces(threshold float64, limit int) ([]*Trace, err
 // boost=0 uses the server default (0.1).
 func (c *Client) BoostTraces(traceIDs []string, boost, threshold float64) error {
 	body := map[string]any{
-		"engram_ids": traceIDs,
+		"ids": traceIDs,
 	}
 	if boost > 0 {
 		body["boost"] = boost
@@ -360,7 +357,7 @@ func (c *Client) GetUnconsolidatedEpisodeCount() (int, error) {
 // confidence should be 0.0–1.0; 0 is treated as 1.0 by the server.
 func (c *Client) AddEpisodeEdge(fromID, toID, edgeType string, confidence float64) error {
 	body := map[string]any{
-		"to_id":     toID,
+		"target_id": toID,
 		"edge_type": edgeType,
 	}
 	if confidence > 0 {

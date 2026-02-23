@@ -702,11 +702,7 @@ func (g *DB) Retrieve(queryEmb []float64, queryText string, limit int) (*Retriev
 		result.Traces = append(result.Traces, trace)
 	}
 
-	// Inject conflict partners: if a conflicted trace was retrieved, also bring in its counterpart
-	// so the executive can see both sides of the contradiction in the same context.
-	g.injectConflictPartners(result)
-
-	// Re-sort after applying operational bias and conflict injection (may reorder results)
+	// Re-sort after applying operational bias
 	sort.Slice(result.Traces, func(i, j int) bool {
 		return result.Traces[i].Activation > result.Traces[j].Activation
 	})
@@ -895,59 +891,12 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 		result.Traces = append(result.Traces, trace)
 	}
 
-	// Inject conflict partners: if a conflicted trace was retrieved, also bring in its counterpart.
-	g.injectConflictPartners(result)
-
-	// Re-sort after applying operational bias and conflict injection (may reorder results)
+	// Re-sort after applying operational bias
 	sort.Slice(result.Traces, func(i, j int) bool {
 		return result.Traces[i].Activation > result.Traces[j].Activation
 	})
 
 	return result, nil
-}
-
-// injectConflictPartners ensures that for any retrieved trace with has_conflict=true,
-// its conflict partner(s) are also included in the result. If a conflicted trace surfaces
-// during retrieval, the counterpart (which contains the contradicting claim) is fetched and
-// added at the same activation level so both sides appear together in context.
-// Resolved conflicts (conflict_resolved_at set) and done partners are skipped.
-func (g *DB) injectConflictPartners(result *RetrievalResult) {
-	retrievedIDs := make(map[string]bool, len(result.Traces))
-	for _, tr := range result.Traces {
-		retrievedIDs[tr.ID] = true
-	}
-
-	var toAdd []*Trace
-	for _, tr := range result.Traces {
-		if !tr.HasConflict || tr.ConflictWith == "" {
-			continue
-		}
-		// Skip if conflict already resolved — no need to surface the superseded partner
-		if !tr.ConflictResolvedAt.IsZero() {
-			continue
-		}
-		for _, shortID := range strings.Split(tr.ConflictWith, ",") {
-			shortID = strings.TrimSpace(shortID)
-			if shortID == "" {
-				continue
-			}
-			partner, err := g.GetTraceByShortID(shortID)
-			if err != nil || partner == nil {
-				continue
-			}
-			// Don't inject done partners (superseded by conflict resolution)
-			if partner.Done {
-				continue
-			}
-			if retrievedIDs[partner.ID] {
-				continue
-			}
-			retrievedIDs[partner.ID] = true
-			partner.Activation = tr.Activation
-			toAdd = append(toAdd, partner)
-		}
-	}
-	result.Traces = append(result.Traces, toAdd...)
 }
 
 // applyLateralInhibition applies Synapse-style lateral inhibition

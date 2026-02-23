@@ -164,8 +164,7 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("save_thought", mcp.ToolDef{
 		Description: "Save a thought or observation to memory. Use this to remember decisions, observations, or anything worth recalling later. These get consolidated with other memories over time.",
 		Properties: map[string]mcp.PropDef{
-			"content":   {Type: "string", Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')"},
-			"completes": {Type: "array", Description: "Optional list of trace short_ids (e.g. 'tr_abc12') that this thought resolves. Marked traces are excluded from future active retrieval but remain queryable."},
+			"content": {Type: "string", Description: "The thought or observation to save (e.g., 'User prefers morning check-ins')"},
 		},
 		Required: []string{"content"},
 	}, func(ctx any, args map[string]any) (string, error) {
@@ -183,27 +182,6 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		}
 
 		log.Printf("Saved thought: %s", truncate(content, 50))
-
-		// Handle optional completion marking
-		var completedIDs []string
-		if completes, ok := args["completes"].([]any); ok && len(completes) > 0 && deps.MarkTraceDone != nil {
-			for _, item := range completes {
-				traceShortID, ok := item.(string)
-				if !ok || traceShortID == "" {
-					continue
-				}
-				if err := deps.MarkTraceDone(traceShortID, ""); err != nil {
-					log.Printf("Failed to mark trace %s as done: %v", traceShortID, err)
-				} else {
-					completedIDs = append(completedIDs, traceShortID)
-					log.Printf("Marked trace %s as done", traceShortID)
-				}
-			}
-		}
-
-		if len(completedIDs) > 0 {
-			return fmt.Sprintf("Thought saved. Marked %d trace(s) as done: %s", len(completedIDs), strings.Join(completedIDs, ", ")), nil
-		}
 		return "Thought saved to memory. It will be consolidated with other memories over time.", nil
 	})
 }
@@ -312,78 +290,9 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				return "", err
 			}
 
-			// Augment with local done status + pyramid summaries if available
-			if deps.GetTraceInfo != nil {
-				info, infoErr := deps.GetTraceInfo(traceID)
-				if infoErr == nil && info != nil {
-					result := map[string]any{
-						"trace": trace,
-					}
-					if info.Done {
-						result["done_status"] = map[string]any{
-							"is_done":     true,
-							"resolved_by": info.Resolution,
-							"resolved_at": info.DoneAt,
-						}
-					}
-					if len(info.PyramidSummaries) > 0 {
-						result["pyramid_summaries"] = info.PyramidSummaries
-					}
-					data, _ := json.MarshalIndent(result, "", "  ")
-					return string(data), nil
-				}
-			}
-
 			data, _ := json.MarshalIndent(trace, "", "  ")
 			return string(data), nil
 		})
-
-		// resolve_conflict - manually resolve a conflict between two traces
-		if deps.ResolveConflict != nil {
-			server.RegisterTool("resolve_conflict", mcp.ToolDef{
-				Description: "Manually resolve a memory conflict between two traces. Use when the executive sees conflicting information and the user has clarified which is correct. keepWhich='a' keeps trace_a (marks b superseded), keepWhich='b' keeps trace_b (marks a superseded), keepWhich='both' accepts both as valid.",
-				Properties: map[string]mcp.PropDef{
-					"trace_a":    {Type: "string", Description: "Short ID of the first conflicting trace (e.g. 'tr_abc12')"},
-					"trace_b":    {Type: "string", Description: "Short ID of the second conflicting trace"},
-					"keep_which": {Type: "string", Description: "Which trace to keep: 'a', 'b', or 'both'"},
-				},
-				Required: []string{"trace_a", "trace_b", "keep_which"},
-			}, func(ctx any, args map[string]any) (string, error) {
-				traceA, ok := args["trace_a"].(string)
-				if !ok || traceA == "" {
-					return "", fmt.Errorf("trace_a is required")
-				}
-				traceB, ok := args["trace_b"].(string)
-				if !ok || traceB == "" {
-					return "", fmt.Errorf("trace_b is required")
-				}
-				keepWhich, ok := args["keep_which"].(string)
-				if !ok || keepWhich == "" {
-					return "", fmt.Errorf("keep_which is required ('a', 'b', or 'both')")
-				}
-				switch keepWhich {
-				case "a", "b", "both":
-				default:
-					return "", fmt.Errorf("keep_which must be 'a', 'b', or 'both'")
-				}
-
-				if err := deps.ResolveConflict(traceA, traceB, keepWhich); err != nil {
-					return "", fmt.Errorf("failed to resolve conflict: %w", err)
-				}
-
-				switch keepWhich {
-				case "a":
-					log.Printf("Conflict resolved: kept %s, superseded %s", traceA, traceB)
-					return fmt.Sprintf("Conflict resolved. Kept %s, marked %s as superseded.", traceA, traceB), nil
-				case "b":
-					log.Printf("Conflict resolved: kept %s, superseded %s", traceB, traceA)
-					return fmt.Sprintf("Conflict resolved. Kept %s, marked %s as superseded.", traceB, traceA), nil
-				default:
-					log.Printf("Conflict resolved: accepted both %s and %s", traceA, traceB)
-					return fmt.Sprintf("Conflict resolved. Both %s and %s accepted as valid.", traceA, traceB), nil
-				}
-			})
-		}
 
 		// query_episode - query specific episode by short ID or full ID
 		server.RegisterTool("query_episode", mcp.ToolDef{

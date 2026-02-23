@@ -472,13 +472,10 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			if err == nil && result != nil {
 				for _, t := range result.Traces {
 					allMemories = append(allMemories, focus.MemorySummary{
-						ID:           t.ID,
-						ShortID:      t.ShortID,
-						Summary:      t.Summary,
-						Relevance:    t.Activation,
-						Timestamp:    t.CreatedAt,
-						HasConflict:  t.HasConflict,
-						ConflictWith: t.ConflictWith,
+						ID:        t.ID,
+						Summary:   t.Summary,
+						Relevance: t.Activation,
+						Timestamp: t.CreatedAt,
 					})
 				}
 			}
@@ -488,13 +485,10 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 				if err == nil {
 					for _, t := range traces {
 						allMemories = append(allMemories, focus.MemorySummary{
-							ID:           t.ID,
-							ShortID:      t.ShortID,
-							Summary:      t.Summary,
-							Relevance:    t.Activation,
-							Timestamp:    t.CreatedAt,
-							HasConflict:  t.HasConflict,
-							ConflictWith: t.ConflictWith,
+							ID:        t.ID,
+							Summary:   t.Summary,
+							Relevance: t.Activation,
+							Timestamp: t.CreatedAt,
 						})
 					}
 				}
@@ -753,46 +747,9 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			sort.Slice(bundle.Memories, func(i, j int) bool {
 				return bundle.Memories[i].Timestamp.Before(bundle.Memories[j].Timestamp)
 			})
-			// Build shortID → index map for conflict partner lookup
-			shortIDToIdx := make(map[string]int, len(bundle.Memories))
-			for i, mem := range bundle.Memories {
-				if mem.ShortID != "" {
-					shortIDToIdx[mem.ShortID] = i
-				}
-			}
-			// Format memories; conflicted pairs are grouped together with a CONFLICT label
-			formatted := make([]bool, len(bundle.Memories))
-			for i, mem := range bundle.Memories {
-				if formatted[i] {
-					continue
-				}
-				formatted[i] = true
+			for _, mem := range bundle.Memories {
 				displayID := e.session.GetOrAssignMemoryID(mem.ID)
 				timeStr := formatMemoryTimestamp(mem.Timestamp)
-				if mem.HasConflict && mem.ConflictWith != "" {
-					// Check if any conflict partners are present in this result set
-					var partnerIdxs []int
-					for _, psid := range strings.Split(mem.ConflictWith, ",") {
-						psid = strings.TrimSpace(psid)
-						if psid == "" {
-							continue
-						}
-						if pidx, ok := shortIDToIdx[psid]; ok && !formatted[pidx] {
-							partnerIdxs = append(partnerIdxs, pidx)
-						}
-					}
-					if len(partnerIdxs) > 0 {
-						prompt.WriteString(fmt.Sprintf("- [CONFLICT] [%s] [%s] %s\n", displayID, timeStr, mem.Summary))
-						for _, pidx := range partnerIdxs {
-							partner := bundle.Memories[pidx]
-							formatted[pidx] = true
-							pDisplayID := e.session.GetOrAssignMemoryID(partner.ID)
-							pTimeStr := formatMemoryTimestamp(partner.Timestamp)
-							prompt.WriteString(fmt.Sprintf("  ↔ [%s] [%s] %s (contradicts above)\n", pDisplayID, pTimeStr, partner.Summary))
-						}
-						continue
-					}
-				}
 				prompt.WriteString(fmt.Sprintf("- [%s] [%s] %s\n", displayID, timeStr, mem.Summary))
 			}
 		}
