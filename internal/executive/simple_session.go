@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/logging"
-	"github.com/zeebo/blake3"
 )
 
 const (
@@ -149,16 +147,17 @@ func (s *SimpleSession) SeenMemoryCount() int {
 	return len(s.seenMemoryIDs)
 }
 
-// GetOrAssignMemoryID returns the display ID for a trace, assigning one if needed
-// Generates a stable BLAKE3 short hash ID (tr_xxxxx) for content-addressable references
+// GetOrAssignMemoryID returns the display ID for a trace, assigning one if needed.
+// Uses the first 5 chars of the real engram ID so it can be queried directly via
+// GET /v1/engrams/<id>.
 func (s *SimpleSession) GetOrAssignMemoryID(traceID string) string {
 	if id, exists := s.memoryIDMap[traceID]; exists {
 		return id
 	}
-	// Generate BLAKE3 short hash (5 chars) from trace ID
-	hash := blake3.Sum256([]byte(traceID))
-	shortHash := hex.EncodeToString(hash[:])[:5]
-	id := "tr_" + shortHash
+	id := traceID
+	if len(id) > 5 {
+		id = id[:5]
+	}
 	s.memoryIDMap[traceID] = id
 	return id
 }

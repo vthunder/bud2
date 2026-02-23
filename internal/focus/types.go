@@ -71,8 +71,7 @@ type ContextBundle struct {
 type MemorySummary struct {
 	ID        string    `json:"id"`
 	Summary   string    `json:"summary"`
-	Relevance float64   `json:"relevance"` // How relevant to current focus
-	Timestamp time.Time `json:"timestamp"` // When the memory was created or last accessed
+	Timestamp time.Time `json:"timestamp"` // When the memory was created
 }
 
 // ReflexActivity represents a recent reflex action for context

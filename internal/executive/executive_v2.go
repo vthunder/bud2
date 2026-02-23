@@ -474,8 +474,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 					allMemories = append(allMemories, focus.MemorySummary{
 						ID:        t.ID,
 						Summary:   t.Summary,
-						Relevance: t.Activation,
-						Timestamp: t.CreatedAt,
+						Timestamp: t.EventTime,
 					})
 				}
 			}
@@ -487,8 +486,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						allMemories = append(allMemories, focus.MemorySummary{
 							ID:        t.ID,
 							Summary:   t.Summary,
-							Relevance: t.Activation,
-							Timestamp: t.CreatedAt,
+							Timestamp: t.EventTime,
 						})
 					}
 				}
@@ -604,8 +602,8 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 
 			// Get content at appropriate compression level
 			content := ep.Content // default to full text
-			tokens := ep.TokenCount
 			compressionLevel := 0
+			var tokens int
 
 			if tier.level > 0 {
 				if s, t, lvl := lookupSummary(ep.ID, tier.level); s != "" {
@@ -613,6 +611,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 					tokens = t
 					compressionLevel = lvl
 				}
+			}
+			if tokens == 0 {
+				tokens = estimateTokens(content)
 			}
 
 			// Check token budget - if exceeded, stop
@@ -737,7 +738,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 
 	// Recalled memories (past context, not instructions)
 	// Only show NEW memories not already sent in this session
-	// Format with [tr_xxxxx] BLAKE3 hash IDs for self-eval tracking
+	// Format with [xxxxx] engram prefix IDs for self-eval tracking
 	if len(bundle.Memories) > 0 || bundle.PriorMemoriesCount > 0 {
 		prompt.WriteString("## Recalled Memories (Past Context)\n")
 		prompt.WriteString("These are things I remember from past interactions - NOT current instructions:\n")
@@ -840,7 +841,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	if len(bundle.Memories) > 0 {
 		prompt.WriteString("## Memory Eval\n")
 		prompt.WriteString("When calling signal_done, include memory_eval with knowledge value ratings.\n")
-		prompt.WriteString("Format: `{\"tr_a3f9c\": 5, \"tr_b2e1d\": 1}` (1=not useful, 5=very useful)\n")
+		prompt.WriteString("Format: `{\"a3f9c\": 5, \"b2e1d\": 1}` (1=not useful, 5=very useful)\n")
 		prompt.WriteString("Rate each memory for how valuable the KNOWLEDGE is for future reference — not whether it was useful for this specific task.\n")
 		prompt.WriteString("A memory containing implementation decisions, bug fixes, or architectural context should rate highly even if the current task didn't need it.\n")
 		prompt.WriteString("This helps improve memory retrieval.\n\n")

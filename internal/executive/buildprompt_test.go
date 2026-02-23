@@ -28,7 +28,6 @@ func TestBuildPrompt_NonConflictFormatting(t *testing.T) {
 			{
 				ID:        "trace-normal-id",
 				Summary:   "User prefers vim keybindings",
-				Relevance: 0.7,
 				Timestamp: ts,
 			},
 		},

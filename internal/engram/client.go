@@ -67,19 +67,9 @@ type Entity struct {
 // Trace represents a consolidated memory (Tier 3).
 // JSON field names match Engram's "engram" type.
 type Trace struct {
-	ID           string    `json:"id"`
-	ShortID      string    `json:"short_id,omitempty"`
-	Summary      string    `json:"summary"`
-	Topic        string    `json:"topic,omitempty"`
-	TraceType    string    `json:"engram_type,omitempty"`
-	Activation   float64   `json:"activation"`
-	Strength     int       `json:"strength"`
-	Embedding    []float64 `json:"embedding,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastAccessed time.Time `json:"last_accessed"`
-	LabileUntil  time.Time `json:"labile_until,omitempty"`
-	SourceIDs    []string  `json:"source_ids,omitempty"`
-	EntityIDs    []string  `json:"entity_ids,omitempty"`
+	ID        string    `json:"id"`
+	Summary   string    `json:"summary"`
+	EventTime time.Time `json:"event_time"`
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
@@ -179,8 +169,7 @@ func (c *Client) Consolidate() (*ConsolidateResult, error) {
 // Returns a RetrievalResult with Traces populated; Episodes and Entities are empty.
 func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
 	body := map[string]any{
-		"query":  query,
-		"detail": "full",
+		"query": query,
 	}
 	if limit > 0 {
 		body["limit"] = limit
@@ -196,10 +185,8 @@ func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
 
 // ListTraces returns all consolidated memory traces.
 func (c *Client) ListTraces() ([]*Trace, error) {
-	params := url.Values{}
-	params.Set("detail", "full")
 	var traces []*Trace
-	if err := c.get("/v1/engrams", params, &traces); err != nil {
+	if err := c.get("/v1/engrams", nil, &traces); err != nil {
 		return nil, err
 	}
 	return traces, nil
@@ -265,7 +252,6 @@ func (c *Client) ReinforceTrace(id string, embedding []float64, alpha float64) e
 // threshold=0 returns all traces sorted by activation.
 func (c *Client) GetActivatedTraces(threshold float64, limit int) ([]*Trace, error) {
 	params := url.Values{}
-	params.Set("detail", "full")
 	params.Set("threshold", strconv.FormatFloat(threshold, 'f', -1, 64))
 	if limit > 0 {
 		params.Set("limit", strconv.Itoa(limit))

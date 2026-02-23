@@ -107,8 +107,8 @@ func TestSearch(t *testing.T) {
 		if body["query"] != "test query" {
 			t.Errorf("expected query 'test query', got %q", body["query"])
 		}
-		if body["detail"] != "full" {
-			t.Errorf("expected detail=full")
+		if _, hasDetail := body["detail"]; hasDetail {
+			t.Errorf("unexpected detail param in search request")
 		}
 		traces := []*Trace{{ID: "tr-1", Summary: "a trace"}}
 		json.NewEncoder(w).Encode(traces)
@@ -475,7 +475,7 @@ func TestGetActivatedTraces(t *testing.T) {
 		if r.URL.Query().Get("limit") != "20" {
 			t.Errorf("expected limit=20, got %q", r.URL.Query().Get("limit"))
 		}
-		traces := []*Trace{{ID: "tr-hot", Activation: 0.9}}
+		traces := []*Trace{{ID: "tr-hot"}}
 		json.NewEncoder(w).Encode(traces)
 	})
 
@@ -483,7 +483,7 @@ func TestGetActivatedTraces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(traces) != 1 || traces[0].Activation != 0.9 {
+	if len(traces) != 1 {
 		t.Errorf("unexpected traces: %+v", traces)
 	}
 }

@@ -203,9 +203,8 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 		var result []map[string]any
 		for _, t := range traces {
 			result = append(result, map[string]any{
-				"id":       t.ID,
-				"content":  truncate(t.Summary, 100),
-				"strength": t.Strength,
+				"id":      t.ID,
+				"content": truncate(t.Summary, 100),
 			})
 		}
 
