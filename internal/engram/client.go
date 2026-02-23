@@ -68,6 +68,7 @@ type Entity struct {
 // JSON field names match Engram's "engram" type.
 type Trace struct {
 	ID           string    `json:"id"`
+	ShortID      string    `json:"short_id,omitempty"`
 	Summary      string    `json:"summary"`
 	Topic        string    `json:"topic,omitempty"`
 	TraceType    string    `json:"engram_type,omitempty"`
@@ -79,6 +80,9 @@ type Trace struct {
 	LabileUntil  time.Time `json:"labile_until,omitempty"`
 	SourceIDs    []string  `json:"source_ids,omitempty"`
 	EntityIDs    []string  `json:"entity_ids,omitempty"`
+	// Conflict tracking (populated when contradicting traces are detected during consolidation)
+	HasConflict  bool      `json:"has_conflict,omitempty"`
+	ConflictWith string    `json:"conflict_with,omitempty"` // CSV of conflicting trace short_ids
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
@@ -177,14 +181,15 @@ func (c *Client) Consolidate() (*ConsolidateResult, error) {
 // limit <= 0 uses the server default (10).
 // Returns a RetrievalResult with Traces populated; Episodes and Entities are empty.
 func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("detail", "full")
+	body := map[string]any{
+		"query":  query,
+		"detail": "full",
+	}
 	if limit > 0 {
-		params.Set("limit", strconv.Itoa(limit))
+		body["limit"] = limit
 	}
 	var traces []*Trace
-	if err := c.get("/v1/engrams", params, &traces); err != nil {
+	if err := c.post("/v1/engrams/search", body, &traces); err != nil {
 		return nil, err
 	}
 	return &RetrievalResult{Traces: traces}, nil

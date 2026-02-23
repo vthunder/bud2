@@ -69,10 +69,13 @@ type ContextBundle struct {
 
 // MemorySummary is a simplified view of a memory trace for context
 type MemorySummary struct {
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	Relevance float64   `json:"relevance"` // How relevant to current focus
-	Timestamp time.Time `json:"timestamp"` // When the memory was created or last accessed
+	ID           string    `json:"id"`
+	ShortID      string    `json:"short_id"`                  // 5-char short ID for conflict lookup
+	Summary      string    `json:"summary"`
+	Relevance    float64   `json:"relevance"`                 // How relevant to current focus
+	Timestamp    time.Time `json:"timestamp"`                 // When the memory was created or last accessed
+	HasConflict  bool      `json:"has_conflict,omitempty"`    // True when a contradicting trace exists
+	ConflictWith string    `json:"conflict_with,omitempty"`   // CSV of conflicting trace short_ids
 }
 
 // ReflexActivity represents a recent reflex action for context

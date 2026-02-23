@@ -94,13 +94,20 @@ func TestIngestThought(t *testing.T) {
 
 func TestSearch(t *testing.T) {
 	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/engrams" {
+		if r.URL.Path != "/v1/engrams/search" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("query") != "test query" {
-			t.Errorf("expected query param 'test query', got %q", r.URL.Query().Get("query"))
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Query().Get("detail") != "full" {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body["query"] != "test query" {
+			t.Errorf("expected query 'test query', got %q", body["query"])
+		}
+		if body["detail"] != "full" {
 			t.Errorf("expected detail=full")
 		}
 		traces := []*Trace{{ID: "tr-1", Summary: "a trace"}}
