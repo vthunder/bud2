@@ -234,7 +234,7 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 				limit = int(l)
 			}
 
-			results, err := deps.EngramClient.Search(query, limit)
+			results, err := deps.EngramClient.Search(query, limit, 0)
 			if err != nil {
 				return "", fmt.Errorf("search failed: %w", err)
 			}

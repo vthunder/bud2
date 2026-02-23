@@ -69,6 +69,7 @@ type Entity struct {
 type Trace struct {
 	ID        string    `json:"id"`
 	Summary   string    `json:"summary"`
+	Level     int       `json:"level,omitempty"` // Compression level applied (0 = stored summary)
 	EventTime time.Time `json:"event_time"`
 }
 
@@ -166,13 +167,17 @@ func (c *Client) Consolidate() (*ConsolidateResult, error) {
 
 // Search retrieves relevant memories for the given query via Engram's semantic search.
 // limit <= 0 uses the server default (10).
+// level > 0 requests a specific compression level; 0 returns the stored summary.
 // Returns a RetrievalResult with Traces populated; Episodes and Entities are empty.
-func (c *Client) Search(query string, limit int) (*RetrievalResult, error) {
+func (c *Client) Search(query string, limit, level int) (*RetrievalResult, error) {
 	body := map[string]any{
 		"query": query,
 	}
 	if limit > 0 {
 		body["limit"] = limit
+	}
+	if level > 0 {
+		body["level"] = level
 	}
 	var traces []*Trace
 	if err := c.post("/v1/engrams/search", body, &traces); err != nil {

@@ -71,7 +71,8 @@ type ContextBundle struct {
 type MemorySummary struct {
 	ID        string    `json:"id"`
 	Summary   string    `json:"summary"`
-	Timestamp time.Time `json:"timestamp"` // When the memory was created
+	Level     int       `json:"level,omitempty"` // Compression level (0 = stored summary)
+	Timestamp time.Time `json:"timestamp"`       // When the memory was created
 }
 
 // ReflexActivity represents a recent reflex action for context

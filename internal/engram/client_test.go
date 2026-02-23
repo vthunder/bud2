@@ -114,7 +114,7 @@ func TestSearch(t *testing.T) {
 		json.NewEncoder(w).Encode(traces)
 	})
 
-	result, err := c.Search("test query", 5)
+	result, err := c.Search("test query", 5, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
