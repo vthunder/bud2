@@ -1232,3 +1232,58 @@ func TestInjectConflictPartners(t *testing.T) {
 		t.Errorf("Second inject should not add duplicates, got %d traces", len(result.Traces))
 	}
 }
+
+// TestInjectConflictPartnersResolved verifies that already-resolved conflicts
+// do not cause the superseded partner to be injected into retrieval results.
+func TestInjectConflictPartnersResolved(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Add two conflicting traces
+	trA := &Trace{ID: "trace-winner", ShortID: "tr_win", Summary: "User prefers dark mode (current)", Activation: 0.8}
+	trB := &Trace{ID: "trace-loser", ShortID: "tr_los", Summary: "User prefers light mode (superseded)", Activation: 0.6}
+
+	if err := addTestTrace(t, db, trA); err != nil {
+		t.Fatalf("AddTrace(A): %v", err)
+	}
+	if err := addTestTrace(t, db, trB); err != nil {
+		t.Fatalf("AddTrace(B): %v", err)
+	}
+	if err := db.MarkTraceConflict("trace-winner", "tr_los"); err != nil {
+		t.Fatalf("MarkTraceConflict(A): %v", err)
+	}
+	if err := db.MarkTraceConflict("trace-loser", "tr_win"); err != nil {
+		t.Fatalf("MarkTraceConflict(B): %v", err)
+	}
+
+	// Resolve the conflict: winner keeps, loser marked done
+	if err := db.ResolveTraceConflict("trace-winner"); err != nil {
+		t.Fatalf("ResolveTraceConflict(winner): %v", err)
+	}
+	if err := db.ResolveTraceConflict("trace-loser"); err != nil {
+		t.Fatalf("ResolveTraceConflict(loser): %v", err)
+	}
+	if err := db.MarkTraceDone("tr_los", ""); err != nil {
+		t.Fatalf("MarkTraceDone(loser): %v", err)
+	}
+
+	// Fetch winner (has_conflict=true, conflict_resolved_at set)
+	fetchedA, err := db.GetTrace("trace-winner")
+	if err != nil || fetchedA == nil {
+		t.Fatalf("GetTrace(winner): %v", err)
+	}
+	if fetchedA.ConflictResolvedAt.IsZero() {
+		t.Error("Expected ConflictResolvedAt to be set on winner")
+	}
+	fetchedA.Activation = 0.75
+
+	// Retrieval result with only the winner
+	result := &RetrievalResult{Traces: []*Trace{fetchedA}}
+
+	// injectConflictPartners should NOT inject the resolved/done partner
+	db.injectConflictPartners(result)
+
+	if len(result.Traces) != 1 {
+		t.Errorf("Resolved conflict: expected 1 trace (no injection), got %d", len(result.Traces))
+	}
+}

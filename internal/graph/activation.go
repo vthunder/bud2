@@ -910,6 +910,7 @@ func (g *DB) RetrieveWithContext(queryEmb []float64, queryText string, contextTr
 // its conflict partner(s) are also included in the result. If a conflicted trace surfaces
 // during retrieval, the counterpart (which contains the contradicting claim) is fetched and
 // added at the same activation level so both sides appear together in context.
+// Resolved conflicts (conflict_resolved_at set) and done partners are skipped.
 func (g *DB) injectConflictPartners(result *RetrievalResult) {
 	retrievedIDs := make(map[string]bool, len(result.Traces))
 	for _, tr := range result.Traces {
@@ -921,6 +922,10 @@ func (g *DB) injectConflictPartners(result *RetrievalResult) {
 		if !tr.HasConflict || tr.ConflictWith == "" {
 			continue
 		}
+		// Skip if conflict already resolved — no need to surface the superseded partner
+		if !tr.ConflictResolvedAt.IsZero() {
+			continue
+		}
 		for _, shortID := range strings.Split(tr.ConflictWith, ",") {
 			shortID = strings.TrimSpace(shortID)
 			if shortID == "" {
@@ -928,6 +933,10 @@ func (g *DB) injectConflictPartners(result *RetrievalResult) {
 			}
 			partner, err := g.GetTraceByShortID(shortID)
 			if err != nil || partner == nil {
+				continue
+			}
+			// Don't inject done partners (superseded by conflict resolution)
+			if partner.Done {
 				continue
 			}
 			if retrievedIDs[partner.ID] {
