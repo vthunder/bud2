@@ -259,6 +259,12 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.OnExecWake(item.ID, truncate(item.Content, 100))
 	}
 
+	// Rotate session ID before building the prompt so that memoryIDMap is
+	// populated fresh for this session. PrepareNewSession must be called before
+	// buildPrompt — not after — so that GetOrAssignMemoryID entries survive
+	// until signal_done fires and ResolveMemoryEval can resolve them.
+	e.session.PrepareNewSession()
+
 	// Build context bundle (one-shot sessions: no reset logic needed)
 	var bundle *focus.ContextBundle
 	func() {
@@ -316,10 +322,6 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	startTime := time.Now()
-
-	// Rotate session ID before registering with the tracker so that
-	// StartSession, SendPrompt, and CompleteSession all see the same ID.
-	e.session.PrepareNewSession()
 
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)

@@ -167,9 +167,9 @@ func (s *SimpleSession) GetMemoryID(traceID string) string {
 	return s.memoryIDMap[traceID]
 }
 
-// ResolveMemoryEval takes a memory_eval map like {"tr_a3f9c": 5, "tr_b2e1d": 1} and returns
-// a map of trace_id -> rating by reversing the memoryIDMap lookup.
-// Also supports legacy "M1", "M2" format for backwards compatibility.
+// ResolveMemoryEval takes a memory_eval map like {"a3f9c": 5, "b2e1d": 1} (5-char engram prefix)
+// and returns a map of trace_id -> rating by reversing the memoryIDMap lookup.
+// Also skips legacy "M1", "M2" format keys which can no longer be resolved.
 // Unknown display IDs are skipped.
 func (s *SimpleSession) ResolveMemoryEval(eval map[string]any) map[string]int {
 	// Build reverse map: display_id -> trace_id

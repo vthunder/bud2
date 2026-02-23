@@ -3,7 +3,6 @@ package eval
 
 import (
 	"bufio"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/vthunder/bud2/internal/embedding"
 	"github.com/vthunder/bud2/internal/engram"
-	"github.com/zeebo/blake3"
 )
 
 // Judge evaluates memory relevance independently of self-eval.
@@ -121,17 +119,10 @@ type executiveWakeEntry struct {
 	Data      map[string]interface{} `json:"data"`
 }
 
-// displayIDToTraceID computes a BLAKE3-based display ID from a trace ID,
-// matching the GetOrAssignMemoryID() logic in simple_session.go.
-func displayIDToTraceID(traceID string) string {
-	hash := blake3.Sum256([]byte(traceID))
-	shortHash := hex.EncodeToString(hash[:])[:5]
-	return "tr_" + shortHash
-}
-
-// buildDisplayIDLookup builds a map from display ID (tr_xxxxx) to trace ID for all
-// traces currently in the DB. This lets us resolve self-eval entries even when the
-// in-memory memoryIDMap was cleared before signal_done was processed.
+// buildDisplayIDLookup builds a map from display ID (first 5 chars of trace ID) to
+// full trace ID for all traces currently in the DB. This lets us resolve self-eval
+// entries when the in-memory memoryIDMap was cleared before signal_done was processed.
+// Display IDs match GetOrAssignMemoryID() in simple_session.go: traceID[:5].
 func (j *Judge) buildDisplayIDLookup() (map[string]string, error) {
 	allTraces, err := j.engram.ListTraces()
 	if err != nil {
@@ -139,7 +130,10 @@ func (j *Judge) buildDisplayIDLookup() (map[string]string, error) {
 	}
 	lookup := make(map[string]string, len(allTraces))
 	for _, t := range allTraces {
-		displayID := displayIDToTraceID(t.ID)
+		displayID := t.ID
+		if len(displayID) > 5 {
+			displayID = displayID[:5]
+		}
 		lookup[displayID] = t.ID
 	}
 	return lookup, nil
