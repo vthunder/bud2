@@ -135,14 +135,24 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("signal_done", mcp.ToolDef{
 		Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",
 		Properties: map[string]mcp.PropDef{
-			"session_id":  {Type: "string", Description: "The current session ID (if known)"},
-			"summary":     {Type: "string", Description: "Brief summary of what was accomplished (optional)"},
-			"memory_eval": {Type: "object", Description: "Memory usefulness ratings as {\"M1\": 5, \"M2\": 1} where 1=not useful, 5=very useful"},
+			"session_id":    {Type: "string", Description: "The current session ID (if known)"},
+			"summary":       {Type: "string", Description: "Brief summary of what was accomplished (optional)"},
+			"memory_eval":   {Type: "object", Description: "Memory usefulness ratings as {\"M1\": 5, \"M2\": 1} where 1=not useful, 5=very useful"},
+			"handoff_note":  {Type: "string", Description: "Brief note for the next autonomous session: what was done, what's pending, anything to be aware of."},
 		},
 	}, func(ctx any, args map[string]any) (string, error) {
 		sessionID, _ := args["session_id"].(string)
 		summary, _ := args["summary"].(string)
 		memoryEval, _ := args["memory_eval"].(map[string]any)
+
+		// Write handoff note for the next autonomous session
+		if note, ok := args["handoff_note"].(string); ok && note != "" {
+			notePath := filepath.Join(deps.SystemPath, "autonomous-handoff.md")
+			content := fmt.Sprintf("# Autonomous Session Note\n\n%s\n\nRecorded: %s\n", note, time.Now().Format(time.RFC3339))
+			if err := os.WriteFile(notePath, []byte(content), 0644); err != nil {
+				log.Printf("[signal_done] Failed to write handoff note: %v", err)
+			}
+		}
 
 		extra := map[string]any{
 			"session_id": sessionID,

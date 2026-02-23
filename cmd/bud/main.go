@@ -1169,10 +1169,15 @@ func main() {
 						continue
 					}
 
-					// Skip wake if user was active very recently — avoid interrupting active sessions.
-					recentInput := activityLog.LastUserInputTime()
-					if !recentInput.IsZero() && time.Since(recentInput) < autonomousIdleRequired {
-						log.Printf("[autonomous] User active recently (%v ago) — skipping wake", time.Since(recentInput).Round(time.Second))
+					// Idle gate: skip if user was active too recently or a P1 session is running.
+					lastInput := activityLog.LastUserInputTime()
+					if !lastInput.IsZero() && time.Since(lastInput) < autonomousIdleRequired {
+						log.Printf("[autonomous] User active %v ago (< %v required) — skipping wake",
+							time.Since(lastInput).Round(time.Second), autonomousIdleRequired)
+						continue
+					}
+					if exec.IsP1Active() {
+						log.Printf("[autonomous] P1 session active — skipping wake")
 						continue
 					}
 
@@ -1184,7 +1189,9 @@ func main() {
 						Timestamp:   time.Now(),
 						Description: "Periodic autonomous wake-up. Check for pending tasks, review commitments, or do background work.",
 						Data: map[string]any{
-							"trigger": "periodic",
+							"trigger":              "periodic",
+							"last_user_session_ts": lastInput.Format(time.RFC3339),
+							"autonomous_handoff":   readAutonomousHandoff(statePath),
 						},
 					}
 
@@ -1356,4 +1363,14 @@ func writeMCPConfig(statePath, httpPort string) error {
 
 	log.Printf("[main] Wrote %s with HTTP MCP server at port %s", mcpConfigPath, httpPort)
 	return nil
+}
+
+// readAutonomousHandoff reads the handoff note left by the previous autonomous
+// session (written by signal_done). Returns empty string if none exists.
+func readAutonomousHandoff(statePath string) string {
+	data, err := os.ReadFile(filepath.Join(statePath, "system", "autonomous-handoff.md"))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
