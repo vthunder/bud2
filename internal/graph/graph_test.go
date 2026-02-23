@@ -1347,3 +1347,62 @@ func TestInjectConflictPartnersResolved(t *testing.T) {
 		t.Errorf("Resolved conflict: expected 1 trace (no injection), got %d", len(result.Traces))
 	}
 }
+
+// TestGetTraceNeighborsBatch2Hop verifies that GetTraceNeighborsBatch includes 2-hop
+// entity-relation neighbors, matching the single-node GetTraceNeighborsThroughEntities.
+func TestGetTraceNeighborsBatch2Hop(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Same graph as TestEntityBridged2HopNeighbors:
+	//   entity-alice -[KNOWS]-> entity-bob
+	//   trace-1 linked to entity-alice
+	//   trace-2 linked to entity-bob (NOT alice) — only reachable via 2-hop
+	//   trace-3 linked to entity-alice — 1-hop from trace-1
+	db.AddEntity(&Entity{ID: "entity-alice", Name: "Alice", Type: EntityPerson, Salience: 0.8})
+	db.AddEntity(&Entity{ID: "entity-bob", Name: "Bob", Type: EntityPerson, Salience: 0.7})
+
+	db.AddTrace(&Trace{ID: "trace-1", Summary: "Talked with Alice", Activation: 0.5, Embedding: []float64{1, 0, 0, 0}})
+	db.AddTrace(&Trace{ID: "trace-2", Summary: "Bob's project", Activation: 0.5, Embedding: []float64{0, 1, 0, 0}})
+	db.AddTrace(&Trace{ID: "trace-3", Summary: "Alice again", Activation: 0.5, Embedding: []float64{0, 0, 1, 0}})
+
+	db.LinkTraceToEntity("trace-1", "entity-alice")
+	db.LinkTraceToEntity("trace-2", "entity-bob")
+	db.LinkTraceToEntity("trace-3", "entity-alice")
+
+	if err := db.AddEntityRelation("entity-alice", "entity-bob", EdgeKnows, 0.9); err != nil {
+		t.Fatalf("AddEntityRelation: %v", err)
+	}
+
+	batchResult, err := db.GetTraceNeighborsBatch([]string{"trace-1"})
+	if err != nil {
+		t.Fatalf("GetTraceNeighborsBatch failed: %v", err)
+	}
+
+	neighbors := batchResult["trace-1"]
+	neighborIDs := make(map[string]float64)
+	for _, n := range neighbors {
+		neighborIDs[n.ID] = n.Weight
+	}
+
+	// 1-hop: trace-3 shares entity-alice with trace-1
+	if _, ok := neighborIDs["trace-3"]; !ok {
+		t.Error("Expected trace-3 as 1-hop neighbor via entity-alice")
+	}
+
+	// 2-hop: trace-2 reachable via alice→KNOWS→bob→trace-2
+	if _, ok := neighborIDs["trace-2"]; !ok {
+		t.Error("Expected trace-2 as 2-hop neighbor (alice KNOWS bob) in batch result")
+	}
+
+	// 2-hop weight should be lower than 1-hop weight
+	if w2, ok1 := neighborIDs["trace-2"]; ok1 {
+		if w1, ok2 := neighborIDs["trace-3"]; ok2 {
+			if w2 >= w1 {
+				t.Errorf("2-hop weight (%f) should be less than 1-hop weight (%f)", w2, w1)
+			}
+		}
+	}
+
+	t.Logf("Batch 2-hop neighbors of trace-1: %+v", neighbors)
+}

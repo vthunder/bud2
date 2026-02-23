@@ -728,6 +728,7 @@ func (g *DB) GetTraceNeighborsBatch(ids []string) (map[string][]Neighbor, error)
 	`, ph)
 
 	bridgedRows, err := g.db.Query(bridgedSQL, args...)
+	bridgeSeen := make(map[string]map[string]bool) // track 1-hop entity-bridged neighbors for 2-hop dedup
 	if err == nil {
 		perSourceCount := make(map[string]int)
 		for bridgedRows.Next() {
@@ -752,9 +753,63 @@ func (g *DB) GetTraceNeighborsBatch(ids []string) (map[string][]Neighbor, error)
 				Weight: weight,
 				Type:   EdgeSharedEntity,
 			})
+			if bridgeSeen[sourceID] == nil {
+				bridgeSeen[sourceID] = make(map[string]bool)
+			}
+			bridgeSeen[sourceID][neighborID] = true
 			perSourceCount[sourceID]++
 		}
 		bridgedRows.Close()
+	}
+
+	// Query 3: 2-hop entity-bridged neighbors (trace → entity → entity_relation → entity → trace).
+	// Attenuated weight (0.15 per path, capped at 0.5) mirrors the single-node implementation
+	// inspired by HippoRAG PersonalizedPageRank damping.
+	twoHopSQL := fmt.Sprintf(`
+		SELECT te1.trace_id, te2.trace_id, COUNT(*) as paths
+		FROM trace_entities te1
+		JOIN entity_relations er ON (er.from_id = te1.entity_id OR er.to_id = te1.entity_id)
+		  AND er.invalid_at IS NULL
+		JOIN trace_entities te2 ON te2.entity_id = CASE
+		  WHEN er.from_id = te1.entity_id THEN er.to_id
+		  ELSE er.from_id
+		END
+		WHERE te1.trace_id IN (%s) AND te2.trace_id != te1.trace_id
+		GROUP BY te1.trace_id, te2.trace_id
+		ORDER BY te1.trace_id, paths DESC
+	`, ph)
+
+	twoHopRows, err := g.db.Query(twoHopSQL, args...)
+	if err == nil {
+		perSourceCount2 := make(map[string]int)
+		for twoHopRows.Next() {
+			var sourceID, neighborID string
+			var paths int
+			if err := twoHopRows.Scan(&sourceID, &neighborID, &paths); err != nil {
+				continue
+			}
+			if _, ok := result[sourceID]; !ok {
+				continue
+			}
+			// Skip if already found via direct or 1-hop
+			if seen[sourceID] != nil && seen[sourceID][neighborID] {
+				continue
+			}
+			if bridgeSeen[sourceID] != nil && bridgeSeen[sourceID][neighborID] {
+				continue
+			}
+			if perSourceCount2[sourceID] >= MaxEdgesPerNode {
+				continue
+			}
+			weight := math.Min(0.5, float64(paths)*0.15)
+			result[sourceID] = append(result[sourceID], Neighbor{
+				ID:     neighborID,
+				Weight: weight,
+				Type:   EdgeSharedEntity,
+			})
+			perSourceCount2[sourceID]++
+		}
+		twoHopRows.Close()
 	}
 
 	// Sort and cap each source at MaxEdgesPerNode (strongest edges first)
