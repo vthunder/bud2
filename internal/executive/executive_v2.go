@@ -2,12 +2,15 @@ package executive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vthunder/bud2/internal/budget"
@@ -45,6 +48,12 @@ type ExecutiveV2 struct {
 
 	// Config
 	config ExecutiveV2Config
+
+	// Background session interrupt support
+	backgroundCancel func()
+	backgroundMu     sync.Mutex
+	backgroundActive atomic.Bool
+	p1Active         atomic.Bool
 }
 
 // ExecutiveV2Config holds configuration for the v2 executive
@@ -69,6 +78,10 @@ type ExecutiveV2Config struct {
 	// WakeupInstructions is the content of seed/wakeup.md, injected into
 	// autonomous wake prompts to give Claude concrete work to do.
 	WakeupInstructions string
+
+	// DefaultChannelID is the primary Discord channel ID, used to fetch recent
+	// conversation context for autonomous wake prompts.
+	DefaultChannelID string
 }
 
 // NewExecutiveV2 creates a new v2 executive
@@ -191,6 +204,8 @@ func (e *ExecutiveV2) ProcessNextP1(ctx context.Context) (bool, error) {
 	if item == nil {
 		return false, nil
 	}
+	e.p1Active.Store(true)
+	defer e.p1Active.Store(false)
 	if err := e.processItem(ctx, item); err != nil {
 		return true, err
 	}
@@ -205,10 +220,38 @@ func (e *ExecutiveV2) ProcessNextBackground(ctx context.Context) (bool, error) {
 	if item == nil {
 		return false, nil
 	}
-	if err := e.processItem(ctx, item); err != nil {
+
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	e.backgroundMu.Lock()
+	e.backgroundCancel = bgCancel
+	e.backgroundActive.Store(true)
+	e.backgroundMu.Unlock()
+	defer func() {
+		bgCancel()
+		e.backgroundMu.Lock()
+		e.backgroundCancel = nil
+		e.backgroundActive.Store(false)
+		e.backgroundMu.Unlock()
+	}()
+
+	if err := e.processItem(bgCtx, item); err != nil {
 		return true, err
 	}
 	return true, nil
+}
+
+// IsP1Active returns true if a P1 user session is currently running.
+func (e *ExecutiveV2) IsP1Active() bool { return e.p1Active.Load() }
+
+// RequestBackgroundInterrupt cancels any running background session so a P1
+// item can be processed promptly.
+func (e *ExecutiveV2) RequestBackgroundInterrupt() {
+	e.backgroundMu.Lock()
+	defer e.backgroundMu.Unlock()
+	if e.backgroundCancel != nil {
+		log.Printf("[executive] Interrupting background session for P1")
+		e.backgroundCancel()
+	}
 }
 
 // ProcessItem processes a specific pending item
@@ -333,6 +376,10 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		sendErr = e.session.SendPrompt(ctx, prompt, claudeCfg)
 	}()
 	if sendErr != nil {
+		if errors.Is(sendErr, ErrInterrupted) {
+			log.Printf("[executive] Background session interrupted by P1 item")
+			return nil
+		}
 		return fmt.Errorf("prompt failed: %w", sendErr)
 	}
 
@@ -436,6 +483,15 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		if content != "" {
 			bundle.BufferContent = content
 			bundle.HasAuthorizations = hasAuth
+		}
+	} else if item.Type == "wake" && e.memory != nil && e.config.DefaultChannelID != "" {
+		var wakeContent string
+		func() {
+			defer profiling.Get().Start(item.ID, "context.wake_conversation_load")()
+			wakeContent, _ = e.buildRecentConversationForWake(item.ID)
+		}()
+		if wakeContent != "" {
+			bundle.WakeSessionContext = wakeContent
 		}
 	}
 
@@ -714,6 +770,70 @@ func estimateTokens(text string) int {
 	return tokens
 }
 
+// buildRecentConversationForWake fetches the last 15 episodes for the default
+// channel and formats them at C16 compression for autonomous wake context.
+// Token budget: 1500 tokens. Returns formatted string or empty string on error.
+func (e *ExecutiveV2) buildRecentConversationForWake(itemID string) (string, error) {
+	if e.memory == nil || e.config.DefaultChannelID == "" {
+		return "", nil
+	}
+
+	episodes, err := e.memory.GetRecentEpisodes(e.config.DefaultChannelID, 15)
+	if err != nil {
+		return "", fmt.Errorf("get recent episodes: %w", err)
+	}
+	if len(episodes) == 0 {
+		return "", nil
+	}
+
+	allIDs := make([]string, len(episodes))
+	for i, ep := range episodes {
+		allIDs[i] = ep.ID
+	}
+	c16Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 16)
+
+	tokenBudget := 1500
+	tokenUsed := 0
+	var parts []string
+
+	for _, ep := range episodes {
+		content := ep.Content
+		compressionLevel := 0
+		if s, ok := c16Map[ep.ID]; ok && s != "" {
+			content = s
+			compressionLevel = 16
+		}
+		tokens := estimateTokens(content)
+		if tokenUsed+tokens > tokenBudget {
+			break
+		}
+
+		timeStr := formatMemoryTimestamp(ep.TimestampEvent)
+		shortID := ep.ID
+		if len(shortID) > 5 {
+			shortID = shortID[:5]
+		}
+		var formatted string
+		if compressionLevel > 0 {
+			formatted = fmt.Sprintf("[%s, C%d] [%s] %s: %s", shortID, compressionLevel, timeStr, ep.Author, content)
+		} else {
+			formatted = fmt.Sprintf("[%s] [%s] %s: %s", shortID, timeStr, ep.Author, content)
+		}
+		parts = append(parts, formatted)
+		tokenUsed += tokens
+	}
+
+	if len(parts) == 0 {
+		return "", nil
+	}
+
+	// Episodes arrive newest-first; reverse for chronological display
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
 // buildPrompt constructs the prompt from a context bundle
 func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	var prompt strings.Builder
@@ -846,6 +966,24 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 		if bundle.CurrentFocus.Type == "wake" && e.config.WakeupInstructions != "" {
 			prompt.WriteString(e.config.WakeupInstructions)
 			prompt.WriteString("\n")
+
+			// Inject recent conversation context so wake sessions know what's in flight
+			if bundle.WakeSessionContext != "" {
+				prompt.WriteString("## Recent Conversation (Context Only — Do Not Extend)\n")
+				prompt.WriteString("These are the user's recent messages. Use this to understand what is currently in flight.\n\n")
+				prompt.WriteString(bundle.WakeSessionContext)
+				prompt.WriteString("\n\n")
+			}
+			// Last user session timestamp
+			if ts, ok := bundle.CurrentFocus.Data["last_user_session_ts"].(string); ok && ts != "" {
+				prompt.WriteString(fmt.Sprintf("Last user session: %s\n\n", ts))
+			}
+			// Previous autonomous session handoff note
+			if note, ok := bundle.CurrentFocus.Data["autonomous_handoff"].(string); ok && note != "" {
+				prompt.WriteString("## Previous Autonomous Session Note\n")
+				prompt.WriteString(note)
+				prompt.WriteString("\n\n")
+			}
 		}
 	}
 

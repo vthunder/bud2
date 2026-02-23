@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,10 @@ import (
 
 	"github.com/vthunder/bud2/internal/logging"
 )
+
+// ErrInterrupted is returned by SendPrompt when the session is cancelled by a
+// higher-priority item (e.g. a P1 user message arriving during a background wake).
+var ErrInterrupted = errors.New("session interrupted by higher-priority item")
 
 const (
 	// MaxContextTokens is the threshold for context tokens before auto-reset.
@@ -360,6 +365,10 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	}
 
 	if err := cmd.Wait(); err != nil {
+		if ctx.Err() != nil {
+			log.Printf("[simple-session] Session %s interrupted (context cancelled)", s.sessionID)
+			return ErrInterrupted
+		}
 		if stderrBuf.Len() > 0 {
 			return fmt.Errorf("claude exited with error: %w\nstderr: %s", err, stderrBuf.String())
 		}

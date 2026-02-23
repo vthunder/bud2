@@ -158,6 +158,7 @@ func main() {
 	defer cleanupPidFile()
 	autonomousEnabled := os.Getenv("AUTONOMOUS_ENABLED") == "true"
 	autonomousIntervalStr := os.Getenv("AUTONOMOUS_INTERVAL")
+	autonomousIdleRequiredStr := os.Getenv("AUTONOMOUS_IDLE_REQUIRED")
 	dailyTokenBudgetStr := os.Getenv("DAILY_OUTPUT_TOKEN_BUDGET")
 	userTimezoneStr := os.Getenv("USER_TIMEZONE") // e.g., "Europe/Berlin"
 
@@ -166,6 +167,14 @@ func main() {
 	if autonomousIntervalStr != "" {
 		if d, err := time.ParseDuration(autonomousIntervalStr); err == nil {
 			autonomousInterval = d
+		}
+	}
+
+	// Parse idle required before autonomous wake (default 15 minutes)
+	autonomousIdleRequired := 15 * time.Minute
+	if autonomousIdleRequiredStr != "" {
+		if d, err := time.ParseDuration(autonomousIdleRequiredStr); err == nil {
+			autonomousIdleRequired = d
 		}
 	}
 
@@ -424,6 +433,7 @@ func main() {
 			BotAuthor:          "Bud",     // Kept for compatibility, but no longer used
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,
+			DefaultChannelID:   discordChannel,
 			SendMessageFallback: func(channelID, message string) error {
 				if fallbackSendMessage != nil {
 					return fallbackSendMessage(channelID, message)
@@ -1088,6 +1098,7 @@ func main() {
 			case <-stopChan:
 				return
 			case <-notifyCh:
+				exec.RequestBackgroundInterrupt() // interrupt any running background session
 				for {
 					ctx := context.Background()
 					processed, err := exec.ProcessNextP1(ctx)
@@ -1155,6 +1166,13 @@ func main() {
 					hour := now.Hour()
 					if hour >= 23 || hour < 7 {
 						log.Printf("[autonomous] Quiet hours (%02d:00 %s) — skipping wake", hour, tz)
+						continue
+					}
+
+					// Skip wake if user was active very recently — avoid interrupting active sessions.
+					recentInput := activityLog.LastUserInputTime()
+					if !recentInput.IsZero() && time.Since(recentInput) < autonomousIdleRequired {
+						log.Printf("[autonomous] User active recently (%v ago) — skipping wake", time.Since(recentInput).Round(time.Second))
 						continue
 					}
 

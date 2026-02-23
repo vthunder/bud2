@@ -65,6 +65,7 @@ type ContextBundle struct {
 	ReflexLog          []ReflexActivity  // Recent reflex activity
 	CoreIdentity       string            // Core identity (verbatim from core.md)
 	Metadata           map[string]string // Additional context
+	WakeSessionContext string            // Recent conversation context for autonomous wake prompts
 }
 
 // MemorySummary is a simplified view of a memory trace for context
