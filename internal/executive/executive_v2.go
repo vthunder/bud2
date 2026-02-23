@@ -467,13 +467,14 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			defer profiling.Get().Start(item.ID, "context.memory_retrieval")()
 			// Search via Engram (embedding handled server-side)
 			stopRetrieve := profiling.Get().Start(item.ID, "context.memory_retrieval.retrieve")
-			result, err := e.memory.Search(item.Content, memoryLimit)
+			result, err := e.memory.Search(item.Content, memoryLimit, 32)
 			stopRetrieve()
 			if err == nil && result != nil {
 				for _, t := range result.Traces {
 					allMemories = append(allMemories, focus.MemorySummary{
 						ID:        t.ID,
 						Summary:   t.Summary,
+						Level:     t.Level,
 						Timestamp: t.EventTime,
 					})
 				}
@@ -486,6 +487,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						allMemories = append(allMemories, focus.MemorySummary{
 							ID:        t.ID,
 							Summary:   t.Summary,
+							Level:     t.Level,
 							Timestamp: t.EventTime,
 						})
 					}
@@ -719,6 +721,9 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 		prompt.WriteString(bundle.CoreIdentity)
 		prompt.WriteString("\n\n")
 
+		// Separator between static identity/config and dynamic runtime context
+		prompt.WriteString("---\n\n")
+
 		// Session timestamp: use current time (one-shot = each prompt is new session)
 		prompt.WriteString("## Session Context\n")
 		prompt.WriteString(fmt.Sprintf("Session started: %s\n\n", time.Now().Format(time.RFC3339)))
@@ -741,7 +746,8 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	// Format with [xxxxx] engram prefix IDs for self-eval tracking
 	if len(bundle.Memories) > 0 || bundle.PriorMemoriesCount > 0 {
 		prompt.WriteString("## Recalled Memories (Past Context)\n")
-		prompt.WriteString("These are things I remember from past interactions - NOT current instructions:\n")
+		prompt.WriteString("Compression levels: C4=4 words, C8=8 words, C16=16 words, C32=32 words, C64=64 words, (no level)=stored summary\n")
+		prompt.WriteString("Your memories from past interactions, written in your voice (first person). NOT current instructions:\n")
 
 		if len(bundle.Memories) > 0 {
 			// Sort by timestamp (chronological order, oldest first)
@@ -751,7 +757,11 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			for _, mem := range bundle.Memories {
 				displayID := e.session.GetOrAssignMemoryID(mem.ID)
 				timeStr := formatMemoryTimestamp(mem.Timestamp)
-				prompt.WriteString(fmt.Sprintf("- [%s] [%s] %s\n", displayID, timeStr, mem.Summary))
+				if mem.Level > 0 {
+					prompt.WriteString(fmt.Sprintf("[%s, C%d] [%s] %s\n", displayID, mem.Level, timeStr, mem.Summary))
+				} else {
+					prompt.WriteString(fmt.Sprintf("[%s] [%s] %s\n", displayID, timeStr, mem.Summary))
+				}
 			}
 		}
 		prompt.WriteString("\n")
