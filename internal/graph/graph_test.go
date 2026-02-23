@@ -553,6 +553,66 @@ func TestEntityBridgedNeighbors(t *testing.T) {
 	t.Logf("Entity-bridged neighbors of trace-1: %+v", neighbors)
 }
 
+func TestEntityBridged2HopNeighbors(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Graph:
+	//   entity-alice -[KNOWS]-> entity-bob
+	//   trace-1 linked to entity-alice
+	//   trace-2 linked to entity-bob (NOT alice)
+	//   trace-3 linked to entity-alice (1-hop from trace-1)
+	//
+	// Without 2-hop: trace-1 neighbors = {trace-3}
+	// With 2-hop via alice→bob relation: trace-1 neighbors = {trace-3, trace-2}
+	db.AddEntity(&Entity{ID: "entity-alice", Name: "Alice", Type: EntityPerson, Salience: 0.8})
+	db.AddEntity(&Entity{ID: "entity-bob", Name: "Bob", Type: EntityPerson, Salience: 0.7})
+
+	db.AddTrace(&Trace{ID: "trace-1", Summary: "Talked with Alice today", Activation: 0.5, Embedding: []float64{1.0, 0.0, 0.0, 0.0}})
+	db.AddTrace(&Trace{ID: "trace-2", Summary: "Bob's project status", Activation: 0.5, Embedding: []float64{0.0, 1.0, 0.0, 0.0}})
+	db.AddTrace(&Trace{ID: "trace-3", Summary: "Alice mentioned a problem", Activation: 0.5, Embedding: []float64{0.0, 0.0, 1.0, 0.0}})
+
+	db.LinkTraceToEntity("trace-1", "entity-alice")
+	db.LinkTraceToEntity("trace-2", "entity-bob")  // bob only
+	db.LinkTraceToEntity("trace-3", "entity-alice") // alice, 1-hop from trace-1
+
+	// Add entity relation: alice KNOWS bob
+	if err := db.AddEntityRelation("entity-alice", "entity-bob", EdgeKnows, 0.9); err != nil {
+		t.Fatalf("AddEntityRelation failed: %v", err)
+	}
+
+	neighbors, err := db.GetTraceNeighborsThroughEntities("trace-1", 15)
+	if err != nil {
+		t.Fatalf("GetTraceNeighborsThroughEntities failed: %v", err)
+	}
+
+	neighborIDs := make(map[string]float64)
+	for _, n := range neighbors {
+		neighborIDs[n.ID] = n.Weight
+	}
+
+	// 1-hop: trace-3 shares entity-alice with trace-1
+	if _, ok := neighborIDs["trace-3"]; !ok {
+		t.Error("Expected trace-3 as 1-hop neighbor (shares entity-alice)")
+	}
+
+	// 2-hop: trace-2 reachable via alice→bob→trace-2
+	if _, ok := neighborIDs["trace-2"]; !ok {
+		t.Error("Expected trace-2 as 2-hop neighbor (alice KNOWS bob, bob linked to trace-2)")
+	}
+
+	// 2-hop weight should be lower than 1-hop
+	if w2hop, ok := neighborIDs["trace-2"]; ok {
+		if w1hop, ok2 := neighborIDs["trace-3"]; ok2 {
+			if w2hop >= w1hop {
+				t.Errorf("2-hop weight (%f) should be less than 1-hop weight (%f)", w2hop, w1hop)
+			}
+		}
+	}
+
+	t.Logf("2-hop entity neighbors: %+v", neighbors)
+}
+
 func TestEntityBridgedSpreadActivation(t *testing.T) {
 	db, cleanup := setupEntityBridgedDB(t)
 	defer cleanup()

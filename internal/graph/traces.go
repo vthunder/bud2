@@ -553,13 +553,17 @@ func (g *DB) getDirectTraceNeighbors(id string) ([]Neighbor, error) {
 	return neighbors, nil
 }
 
-// GetTraceNeighborsThroughEntities finds traces that share entities with the given trace.
-// Edge weight is min(1.0, shared_count * 0.3).
+// GetTraceNeighborsThroughEntities finds traces reachable from the given trace via entities.
+// Two hops are explored:
+//   - 1-hop: traces sharing a direct entity (weight = min(1.0, shared_count * 0.3))
+//   - 2-hop: traces reachable via entity→entity_relation→entity (weight = 0.15 per path, inspired
+//     by HippoRAG's PersonalizedPageRank which attenuates probability by damping factor per hop)
 func (g *DB) GetTraceNeighborsThroughEntities(traceID string, maxNeighbors int) ([]Neighbor, error) {
 	if maxNeighbors <= 0 {
 		maxNeighbors = MaxEdgesPerNode
 	}
 
+	// 1-hop: traces sharing a direct entity with this trace
 	rows, err := g.db.Query(`
 		SELECT te2.trace_id, COUNT(DISTINCT te1.entity_id) as shared, AVG(e.salience) as sal
 		FROM trace_entities te1
@@ -576,6 +580,8 @@ func (g *DB) GetTraceNeighborsThroughEntities(traceID string, maxNeighbors int) 
 	}
 	defer rows.Close()
 
+	seen := make(map[string]bool)
+	seen[traceID] = true
 	var neighbors []Neighbor
 	for rows.Next() {
 		var neighborID string
@@ -590,11 +596,55 @@ func (g *DB) GetTraceNeighborsThroughEntities(traceID string, maxNeighbors int) 
 			weight = 1.0
 		}
 
+		seen[neighborID] = true
 		neighbors = append(neighbors, Neighbor{
 			ID:     neighborID,
 			Weight: weight,
 			Type:   EdgeSharedEntity,
 		})
+	}
+
+	// 2-hop: traces reachable via entity→entity_relation→entity
+	// Inspired by HippoRAG's PersonalizedPageRank: each hop attenuates weight by ~0.5
+	remaining := maxNeighbors - len(neighbors)
+	if remaining > 0 {
+		rows2, err := g.db.Query(`
+			SELECT te2.trace_id, COUNT(*) as paths
+			FROM trace_entities te1
+			JOIN entity_relations er ON (er.from_id = te1.entity_id OR er.to_id = te1.entity_id)
+			  AND er.invalid_at IS NULL
+			JOIN trace_entities te2 ON te2.entity_id = CASE
+			  WHEN er.from_id = te1.entity_id THEN er.to_id
+			  ELSE er.from_id
+			END
+			WHERE te1.trace_id = ? AND te2.trace_id != ?
+			GROUP BY te2.trace_id
+			ORDER BY paths DESC
+			LIMIT ?
+		`, traceID, traceID, remaining)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var neighborID string
+				var paths int
+				if err := rows2.Scan(&neighborID, &paths); err != nil {
+					continue
+				}
+				if seen[neighborID] {
+					continue // already found via 1-hop with higher weight
+				}
+				weight := float64(paths) * 0.15 // attenuated vs 1-hop
+				if weight > 0.5 {
+					weight = 0.5
+				}
+				seen[neighborID] = true
+				neighbors = append(neighbors, Neighbor{
+					ID:     neighborID,
+					Weight: weight,
+					Type:   EdgeSharedEntity,
+				})
+			}
+		}
 	}
 
 	return neighbors, nil
