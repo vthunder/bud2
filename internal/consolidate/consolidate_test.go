@@ -690,3 +690,160 @@ func TestLinkEpisodesToRelatedTracesNoEmbedding(t *testing.T) {
 		t.Errorf("Expected 0 links for episode without embedding, got %d", linked)
 	}
 }
+
+// TestMarkContradictionConflictsNoAutoResolve checks that close-in-time contradictions
+// are flagged as conflicts but not auto-resolved.
+func TestMarkContradictionConflictsNoAutoResolve(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	now := time.Now()
+
+	// Two episodes with timestamps only 30 minutes apart (below auto-resolve threshold)
+	epA := &graph.Episode{
+		ID: "ep-conflict-a", ShortID: "ea001",
+		Content: "User prefers dark mode", Author: "thunder", Channel: "general",
+		TimestampEvent: now.Add(-30 * time.Minute),
+		Embedding:      []float64{0.5, 0.5, 0.0, 0.0},
+	}
+	epB := &graph.Episode{
+		ID: "ep-conflict-b", ShortID: "eb001",
+		Content: "User prefers light mode", Author: "thunder", Channel: "general",
+		TimestampEvent: now,
+		Embedding:      []float64{0.5, 0.5, 0.0, 0.0},
+	}
+	for _, ep := range []*graph.Episode{epA, epB} {
+		if err := db.AddEpisode(ep); err != nil {
+			t.Fatalf("Failed to add episode: %v", err)
+		}
+	}
+
+	traceA := &graph.Trace{
+		ID: "trace-conflict-a", Summary: "Dark mode preference",
+		Topic: "conversation", TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.5, 0.5, 0.0, 0.0}, CreatedAt: now,
+	}
+	traceB := &graph.Trace{
+		ID: "trace-conflict-b", Summary: "Light mode preference",
+		Topic: "conversation", TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.5, 0.5, 0.0, 0.0}, CreatedAt: now,
+	}
+	for _, tr := range []*graph.Trace{traceA, traceB} {
+		if err := db.AddTrace(tr); err != nil {
+			t.Fatalf("Failed to add trace: %v", err)
+		}
+	}
+	if err := db.LinkTraceToSource(traceA.ID, epA.ID); err != nil {
+		t.Fatalf("Failed to link trace A: %v", err)
+	}
+	if err := db.LinkTraceToSource(traceB.ID, epB.ID); err != nil {
+		t.Fatalf("Failed to link trace B: %v", err)
+	}
+
+	episodeMap := map[string]*graph.Episode{epA.ID: epA, epB.ID: epB}
+	edges := []EpisodeEdge{{FromID: epA.ID, ToID: epB.ID, Relationship: "contradicts", Confidence: 0.9}}
+
+	pairs := c.markContradictionConflicts(edges, episodeMap)
+	if pairs != 1 {
+		t.Errorf("Expected 1 conflict pair, got %d", pairs)
+	}
+
+	// Both traces should be flagged as conflicted
+	tr, err := db.GetTrace(traceA.ID)
+	if err != nil {
+		t.Fatalf("Failed to get trace A: %v", err)
+	}
+	if !tr.HasConflict {
+		t.Error("Expected trace A to have has_conflict=true")
+	}
+	if tr.Done {
+		t.Error("Expected trace A NOT to be done (time diff too small for auto-resolve)")
+	}
+	if !tr.ConflictResolvedAt.IsZero() {
+		t.Error("Expected conflict_resolved_at to be zero (not auto-resolved)")
+	}
+}
+
+// TestMarkContradictionConflictsAutoResolve checks that a clear time difference triggers
+// auto-resolution: the older trace is marked done, both conflicts resolved.
+func TestMarkContradictionConflictsAutoResolve(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	c := NewConsolidator(db, &mockLLM{}, nil)
+	now := time.Now()
+
+	// Episode B is 2 hours newer than episode A — exceeds autoResolveThreshold
+	epA := &graph.Episode{
+		ID: "ep-old", ShortID: "eold1",
+		Content: "Old preference", Author: "thunder", Channel: "general",
+		TimestampEvent: now.Add(-2 * time.Hour),
+		Embedding:      []float64{0.5, 0.5, 0.0, 0.0},
+	}
+	epB := &graph.Episode{
+		ID: "ep-new", ShortID: "enew1",
+		Content: "New preference", Author: "thunder", Channel: "general",
+		TimestampEvent: now,
+		Embedding:      []float64{0.5, 0.5, 0.0, 0.0},
+	}
+	for _, ep := range []*graph.Episode{epA, epB} {
+		if err := db.AddEpisode(ep); err != nil {
+			t.Fatalf("Failed to add episode: %v", err)
+		}
+	}
+
+	traceA := &graph.Trace{
+		ID: "trace-old", Summary: "Old trace",
+		Topic: "conversation", TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.5, 0.5, 0.0, 0.0}, CreatedAt: now,
+	}
+	traceB := &graph.Trace{
+		ID: "trace-new", Summary: "New trace",
+		Topic: "conversation", TraceType: graph.TraceTypeKnowledge,
+		Embedding: []float64{0.5, 0.5, 0.0, 0.0}, CreatedAt: now,
+	}
+	for _, tr := range []*graph.Trace{traceA, traceB} {
+		if err := db.AddTrace(tr); err != nil {
+			t.Fatalf("Failed to add trace: %v", err)
+		}
+	}
+	if err := db.LinkTraceToSource(traceA.ID, epA.ID); err != nil {
+		t.Fatalf("Failed to link trace A: %v", err)
+	}
+	if err := db.LinkTraceToSource(traceB.ID, epB.ID); err != nil {
+		t.Fatalf("Failed to link trace B: %v", err)
+	}
+
+	episodeMap := map[string]*graph.Episode{epA.ID: epA, epB.ID: epB}
+	edges := []EpisodeEdge{{FromID: epA.ID, ToID: epB.ID, Relationship: "contradicts", Confidence: 0.9}}
+
+	pairs := c.markContradictionConflicts(edges, episodeMap)
+	if pairs != 1 {
+		t.Errorf("Expected 1 conflict pair, got %d", pairs)
+	}
+
+	// Older trace (A) should be marked done
+	trA, err := db.GetTrace(traceA.ID)
+	if err != nil {
+		t.Fatalf("Failed to get trace A: %v", err)
+	}
+	if !trA.Done {
+		t.Error("Expected older trace A to be marked done after auto-resolve")
+	}
+	if trA.ConflictResolvedAt.IsZero() {
+		t.Error("Expected conflict_resolved_at to be set on trace A")
+	}
+
+	// Newer trace (B) should NOT be marked done, but conflict should be resolved
+	trB, err := db.GetTrace(traceB.ID)
+	if err != nil {
+		t.Fatalf("Failed to get trace B: %v", err)
+	}
+	if trB.Done {
+		t.Error("Expected newer trace B NOT to be marked done")
+	}
+	if trB.ConflictResolvedAt.IsZero() {
+		t.Error("Expected conflict_resolved_at to be set on trace B")
+	}
+}

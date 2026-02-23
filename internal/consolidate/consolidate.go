@@ -205,7 +205,12 @@ func (c *Consolidator) Run() (int, error) {
 		// Now that episodes have been assigned to traces, we can identify which traces
 		// contain contradicting information and flag them for executive review.
 		if len(contradictionEdges) > 0 {
-			conflictPairs := c.markContradictionConflicts(contradictionEdges)
+			// Build episode map for timestamp-based auto-resolution
+			episodeMap := make(map[string]*graph.Episode, len(episodes))
+			for _, ep := range episodes {
+				episodeMap[ep.ID] = ep
+			}
+			conflictPairs := c.markContradictionConflicts(contradictionEdges, episodeMap)
 			if conflictPairs > 0 {
 				log.Printf("[consolidate] Marked %d conflicting trace pairs from %d contradiction edges",
 					conflictPairs, len(contradictionEdges))
@@ -346,10 +351,15 @@ func (c *Consolidator) clusterEpisodesByEdges(episodes []*graph.Episode, edges [
 	return newGroups, existingTracesWithNewEpisodes
 }
 
+// autoResolveThreshold is the minimum time difference between contradicting episodes
+// for automatic resolution (newer episode supersedes older one without user intervention).
+const autoResolveThreshold = time.Hour
+
 // markContradictionConflicts identifies trace pairs connected by "contradicts" edges and
 // marks both traces with has_conflict=true and the other's short_id in conflict_with.
-// Returns the number of distinct trace pairs marked.
-func (c *Consolidator) markContradictionConflicts(contradictionEdges []EpisodeEdge) int {
+// When one episode is clearly newer (> autoResolveThreshold), auto-resolves by marking
+// the older trace as done (superseded). Returns the number of distinct trace pairs marked.
+func (c *Consolidator) markContradictionConflicts(contradictionEdges []EpisodeEdge, episodeMap map[string]*graph.Episode) int {
 	type tracePair struct{ a, b string }
 	seen := make(map[tracePair]bool)
 	marked := 0
@@ -403,6 +413,41 @@ func (c *Consolidator) markContradictionConflicts(contradictionEdges []EpisodeEd
 			continue
 		}
 		marked++
+
+		// Auto-resolve if one episode is clearly newer than the other.
+		// The more recent episode is assumed correct for preference/state facts.
+		epFrom := episodeMap[edge.FromID]
+		epTo := episodeMap[edge.ToID]
+		if epFrom == nil || epTo == nil {
+			continue
+		}
+		tFrom := epFrom.TimestampEvent
+		tTo := epTo.TimestampEvent
+		if tFrom.IsZero() || tTo.IsZero() {
+			continue
+		}
+
+		diff := tTo.Sub(tFrom)
+		switch {
+		case diff > autoResolveThreshold:
+			// Episode B (ToID) is clearly newer — trace A is superseded by trace B
+			if err := c.graph.MarkTraceDone(shortA, epTo.ShortID); err != nil {
+				log.Printf("[consolidate] Failed to mark trace %s done (auto-resolve): %v", shortA, err)
+				continue
+			}
+			c.graph.ResolveTraceConflict(traceA)
+			c.graph.ResolveTraceConflict(traceB)
+			log.Printf("[consolidate] Auto-resolved conflict: %s superseded by %s (age diff: %v)", shortA, shortB, diff.Round(time.Minute))
+		case -diff > autoResolveThreshold:
+			// Episode A (FromID) is clearly newer — trace B is superseded by trace A
+			if err := c.graph.MarkTraceDone(shortB, epFrom.ShortID); err != nil {
+				log.Printf("[consolidate] Failed to mark trace %s done (auto-resolve): %v", shortB, err)
+				continue
+			}
+			c.graph.ResolveTraceConflict(traceA)
+			c.graph.ResolveTraceConflict(traceB)
+			log.Printf("[consolidate] Auto-resolved conflict: %s superseded by %s (age diff: %v)", shortB, shortA, (-diff).Round(time.Minute))
+		}
 	}
 
 	return marked

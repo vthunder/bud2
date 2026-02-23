@@ -1087,6 +1087,16 @@ func (g *DB) MarkTraceConflict(traceID, conflictWithShortID string) error {
 	return err
 }
 
+// ResolveTraceConflict marks a conflict as resolved by setting conflict_resolved_at.
+// Both traces in a conflicting pair should be marked resolved.
+// The has_conflict flag is kept set for audit — conflict_resolved_at indicates it was handled.
+func (g *DB) ResolveTraceConflict(traceID string) error {
+	_, err := g.db.Exec(`
+		UPDATE traces SET conflict_resolved_at = ? WHERE id = ?
+	`, time.Now(), traceID)
+	return err
+}
+
 // UpdateTrace updates a trace's summary, embedding, type, and strength after reconsolidation
 func (g *DB) UpdateTrace(traceID, summary string, embedding []float64, traceType TraceType, strength int) error {
 	embeddingJSON, err := json.Marshal(embedding)
