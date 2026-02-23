@@ -357,7 +357,7 @@ func (c *Client) GetUnconsolidatedEpisodeCount() (int, error) {
 // confidence should be 0.0–1.0; 0 is treated as 1.0 by the server.
 func (c *Client) AddEpisodeEdge(fromID, toID, edgeType string, confidence float64) error {
 	body := map[string]any{
-		"target_id": toID,
+		"to_id": toID,
 		"edge_type": edgeType,
 	}
 	if confidence > 0 {

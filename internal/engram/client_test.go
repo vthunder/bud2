@@ -323,8 +323,8 @@ func TestAddEpisodeEdge(t *testing.T) {
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		if body["target_id"] != "ep-to" {
-			t.Errorf("expected target_id 'ep-to', got %v", body["target_id"])
+		if body["to_id"] != "ep-to" {
+			t.Errorf("expected to_id 'ep-to', got %v", body["to_id"])
 		}
 		if body["edge_type"] != "follows" {
 			t.Errorf("expected edge_type 'follows', got %v", body["edge_type"])
