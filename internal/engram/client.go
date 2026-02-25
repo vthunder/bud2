@@ -416,6 +416,25 @@ func (c *Client) Flush() error {
 	return c.post("/v1/memory/flush", nil, nil)
 }
 
+// RegeneratePyramids queues regeneration of stored pyramid summaries (L4–L64) for all engrams.
+// Pass depth >= 0 to filter by engram depth (e.g. depth=0 for L1 only). Pass -1 for all depths.
+// Returns {"started": N, "depth": D}. The operation runs in the background.
+func (c *Client) RegeneratePyramids(depth int) (map[string]any, error) {
+	params := url.Values{}
+	if depth >= 0 {
+		params.Set("depth", strconv.Itoa(depth))
+	}
+	path := "/v1/engrams/regenerate-pyramids"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	var result map[string]any
+	if err := c.post(path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // Reset clears all memory. Destructive and irreversible.
 func (c *Client) Reset() error {
 	req, err := http.NewRequest(http.MethodDelete, c.baseURL+"/v1/memory/reset", nil)
