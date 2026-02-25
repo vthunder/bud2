@@ -54,6 +54,10 @@ type ExecutiveV2 struct {
 	backgroundMu     sync.Mutex
 	backgroundActive atomic.Bool
 	p1Active         atomic.Bool
+
+	// signal_done termination support
+	signalDoneCancel func() // cancels current session when signal_done fires
+	signalDoneActive bool   // true when signal_done triggered the cancel
 }
 
 // ExecutiveV2Config holds configuration for the v2 executive
@@ -254,6 +258,19 @@ func (e *ExecutiveV2) RequestBackgroundInterrupt() {
 	}
 }
 
+// SignalDone cancels the currently running Claude subprocess after signal_done is called.
+// This prevents sessions from running the full 30-minute timeout when Claude has already
+// finished its work.
+func (e *ExecutiveV2) SignalDone() {
+	e.backgroundMu.Lock()
+	defer e.backgroundMu.Unlock()
+	e.signalDoneActive = true
+	if e.signalDoneCancel != nil {
+		log.Printf("[executive] signal_done: terminating Claude subprocess cleanly")
+		e.signalDoneCancel()
+	}
+}
+
 // ProcessItem processes a specific pending item
 func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) error {
 	e.attention.Focus(item)
@@ -370,17 +387,40 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
 	}
 
+	// Wrap context so we can cancel the subprocess on signal_done
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	e.backgroundMu.Lock()
+	e.signalDoneCancel = sessionCancel
+	e.signalDoneActive = false
+	e.backgroundMu.Unlock()
+	defer func() {
+		sessionCancel()
+		e.backgroundMu.Lock()
+		e.signalDoneCancel = nil
+		e.backgroundMu.Unlock()
+	}()
+
 	var sendErr error
 	func() {
 		defer profiling.Get().Start(item.ID, "executive.claude_api")()
-		sendErr = e.session.SendPrompt(ctx, prompt, claudeCfg)
+		sendErr = e.session.SendPrompt(sessionCtx, prompt, claudeCfg)
 	}()
 	if sendErr != nil {
 		if errors.Is(sendErr, ErrInterrupted) {
-			log.Printf("[executive] Background session interrupted by P1 item")
-			return nil
+			e.backgroundMu.Lock()
+			wasDone := e.signalDoneActive
+			e.backgroundMu.Unlock()
+			if wasDone {
+				// signal_done was called — fall through to post-completion bookkeeping
+				log.Printf("[executive] Session terminated cleanly after signal_done")
+				sendErr = nil
+			} else {
+				log.Printf("[executive] Background session interrupted by P1 item")
+				return nil
+			}
+		} else {
+			return fmt.Errorf("prompt failed: %w", sendErr)
 		}
-		return fmt.Errorf("prompt failed: %w", sendErr)
 	}
 
 	duration := time.Since(startTime).Seconds()

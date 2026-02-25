@@ -766,6 +766,11 @@ func main() {
 
 	// Wire SendSignal callback for signal_done and memory_reset
 	mcpDeps.SendSignal = func(signalType, content string, extra map[string]any) error {
+		// Kill the Claude subprocess immediately when signal_done fires so it
+		// doesn't keep running up to the 30-minute hard timeout.
+		if signalType == "done" && exec != nil {
+			exec.SignalDone()
+		}
 		msg := &memory.InboxMessage{
 			ID:        fmt.Sprintf("signal-%d", time.Now().UnixNano()),
 			Type:      "signal",
