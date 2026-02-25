@@ -532,10 +532,28 @@ func (c *Client) GetTodayEvents(ctx context.Context, timezone ...*time.Location)
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	return c.ListEvents(ctx, ListEventsParams{
+	events, err := c.ListEvents(ctx, ListEventsParams{
 		TimeMin: startOfDay,
 		TimeMax: endOfDay,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Post-filter all-day events: Google Calendar can return events from adjacent
+	// days when the local timezone is non-UTC. All-day dates are parsed as UTC
+	// midnight, so their timezone-naive date may fall one day off from the local
+	// date boundary. Comparing the raw date string avoids the drift.
+	todayStr := now.Format("2006-01-02")
+	filtered := events[:0]
+	for _, e := range events {
+		if e.AllDay && e.Start.Format("2006-01-02") != todayStr {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	return filtered, nil
 }
 
 // FreeBusyParams for checking availability
