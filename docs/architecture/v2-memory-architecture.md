@@ -78,8 +78,9 @@ This document describes Bud's v2 architecture based on state-of-the-art research
 │  │  │  1. Core Identity (loaded from state/core.md)                   │ │  │
 │  │  │  2. Conversation Buffer (recent raw exchanges)                  │ │  │
 │  │  │  3. Retrieved Memories (graph-based, focus-relevant)            │ │  │
-│  │  │  4. Recent Reflex Activity (observable)                         │ │  │
-│  │  │  5. Goal Stack State (current focus, suspended, commitments)    │ │  │
+│  │  │  4. Active Schemas (patterns from recalled engrams)             │ │  │
+│  │  │  5. Recent Reflex Activity (observable)                         │ │  │
+│  │  │  6. Goal Stack State (current focus, suspended, commitments)    │ │  │
 │  │  └─────────────────────────────────────────────────────────────────┘ │  │
 │  │                                                                       │  │
 │  │  Capabilities:                                                        │  │
@@ -398,7 +399,34 @@ Example workflow:
 4. Or calls query_episode() on specific episode IDs for full L0 content
 ```
 
-### 2.5 Reflex-Executive Integration
+### 2.5 Schema Integration
+
+**Purpose**: Surface recurring behavioural patterns from consolidated memories as part of context, so the executive can apply accumulated wisdom without it taking up permanent prompt space.
+
+**What schemas are**: After enough L2+ engrams accumulate, Engram's schema inductor clusters them by activity type and runs LLM inference to extract structured patterns — named schemas with TRIGGERS, GENERALIZATIONS, WHAT_WORKS, and WHAT_DOESNT_WORK sections.
+
+**How schemas reach context** (implemented 2026-02-25):
+```
+1. Engram search results include schema_ids per engram
+2. buildContext() collects schema_ids from all recalled engrams + unconsolidated episodes
+3. Fetches C32 summaries via POST /v1/schemas/search (precomputed, hot path safe)
+4. buildPrompt() renders "## Active Schemas" section with guidance to call get_schema(id)
+   for full details on applicable schemas — preventing context bloat from loading all
+```
+
+**MCP tool**: `get_schema(schema_id)` — fetches a full schema on demand. Not called automatically; the executive decides which schemas are relevant.
+
+**Schema induction trigger**: Runs automatically after each consolidation cycle when ≥3 L2+ engrams exist. Can also be forced via `POST /v1/schemas/induce`. New schemas get precomputed summaries at all compression levels immediately.
+
+**Key design decision**: Schemas are only injected when engrams that reference them are recalled. An irrelevant schema never appears in context, regardless of how many exist in the system.
+
+**Files involved** (bud2):
+- `internal/executive/context.go` — `buildContext()` collects schema IDs, fetches summaries, assembles `ActiveSchemas`
+- `internal/executive/prompt.go` — `buildPrompt()` renders `## Active Schemas` section
+- `internal/engram/client.go` — `SearchSchemas()`, `GetSchema()` client methods + `SchemaSummary`/`Schema` types
+- `internal/mcp/tools.go` — `get_schema` MCP tool definition
+
+### 2.6 Reflex-Executive Integration
 
 **Purpose**: Make reflexes observable and trainable, enable proactive override.
 

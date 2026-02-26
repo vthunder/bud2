@@ -303,6 +303,34 @@ func registerMemoryTools(server *mcp.Server, deps *Dependencies) {
 			return string(data), nil
 		})
 
+		// get_schema - fetch full schema detail by ID
+		server.RegisterTool("get_schema", mcp.ToolDef{
+			Description: "Fetch the full detail of a memory schema by ID. Schemas are recurring patterns extracted from consolidated memories — they describe how you've approached certain types of problems before. Use this when an Active Schema in context looks relevant and you want the full pattern: its triggers, generalizations, and what has/hasn't worked.",
+			Properties: map[string]mcp.PropDef{
+				"id": {Type: "string", Description: "The schema ID (8-char hex prefix shown in Active Schemas section, e.g. '46b6c630')"},
+			},
+			Required: []string{"id"},
+		}, func(ctx any, args map[string]any) (string, error) {
+			id, ok := args["id"].(string)
+			if !ok || id == "" {
+				return "", fmt.Errorf("id is required")
+			}
+
+			sc, err := deps.EngramClient.GetSchema(id)
+			if err != nil {
+				return "", fmt.Errorf("failed to get schema: %w", err)
+			}
+			if sc == nil {
+				return "", fmt.Errorf("schema not found: %s", id)
+			}
+
+			shortID := sc.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			return fmt.Sprintf("Schema [%s] %s\n\n%s", shortID, sc.Name, sc.Content), nil
+		})
+
 		// query_episode - query specific episode by short ID or full ID
 		server.RegisterTool("query_episode", mcp.ToolDef{
 			Description: "Query a specific episode by its ID (short 5-char ID or full ID). Returns the full episode details including content, author, timestamp, and summaries if available.",

@@ -71,6 +71,25 @@ type Trace struct {
 	Summary   string    `json:"summary"`
 	Level     int       `json:"level,omitempty"` // Compression level applied (0 = stored summary)
 	EventTime time.Time `json:"event_time"`
+	SchemaIDs []string  `json:"schema_ids,omitempty"` // Schema IDs this engram is annotated with
+}
+
+// SchemaSummary is a lightweight schema representation for context assembly.
+type SchemaSummary struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+	Level   int    `json:"level"`
+}
+
+// Schema is the full schema record returned by GET /v1/schemas/{id}.
+type Schema struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	IsLabile  bool      `json:"is_labile,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // TraceContext holds a trace with its source episodes and linked entities.
@@ -355,6 +374,35 @@ func (c *Client) AddEpisodeEdge(fromID, toID, edgeType string, confidence float6
 		body["confidence"] = confidence
 	}
 	return c.post("/v1/episodes/"+url.PathEscape(fromID)+"/edges", body, nil)
+}
+
+// SearchSchemas fetches schema summaries for a list of schema IDs via POST /v1/schemas/search.
+// level is the compression level for summaries (default 32 if 0).
+func (c *Client) SearchSchemas(ids []string, level int) ([]*SchemaSummary, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if level <= 0 {
+		level = 32
+	}
+	body := map[string]any{
+		"ids":   ids,
+		"level": level,
+	}
+	var result []*SchemaSummary
+	if err := c.post("/v1/schemas/search", body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetSchema fetches the full schema by ID via GET /v1/schemas/{id}.
+func (c *Client) GetSchema(id string) (*Schema, error) {
+	var sc Schema
+	if err := c.get("/v1/schemas/"+url.PathEscape(id), nil, &sc); err != nil {
+		return nil, err
+	}
+	return &sc, nil
 }
 
 // GetEpisodeSummariesBatch fetches summaries for multiple episodes at a compression level.

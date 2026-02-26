@@ -62,10 +62,19 @@ type ContextBundle struct {
 	HasAuthorizations  bool              // True if buffer contains historical authorizations
 	Memories           []MemorySummary   // Retrieved memory traces (new ones only)
 	PriorMemoriesCount int               // Count of memories already sent this session
+	ActiveSchemas      []*SchemaSummary  // Schema summaries matched from retrieved memories
 	ReflexLog          []ReflexActivity  // Recent reflex activity
 	CoreIdentity       string            // Core identity (verbatim from core.md)
 	Metadata           map[string]string // Additional context
 	WakeSessionContext string            // Recent conversation context for autonomous wake prompts
+}
+
+// SchemaSummary is a lightweight view of a memory schema for context.
+// Mirrors engram.SchemaSummary but kept here to avoid circular dependency.
+type SchemaSummary struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
 }
 
 // MemorySummary is a simplified view of a memory trace for context

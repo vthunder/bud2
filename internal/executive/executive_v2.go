@@ -560,6 +560,7 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 
 	if e.memory != nil && item.Content != "" && memoryLimit > 0 {
 		var allMemories []focus.MemorySummary
+		var schemaIDSet map[string]struct{}
 
 		func() {
 			defer profiling.Get().Start(item.ID, "context.memory_retrieval")()
@@ -575,6 +576,13 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 						Level:     t.Level,
 						Timestamp: t.EventTime,
 					})
+					// Collect schema IDs from search results
+					for _, sid := range t.SchemaIDs {
+						if schemaIDSet == nil {
+							schemaIDSet = make(map[string]struct{})
+						}
+						schemaIDSet[sid] = struct{}{}
+					}
 				}
 			}
 			// Fallback: if search fails, use activation-based retrieval
@@ -596,6 +604,23 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		// One-shot sessions: include all retrieved memories (no deduplication needed)
 		bundle.Memories = allMemories
 		bundle.PriorMemoriesCount = 0
+
+		// Surface schema summaries matched from retrieved memories
+		if len(schemaIDSet) > 0 {
+			ids := make([]string, 0, len(schemaIDSet))
+			for id := range schemaIDSet {
+				ids = append(ids, id)
+			}
+			if summaries, err := e.memory.SearchSchemas(ids, 32); err == nil {
+				for _, ss := range summaries {
+					bundle.ActiveSchemas = append(bundle.ActiveSchemas, &focus.SchemaSummary{
+						ID:      ss.ID,
+						Name:    ss.Name,
+						Summary: ss.Summary,
+					})
+				}
+			}
+		}
 
 		// Boost activation for newly shown memories (keeps used traces alive)
 		if len(bundle.Memories) > 0 {
@@ -925,6 +950,21 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 					prompt.WriteString(fmt.Sprintf("[%s] [%s] %s\n", displayID, timeStr, mem.Summary))
 				}
 			}
+		}
+		prompt.WriteString("\n")
+	}
+
+	// Active schemas surfaced from recalled memories
+	if len(bundle.ActiveSchemas) > 0 {
+		prompt.WriteString("## Active Schemas\n")
+		prompt.WriteString("Recurring patterns extracted from your consolidated memories — generalizations about how you've approached certain types of problems before. These were surfaced because they match the memories recalled above.\n\n")
+		prompt.WriteString("Each entry is a compact summary. Call `get_schema(id)` when a schema looks relevant to the current task and you want the full pattern: its triggers, generalizations, and what has/hasn't worked. Don't fetch all of them — only the ones that seem applicable.\n\n")
+		for _, sc := range bundle.ActiveSchemas {
+			shortID := sc.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			prompt.WriteString(fmt.Sprintf("[%s] %s\n", shortID, sc.Summary))
 		}
 		prompt.WriteString("\n")
 	}
