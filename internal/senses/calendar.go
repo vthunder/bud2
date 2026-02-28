@@ -378,40 +378,46 @@ func (c *CalendarSense) sendMeetingReminder(event calendar.Event, timeUntil time
 	log.Printf("[calendar-sense] Sent meeting reminder: %s (in %s)", event.Summary, formatDuration(timeUntil))
 }
 
-// checkSprintBrief detects sprint review clusters and sends a brief impulse before they start.
-// It looks 8 hours ahead to count all sprint reviews in a day. If 2+ are found and the first
-// starts within sprintBriefBefore, it sends an impulse:sprint_brief to wake the executive.
+// checkSprintBrief detects sprint review and sprint planning clusters, sending brief impulses
+// before each cluster starts. Fetches events once and checks both patterns.
 func (c *CalendarSense) checkSprintBrief(ctx context.Context) {
-	now := time.Now()
-
-	// Look ahead far enough to find all sprint reviews for the day
 	events, err := c.client.GetUpcomingEvents(ctx, 8*time.Hour, 30)
 	if err != nil {
 		log.Printf("[calendar-sense] Failed to get events for sprint brief check: %v", err)
 		return
 	}
 
-	// Group sprint review events by local date
-	sprintReviewsByDate := make(map[string][]calendar.Event)
+	now := time.Now()
+	c.checkSprintCluster(events, now, "sprint review", "sprint-brief", "sprint_brief",
+		"Sprint review cluster starting in %s: %d reviews today (%s). Generate sprint brief from GitHub projects.")
+	c.checkSprintCluster(events, now, "sprint planning", "sprint-planning-brief", "sprint_planning_brief",
+		"Sprint planning cluster starting in %s: %d sessions today (%s). Generate sprint planning brief from GitHub projects.")
+}
+
+// checkSprintCluster groups events matching keyword by date and fires an impulse when 2+ are
+// found on a day and the first starts within sprintBriefBefore.
+func (c *CalendarSense) checkSprintCluster(events []calendar.Event, now time.Time, keyword, briefKeyPrefix, impulseSubtype, contentFmt string) {
+	// Group matching events by local date
+	byDate := make(map[string][]calendar.Event)
 	for _, event := range events {
 		if event.Status == "cancelled" || event.AllDay {
 			continue
 		}
-		if !strings.Contains(strings.ToLower(event.Summary), "sprint review") {
+		if !strings.Contains(strings.ToLower(event.Summary), keyword) {
 			continue
 		}
 		localDate := event.Start.In(c.timezone).Format("2006-01-02")
-		sprintReviewsByDate[localDate] = append(sprintReviewsByDate[localDate], event)
+		byDate[localDate] = append(byDate[localDate], event)
 	}
 
-	for date, reviews := range sprintReviewsByDate {
-		if len(reviews) < minSprintReviewsForBrief {
+	for date, items := range byDate {
+		if len(items) < minSprintReviewsForBrief {
 			continue
 		}
 
-		// Find the earliest review of the day
-		earliest := reviews[0]
-		for _, r := range reviews[1:] {
+		// Find the earliest session of the day
+		earliest := items[0]
+		for _, r := range items[1:] {
 			if r.Start.Before(earliest.Start) {
 				earliest = r
 			}
@@ -423,7 +429,7 @@ func (c *CalendarSense) checkSprintBrief(ctx context.Context) {
 		}
 
 		// Check if we already sent a brief for this date
-		briefKey := "sprint-brief-" + date
+		briefKey := briefKeyPrefix + "-" + date
 		c.mu.Lock()
 		_, alreadyNotified := c.notifiedBriefs[briefKey]
 		if alreadyNotified {
@@ -436,35 +442,35 @@ func (c *CalendarSense) checkSprintBrief(ctx context.Context) {
 
 		// Collect event titles for context
 		var titles []string
-		for _, r := range reviews {
+		for _, r := range items {
 			titles = append(titles, r.Summary)
 		}
 
 		msg := &memory.InboxMessage{
-			ID:        fmt.Sprintf("sprint-brief-%s", date),
+			ID:        fmt.Sprintf("%s-%s", briefKeyPrefix, date),
 			Type:      "impulse",
-			Subtype:   "sprint_brief",
-			Content:   fmt.Sprintf("Sprint review cluster starting in %s: %d reviews today (%s). Generate sprint brief from GitHub projects.", formatDuration(timeUntil), len(reviews), strings.Join(titles, ", ")),
+			Subtype:   impulseSubtype,
+			Content:   fmt.Sprintf(contentFmt, formatDuration(timeUntil), len(items), strings.Join(titles, ", ")),
 			Timestamp: now,
 			Status:    "pending",
 			Priority:  2,
 			Extra: map[string]any{
-				"source":             "calendar",
-				"impulse_type":       "sprint_brief",
-				"intensity":          0.8,
-				"date":               date,
-				"review_count":       len(reviews),
-				"team_names":         titles,
-				"first_event":        earliest.Summary,
-				"first_event_start":  earliest.Start.Format(time.RFC3339),
-				"time_until":         formatDuration(timeUntil),
+				"source":            "calendar",
+				"impulse_type":      impulseSubtype,
+				"intensity":         0.8,
+				"date":              date,
+				"review_count":      len(items),
+				"team_names":        titles,
+				"first_event":       earliest.Summary,
+				"first_event_start": earliest.Start.Format(time.RFC3339),
+				"time_until":        formatDuration(timeUntil),
 			},
 		}
 
 		if c.onMessage != nil {
 			c.onMessage(msg)
 		}
-		log.Printf("[calendar-sense] Sent sprint brief impulse: %d reviews on %s, first in %s", len(reviews), date, formatDuration(timeUntil))
+		log.Printf("[calendar-sense] Sent %s impulse: %d sessions on %s, first in %s", impulseSubtype, len(items), date, formatDuration(timeUntil))
 	}
 }
 
