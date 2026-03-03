@@ -387,6 +387,68 @@ func TestBuildPrompt_WakeFocus(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_ActiveSchemas verifies that the ## Active Schemas section
+// appears when ActiveSchemas is non-empty, with truncated 8-char IDs.
+func TestBuildPrompt_ActiveSchemas(t *testing.T) {
+	exec := newTestExecutive(t)
+	bundle := &focus.ContextBundle{
+		ActiveSchemas: []*focus.SchemaSummary{
+			{
+				ID:      "46b6c630abcdef1234", // full hash — display uses first 8 chars
+				Name:    "Memory System Debugging",
+				Summary: "validate via DB inspection; fix consolidation pipeline",
+			},
+			{
+				ID:      "39b431d7deadbeef99",
+				Name:    "System Infrastructure Optimization",
+				Summary: "identify bottleneck, implement fix, measure latency impact",
+			},
+		},
+	}
+	out := exec.buildPrompt(bundle)
+
+	checks := []string{
+		"## Active Schemas",
+		"get_schema",
+		"[46b6c630] Memory System Debugging",
+		"validate via DB inspection",
+		"[39b431d7] System Infrastructure Optimization",
+		"identify bottleneck",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in active schemas output, got:\n%s", want, out)
+		}
+	}
+}
+
+// TestBuildPrompt_ActiveSchemasEmpty verifies that the ## Active Schemas section
+// is absent when ActiveSchemas is nil or empty.
+func TestBuildPrompt_ActiveSchemasEmpty(t *testing.T) {
+	exec := newTestExecutive(t)
+	out := exec.buildPrompt(&focus.ContextBundle{})
+
+	if strings.Contains(out, "## Active Schemas") {
+		t.Errorf("expected no ## Active Schemas section when ActiveSchemas is empty, got:\n%s", out)
+	}
+}
+
+// TestBuildPrompt_ActiveSchemasShortID verifies that schema IDs shorter than
+// 8 chars are used as-is (no panic from slicing).
+func TestBuildPrompt_ActiveSchemasShortID(t *testing.T) {
+	exec := newTestExecutive(t)
+	bundle := &focus.ContextBundle{
+		ActiveSchemas: []*focus.SchemaSummary{
+			{ID: "abc", Name: "Short", Summary: "short id schema"},
+		},
+	}
+	out := exec.buildPrompt(bundle)
+
+	if !strings.Contains(out, "[abc]") {
+		t.Errorf("expected short ID [abc] in output, got:\n%s", out)
+	}
+}
+
 // TestBuildPrompt_WakeFocusNoInstructions verifies that wake context is NOT
 // injected when WakeupInstructions is empty.
 func TestBuildPrompt_WakeFocusNoInstructions(t *testing.T) {

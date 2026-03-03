@@ -981,7 +981,7 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			if len(shortID) > 8 {
 				shortID = shortID[:8]
 			}
-			prompt.WriteString(fmt.Sprintf("[%s] %s\n", shortID, sc.Summary))
+			prompt.WriteString(fmt.Sprintf("[%s] %s — %s\n", shortID, sc.Name, sc.Summary))
 		}
 		prompt.WriteString("\n")
 	}
