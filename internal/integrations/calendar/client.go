@@ -860,7 +860,7 @@ func convertEvent(item *googleEvent) (Event, error) {
 
 // FormatEventSummary returns a human-readable summary of an event
 func (e *Event) FormatEventSummary() string {
-	timeStr := e.Start.Format("3:04 PM")
+	timeStr := e.Start.Local().Format("3:04 PM")
 	if e.AllDay {
 		timeStr = "All day"
 	}
