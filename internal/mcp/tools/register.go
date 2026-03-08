@@ -87,9 +87,9 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 
 	// discord_react - add emoji reaction to a Discord message
 	server.RegisterTool("discord_react", mcp.ToolDef{
-		Description: "Add an emoji reaction to a Discord message. Use this for lightweight acknowledgments like 👍 or ✅ instead of sending text messages.",
+		Description: "Add an emoji reaction to a Discord message. Use this for lightweight acknowledgments like 👍 or ✅ instead of sending text messages. Only works for the current incoming user message — the message_id is provided in the focus item or inbox context. Do NOT use short IDs from the conversation log (those are internal episode IDs, not Discord snowflakes).",
 		Properties: map[string]mcp.PropDef{
-			"message_id": {Type: "string", Description: "The Discord message ID to react to (format: discord-{channelID}-{messageID})"},
+			"message_id": {Type: "string", Description: "The Discord message ID from the current inbox item (format: discord-{channelID}-{messageID} where messageID is a numeric snowflake). Only valid for the current user message being processed."},
 			"emoji":      {Type: "string", Description: "The emoji to react with (Unicode emoji like 👍 or custom format like :name:)"},
 		},
 		Required: []string{"message_id", "emoji"},
@@ -111,6 +111,13 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		}
 		channelID := parts[1]
 		discordMsgID := parts[2]
+
+		// Validate discordMsgID is a numeric snowflake (not "latest" or a short episode ID)
+		for _, c := range discordMsgID {
+			if c < '0' || c > '9' {
+				return "", fmt.Errorf("invalid Discord message ID %q: must be a numeric snowflake. Note: conversation log IDs (e.g. [46770, C16]) are internal episode IDs, not Discord message IDs — discord_react requires a full snowflake", discordMsgID)
+			}
+		}
 
 		log.Printf("Reacting %s", emoji)
 
