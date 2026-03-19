@@ -157,7 +157,11 @@ func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*Subag
 	m.sessions[id] = session
 	m.mu.Unlock()
 
-	go m.runSession(ctx, session, cfg)
+	taskCtx, taskCancel := context.WithTimeout(ctx, 10*time.Minute)
+	go func() {
+		defer taskCancel()
+		m.runSession(taskCtx, session, cfg)
+	}()
 
 	log.Printf("[subagent-manager] Spawned session %s: %s", id, truncate(cfg.Task, 60))
 	return session, nil
@@ -239,6 +243,7 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 		permCtx claudecode.ToolPermissionContext,
 	) (claudecode.PermissionResult, error) {
 		if toolName != "AskUserQuestion" {
+			log.Printf("[subagent-%s] tool: %s", session.ID[:8], toolName)
 			return claudecode.NewPermissionResultAllow(), nil
 		}
 
@@ -305,8 +310,11 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 		for msg := range client.ReceiveMessages(ctx) {
 			if a, ok := msg.(*claudecode.AssistantMessage); ok {
 				for _, b := range a.Content {
-					if t, ok := b.(*claudecode.TextBlock); ok {
-						result.WriteString(t.Text)
+					switch block := b.(type) {
+					case *claudecode.TextBlock:
+						result.WriteString(block.Text)
+					case *claudecode.ToolUseBlock:
+						log.Printf("[subagent-%s] calling tool: %s", session.ID[:8], block.Name)
 					}
 				}
 			}
