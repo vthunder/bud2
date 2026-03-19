@@ -190,9 +190,6 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 				"status":     s.status.String(),
 				"spawned_at": s.SpawnedAt.Format("2006-01-02T15:04:05Z07:00"),
 			}
-			if s.ClaudeID != "" {
-				entry["claude_session_id"] = s.ClaudeID
-			}
 			if s.pendingQuestion != "" {
 				entry["pending_question"] = s.pendingQuestion
 			}
@@ -213,7 +210,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.status.String(), s.result, s.ClaudeID, s.pendingQuestion, s.lastErr
+		return s.status.String(), s.result, s.ID, s.pendingQuestion, s.lastErr
 	}
 
 	return

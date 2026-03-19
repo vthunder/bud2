@@ -52,10 +52,12 @@ func (s SubagentStatus) String() string {
 // questions to the executive via the native AskUserQuestion tool.
 type SubagentSession struct {
 	// Identifiers
-	ID            string    // Bud-internal UUID (used for spawning/logging prefix)
-	ClaudeID      string    // Claude-assigned session ID (from ResultMessage; available after completion)
-	Task          string    // Short task description
-	SpawnedAt     time.Time // When the session was created
+	// ID is the session identifier — always the Claude-assigned session ID once
+	// the first StreamEvent is received (typically within milliseconds of spawn).
+	// Until then it holds a temporary UUID used during the brief startup window.
+	ID        string    // Session ID (temp UUID → Claude session ID on first StreamEvent)
+	Task      string    // Short task description
+	SpawnedAt time.Time // When the session was created
 
 	// State (protected by mu)
 	mu              sync.Mutex
@@ -67,6 +69,10 @@ type SubagentSession struct {
 	// answerReady receives the answer from the executive.
 	// Buffered(1) so Answer() never blocks.
 	answerReady chan string
+
+	// claudeIDReady receives the Claude session ID from the first StreamEvent.
+	// Buffered(1); Spawn() blocks on it (with timeout) to re-key the session.
+	claudeIDReady chan string
 }
 
 // Status returns the current lifecycle status.
@@ -100,9 +106,8 @@ func (s *SubagentSession) Err() error {
 // SubagentManager maintains a registry of active subagent sessions and
 // provides spawn/answer/status operations for the executive.
 type SubagentManager struct {
-	mu           sync.RWMutex
-	sessions     map[string]*SubagentSession // keyed by Bud internal UUID
-	claudeIDIdx  map[string]*SubagentSession // keyed by Claude session ID (populated after completion)
+	mu       sync.RWMutex
+	sessions map[string]*SubagentSession // keyed by session ID (Claude ID once known)
 
 	// Notify executive when a subagent has a pending question
 	QuestionNotify chan *SubagentSession
@@ -115,7 +120,6 @@ type SubagentManager struct {
 func NewSubagentManager(stateDir string) *SubagentManager {
 	return &SubagentManager{
 		sessions:       make(map[string]*SubagentSession),
-		claudeIDIdx:    make(map[string]*SubagentSession),
 		QuestionNotify: make(chan *SubagentSession, 16),
 		DoneNotify:     make(chan *SubagentSession, 16),
 	}
@@ -145,19 +149,23 @@ type SubagentConfig struct {
 }
 
 // Spawn creates a new SubagentSession and starts it in a background goroutine.
+// It blocks briefly (up to 10s) waiting for the first StreamEvent from Claude so
+// that the returned session's ID is the Claude-assigned session ID rather than a
+// temporary UUID.
 func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*SubagentSession, error) {
-	id := generateSessionUUID()
+	tempID := generateSessionUUID()
 
 	session := &SubagentSession{
-		ID:          id,
-		Task:        cfg.Task,
-		SpawnedAt:   time.Now(),
-		status:      SubagentRunning,
-		answerReady: make(chan string, 1),
+		ID:            tempID,
+		Task:          cfg.Task,
+		SpawnedAt:     time.Now(),
+		status:        SubagentRunning,
+		answerReady:   make(chan string, 1),
+		claudeIDReady: make(chan string, 1),
 	}
 
 	m.mu.Lock()
-	m.sessions[id] = session
+	m.sessions[tempID] = session
 	m.mu.Unlock()
 
 	taskCtx, taskCancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -166,7 +174,22 @@ func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*Subag
 		m.runSession(taskCtx, session, cfg)
 	}()
 
-	log.Printf("[subagent-manager] Spawned session %s: %s", id, truncate(cfg.Task, 60))
+	// Wait for Claude session ID from first StreamEvent so we can use it as the
+	// primary key. Fall back to temp UUID if it doesn't arrive in time.
+	select {
+	case claudeID := <-session.claudeIDReady:
+		m.mu.Lock()
+		delete(m.sessions, tempID)
+		session.ID = claudeID
+		m.sessions[claudeID] = session
+		m.mu.Unlock()
+		log.Printf("[subagent-manager] Spawned session %s: %s", claudeID, truncate(cfg.Task, 60))
+	case <-time.After(10 * time.Second):
+		log.Printf("[subagent-manager] Spawned session %s (Claude ID not yet available): %s", tempID, truncate(cfg.Task, 60))
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	return session, nil
 }
 
@@ -209,14 +232,11 @@ func (m *SubagentManager) List() []*SubagentSession {
 	return sessions
 }
 
-// Get returns a session by Bud internal UUID or Claude session ID.
+// Get returns a session by its ID (Claude session ID once known, temp UUID during startup).
 func (m *SubagentManager) Get(id string) *SubagentSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if s, ok := m.sessions[id]; ok {
-		return s
-	}
-	return m.claudeIDIdx[id]
+	return m.sessions[id]
 }
 
 // Cleanup removes completed/failed sessions older than the given duration.
@@ -229,13 +249,9 @@ func (m *SubagentManager) Cleanup(olderThan time.Duration) int {
 		s.mu.Lock()
 		done := s.status == SubagentCompleted || s.status == SubagentFailed
 		old := s.SpawnedAt.Before(cutoff)
-		claudeID := s.ClaudeID
 		s.mu.Unlock()
 		if done && old {
 			delete(m.sessions, id)
-			if claudeID != "" {
-				delete(m.claudeIDIdx, claudeID)
-			}
 			removed++
 		}
 	}
@@ -283,6 +299,7 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 	opts := []claudecode.Option{
 		claudecode.WithAppendSystemPrompt(buildSubagentSystemPrompt(cfg)),
 		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
+		claudecode.WithPartialStreaming(),
 		claudecode.WithStderrCallback(func(line string) {
 			log.Printf("[subagent-%s stderr] %s", session.ID[:8], line)
 		}),
@@ -321,9 +338,19 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 	receiveLoop:
 		for msg := range client.ReceiveMessages(ctx) {
 			msgCount++
-			switch m := msg.(type) {
+			switch typedMsg := msg.(type) {
+			case *claudecode.StreamEvent:
+				// Capture Claude session ID from the first StreamEvent and
+				// signal Spawn() so it can re-key the session.
+				// The channel is buffered(1); subsequent StreamEvents hit default.
+				if typedMsg.SessionID != "" {
+					select {
+					case session.claudeIDReady <- typedMsg.SessionID:
+					default:
+					}
+				}
 			case *claudecode.AssistantMessage:
-				for _, b := range m.Content {
+				for _, b := range typedMsg.Content {
 					switch block := b.(type) {
 					case *claudecode.TextBlock:
 						result.WriteString(block.Text)
@@ -333,27 +360,14 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 					}
 				}
 			case *claudecode.ResultMessage:
-				session.mu.Lock()
-				session.ClaudeID = m.SessionID
-				session.mu.Unlock()
-				log.Printf("[subagent-%s] Claude session ID: %s (turns=%d duration=%dms)",
-					session.ID[:8], m.SessionID, m.NumTurns, m.DurationMs)
+				log.Printf("[subagent-%s] Claude session complete (turns=%d duration=%dms)",
+					session.ID[:8], typedMsg.NumTurns, typedMsg.DurationMs)
 				break receiveLoop
 			}
 		}
 		log.Printf("[subagent-%s] ReceiveMessages loop exited (received %d messages)", session.ID[:8], msgCount)
 		return nil
 	}, opts...)
-
-	// Register Claude session ID alias now that WithClient has returned
-	session.mu.Lock()
-	claudeID := session.ClaudeID
-	session.mu.Unlock()
-	if claudeID != "" {
-		m.mu.Lock()
-		m.claudeIDIdx[claudeID] = session
-		m.mu.Unlock()
-	}
 
 	session.mu.Lock()
 	session.result = result.String()

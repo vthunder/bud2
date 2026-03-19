@@ -347,6 +347,7 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		if err := client.Query(timeoutCtx, prompt); err != nil {
 			return err
 		}
+	receiveLoop:
 		for msg := range client.ReceiveMessages(timeoutCtx) {
 			switch m := msg.(type) {
 			case *claudecode.AssistantMessage:
@@ -372,6 +373,7 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 				s.lastUsage = parseUsageFromResult(m)
 				log.Printf("[simple-session] Claude session ID: %s (turns=%d duration=%dms)",
 					m.SessionID, m.NumTurns, m.DurationMs)
+				break receiveLoop
 			}
 		}
 		return nil
