@@ -14,7 +14,7 @@ import (
 type Profile struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
-	Skills      []string `yaml:"skills"`  // skill file names (without .md extension)
+	Skills      []string `yaml:"skills"`  // skill names — folder (<name>/SKILL.md) or flat (<name>.md)
 	Tools       []string `yaml:"tools"`   // additional tools beyond the base set
 }
 
@@ -36,10 +36,16 @@ func LoadProfile(statePath, profileName string) (*Profile, error) {
 	return &p, nil
 }
 
-// LoadSkillContent reads a skill file from state/system/skills/<name>.md
-// and returns its content (stripping YAML frontmatter if present).
+// LoadSkillContent reads a skill from state/system/skills/.
+// Supports both folder format (<name>/SKILL.md) and flat format (<name>.md).
 func LoadSkillContent(statePath, skillName string) (string, error) {
-	skillPath := filepath.Join(statePath, "system", "skills", skillName+".md")
+	base := filepath.Join(statePath, "system", "skills", skillName)
+	// Prefer folder format: <name>/SKILL.md
+	folderPath := filepath.Join(base, "SKILL.md")
+	skillPath := base + ".md"
+	if _, err := os.Stat(folderPath); err == nil {
+		skillPath = folderPath
+	}
 	data, err := os.ReadFile(skillPath)
 	if err != nil {
 		return "", fmt.Errorf("skill %q not found: %w", skillName, err)
