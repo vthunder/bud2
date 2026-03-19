@@ -40,6 +40,7 @@ func main() {
 		{"T6b: MCP tool discoverability check", testMCPToolDiscovery},
 		{"T7: Force tool use via empty-response constraint", testForceToolUse},
 		{"T8: Minimal resume prompt (no redundant context)", testMinimalResumePrompt},
+		{"T9: Subagent question/answer round-trip (real subagent-mcp)", testSubagentRoundTrip},
 	}
 
 	for _, t := range tests {
@@ -874,6 +875,156 @@ Content: What is the secret number you remembered? Reply with just the number.`
 	}
 
 	return r
+}
+
+// ---------------------------------------------------------------------------
+// T9: Full subagent question/answer round-trip via real subagent-mcp binary
+// Tests that:
+//   1. Claude calls request_input and the MCP server writes the question file
+//   2. An external responder writes the answer file
+//   3. The MCP server returns the answer to Claude
+//   4. Claude incorporates the answer into its final response
+// ---------------------------------------------------------------------------
+
+func testSubagentRoundTrip() TestResult {
+	r := TestResult{Name: "T9: Subagent question/answer round-trip (real subagent-mcp)"}
+
+	// Find subagent-mcp binary (look next to this executable, then bud2/bin/)
+	mcpBinary := findSubagentMCPBinary()
+	if mcpBinary == "" {
+		r.Error = "subagent-mcp binary not found (expected in bud2/bin/ or next to sdk-harness binary)"
+		return r
+	}
+	r.Detail = fmt.Sprintf("subagent-mcp binary: %s", mcpBinary)
+
+	// Create temp state dir for this test
+	stateDir, err := os.MkdirTemp("", "sdk-harness-t9-*")
+	if err != nil {
+		r.Error = fmt.Sprintf("failed to create temp state dir: %v", err)
+		return r
+	}
+	defer os.RemoveAll(stateDir)
+
+	if err := os.MkdirAll(stateDir+"/subagent-questions", 0755); err != nil {
+		r.Error = fmt.Sprintf("mkdir questions: %v", err)
+		return r
+	}
+	if err := os.MkdirAll(stateDir+"/subagent-answers", 0755); err != nil {
+		r.Error = fmt.Sprintf("mkdir answers: %v", err)
+		return r
+	}
+
+	sessionID := "t9-test-session"
+	questionFile := stateDir + "/subagent-questions/" + sessionID + ".txt"
+	answerFile := stateDir + "/subagent-answers/" + sessionID + ".txt"
+	secretAnswer := "the magic number is 7"
+
+	// Write the MCP config pointing to the real subagent-mcp binary
+	mcpConfig := fmt.Sprintf(`{
+  "mcpServers": {
+    "subagent": {
+      "command": %q,
+      "args": ["--session-id", %q, "--state-dir", %q]
+    }
+  }
+}`, mcpBinary, sessionID, stateDir)
+
+	mcpConfigPath := stateDir + "/mcp-config.json"
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpConfig), 0644); err != nil {
+		r.Error = fmt.Sprintf("failed to write MCP config: %v", err)
+		return r
+	}
+
+	// In a goroutine: watch for question file, then write the answer
+	answerProvided := make(chan string, 1)
+	go func() {
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			data, err := os.ReadFile(questionFile)
+			if err == nil && len(data) > 0 {
+				question := strings.TrimSpace(string(data))
+				// Write the answer
+				_ = os.WriteFile(answerFile, []byte(secretAnswer), 0644)
+				answerProvided <- question
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		answerProvided <- "" // timed out
+	}()
+
+	appendPrompt := `You are a task assistant. You MUST call mcp__subagent__request_input to ask questions.
+Do NOT use AskUserQuestion. Your ONLY communication channel is through the request_input tool.`
+
+	prompt := `Call mcp__subagent__request_input now with this exact question: "What is the secret answer?". Then report back what the tool returned.`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	events, err := runPrintSessionWithMCP(ctx, prompt, mcpConfigPath, appendPrompt)
+	if err != nil {
+		r.Error = fmt.Sprintf("session error: %v", err)
+		return r
+	}
+
+	// Check if answer was provided to the goroutine
+	var questionDetected string
+	select {
+	case q := <-answerProvided:
+		questionDetected = q
+	default:
+		questionDetected = "(goroutine still running)"
+	}
+
+	var resultText string
+	var requestInputCalled bool
+	for _, e := range events {
+		if e.EventType == "result_text" {
+			resultText = e.Text
+		}
+		if strings.Contains(strings.ToLower(e.ToolName), "request_input") {
+			requestInputCalled = true
+		}
+	}
+
+	r.Detail = fmt.Sprintf("binary: %s | request_input called: %v | question detected: %q | answer written: %q | result contains answer: %v | result: %s",
+		mcpBinary, requestInputCalled, truncate(questionDetected, 60), secretAnswer,
+		strings.Contains(resultText, "7"),
+		truncate(resultText, 120))
+
+	if requestInputCalled && strings.Contains(resultText, "7") {
+		r.Pass = true
+		r.Finding = "Full round-trip works: request_input called, answer delivered via file IPC, Claude incorporated answer"
+	} else if !requestInputCalled {
+		r.Pass = false
+		r.Finding = "FAIL: Claude did not call request_input"
+	} else {
+		r.Pass = false
+		r.Finding = fmt.Sprintf("FAIL: request_input called but answer not in result (question: %q)", questionDetected)
+	}
+
+	return r
+}
+
+// findSubagentMCPBinary locates the subagent-mcp binary.
+func findSubagentMCPBinary() string {
+	// 1. Next to the sdk-harness binary
+	if execPath, err := os.Executable(); err == nil {
+		candidate := execPath[:len(execPath)-len("sdk-harness")] + "subagent-mcp"
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	// 2. bud2/bin/ relative to GOPATH or known path
+	candidates := []string{
+		"/Users/thunder/src/bud2/bin/subagent-mcp",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return ""
 }
 
 // writeMCPServer writes the shared MCP server and config, returns (serverScript, serverPath, configPath, error)
