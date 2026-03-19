@@ -135,6 +135,10 @@ type SubagentConfig struct {
 	// AllowedTools restricts which built-in tools the subagent can use.
 	// Empty = all tools. Example: "Bash,Read,Glob,Grep,Write"
 	AllowedTools string
+
+	// MCPServerURL is the HTTP URL for the bud2 MCP server.
+	// Required for the subagent to call signal_done and other bud2 tools.
+	MCPServerURL string
 }
 
 // Spawn creates a new SubagentSession and starts it in a background goroutine.
@@ -265,6 +269,14 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 		claudecode.WithAppendSystemPrompt(buildSubagentSystemPrompt(cfg)),
 		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
 		questionCallback,
+	}
+	if cfg.MCPServerURL != "" {
+		opts = append(opts, claudecode.WithMcpServers(map[string]claudecode.McpServerConfig{
+			"bud2": &claudecode.McpHTTPServerConfig{
+				Type: claudecode.McpServerTypeHTTP,
+				URL:  cfg.MCPServerURL,
+			},
+		}))
 	}
 	if cfg.Model != "" {
 		opts = append(opts, claudecode.WithModel(cfg.Model))

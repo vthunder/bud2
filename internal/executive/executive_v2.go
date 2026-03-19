@@ -166,6 +166,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		s, err := e.subagents.Spawn(context.Background(), SubagentConfig{
 			Task:               task,
 			SystemPromptAppend: systemPromptAppend,
+			MCPServerURL:       e.config.MCPServerURL,
 		})
 		if err != nil {
 			return "", err
