@@ -1901,13 +1901,16 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		if deps.GetSubagentStatus == nil {
 			return "", fmt.Errorf("subagent status not available")
 		}
-		status, result, pendingQuestion, err := deps.GetSubagentStatus(sessionID)
+		status, result, claudeSessionID, pendingQuestion, err := deps.GetSubagentStatus(sessionID)
 		if err != nil {
 			return "", err
 		}
 		out := map[string]any{
 			"session_id": sessionID,
 			"status":     status,
+		}
+		if claudeSessionID != "" {
+			out["claude_session_id"] = claudeSessionID
 		}
 		if result != "" {
 			out["result"] = result

@@ -160,7 +160,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 	spawnFn func(task, systemPromptAppend string) (string, error),
 	listFn func() []map[string]any,
 	answerFn func(sessionID, answer string) error,
-	statusFn func(sessionID string) (status, result, pendingQuestion string, err error),
+	statusFn func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error),
 ) {
 	// subagentAllowedTools is the curated tool set for subagents:
 	// standard file tools + search_memory only. No talk_to_user, signal_done, etc.
@@ -190,6 +190,9 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 				"status":     s.status.String(),
 				"spawned_at": s.SpawnedAt.Format("2006-01-02T15:04:05Z07:00"),
 			}
+			if s.ClaudeID != "" {
+				entry["claude_session_id"] = s.ClaudeID
+			}
 			if s.pendingQuestion != "" {
 				entry["pending_question"] = s.pendingQuestion
 			}
@@ -203,14 +206,14 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		return e.subagents.Answer(sessionID, answer)
 	}
 
-	statusFn = func(sessionID string) (string, string, string, error) {
+	statusFn = func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error) {
 		s := e.subagents.Get(sessionID)
 		if s == nil {
-			return "", "", "", fmt.Errorf("subagent session not found: %s", sessionID)
+			return "", "", "", "", fmt.Errorf("subagent session not found: %s", sessionID)
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.status.String(), s.result, s.pendingQuestion, s.lastErr
+		return s.status.String(), s.result, s.ClaudeID, s.pendingQuestion, s.lastErr
 	}
 
 	return

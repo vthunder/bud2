@@ -401,9 +401,9 @@ func main() {
 			_, _, answerFn, _ := exec.SubagentCallbacks()
 			return answerFn(sessionID, answer)
 		},
-		GetSubagentStatus: func(sessionID string) (string, string, string, error) {
+		GetSubagentStatus: func(sessionID string) (string, string, string, string, error) {
 			if exec == nil {
-				return "", "", "", fmt.Errorf("executive not yet initialized")
+				return "", "", "", "", fmt.Errorf("executive not yet initialized")
 			}
 			_, _, _, statusFn := exec.SubagentCallbacks()
 			return statusFn(sessionID)

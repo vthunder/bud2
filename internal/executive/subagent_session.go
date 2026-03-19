@@ -52,9 +52,10 @@ func (s SubagentStatus) String() string {
 // questions to the executive via the native AskUserQuestion tool.
 type SubagentSession struct {
 	// Identifiers
-	ID        string    // Bud-internal UUID
-	Task      string    // Short task description
-	SpawnedAt time.Time // When the session was created
+	ID            string    // Bud-internal UUID (used for spawning/logging prefix)
+	ClaudeID      string    // Claude-assigned session ID (from ResultMessage; available after completion)
+	Task          string    // Short task description
+	SpawnedAt     time.Time // When the session was created
 
 	// State (protected by mu)
 	mu              sync.Mutex
@@ -99,8 +100,9 @@ func (s *SubagentSession) Err() error {
 // SubagentManager maintains a registry of active subagent sessions and
 // provides spawn/answer/status operations for the executive.
 type SubagentManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*SubagentSession
+	mu           sync.RWMutex
+	sessions     map[string]*SubagentSession // keyed by Bud internal UUID
+	claudeIDIdx  map[string]*SubagentSession // keyed by Claude session ID (populated after completion)
 
 	// Notify executive when a subagent has a pending question
 	QuestionNotify chan *SubagentSession
@@ -113,6 +115,7 @@ type SubagentManager struct {
 func NewSubagentManager(stateDir string) *SubagentManager {
 	return &SubagentManager{
 		sessions:       make(map[string]*SubagentSession),
+		claudeIDIdx:    make(map[string]*SubagentSession),
 		QuestionNotify: make(chan *SubagentSession, 16),
 		DoneNotify:     make(chan *SubagentSession, 16),
 	}
@@ -157,7 +160,7 @@ func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*Subag
 	m.sessions[id] = session
 	m.mu.Unlock()
 
-	taskCtx, taskCancel := context.WithTimeout(ctx, 10*time.Minute)
+	taskCtx, taskCancel := context.WithTimeout(ctx, 3*time.Minute)
 	go func() {
 		defer taskCancel()
 		m.runSession(taskCtx, session, cfg)
@@ -206,11 +209,14 @@ func (m *SubagentManager) List() []*SubagentSession {
 	return sessions
 }
 
-// Get returns a session by ID.
+// Get returns a session by Bud internal UUID or Claude session ID.
 func (m *SubagentManager) Get(id string) *SubagentSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.sessions[id]
+	if s, ok := m.sessions[id]; ok {
+		return s
+	}
+	return m.claudeIDIdx[id]
 }
 
 // Cleanup removes completed/failed sessions older than the given duration.
@@ -223,9 +229,13 @@ func (m *SubagentManager) Cleanup(olderThan time.Duration) int {
 		s.mu.Lock()
 		done := s.status == SubagentCompleted || s.status == SubagentFailed
 		old := s.SpawnedAt.Before(cutoff)
+		claudeID := s.ClaudeID
 		s.mu.Unlock()
 		if done && old {
 			delete(m.sessions, id)
+			if claudeID != "" {
+				delete(m.claudeIDIdx, claudeID)
+			}
 			removed++
 		}
 	}
@@ -307,20 +317,41 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 			log.Printf("[subagent-%s] Query error: %v", session.ID[:8], err)
 			return err
 		}
+		msgCount := 0
 		for msg := range client.ReceiveMessages(ctx) {
-			if a, ok := msg.(*claudecode.AssistantMessage); ok {
-				for _, b := range a.Content {
+			msgCount++
+			switch m := msg.(type) {
+			case *claudecode.AssistantMessage:
+				for _, b := range m.Content {
 					switch block := b.(type) {
 					case *claudecode.TextBlock:
 						result.WriteString(block.Text)
+						log.Printf("[subagent-%s] text output (%d chars)", session.ID[:8], len(block.Text))
 					case *claudecode.ToolUseBlock:
 						log.Printf("[subagent-%s] calling tool: %s", session.ID[:8], block.Name)
 					}
 				}
+			case *claudecode.ResultMessage:
+				session.mu.Lock()
+				session.ClaudeID = m.SessionID
+				session.mu.Unlock()
+				log.Printf("[subagent-%s] Claude session ID: %s (turns=%d duration=%dms)",
+					session.ID[:8], m.SessionID, m.NumTurns, m.DurationMs)
 			}
 		}
+		log.Printf("[subagent-%s] ReceiveMessages loop exited (received %d messages)", session.ID[:8], msgCount)
 		return nil
 	}, opts...)
+
+	// Register Claude session ID alias now that WithClient has returned
+	session.mu.Lock()
+	claudeID := session.ClaudeID
+	session.mu.Unlock()
+	if claudeID != "" {
+		m.mu.Lock()
+		m.claudeIDIdx[claudeID] = session
+		m.mu.Unlock()
+	}
 
 	session.mu.Lock()
 	session.result = result.String()

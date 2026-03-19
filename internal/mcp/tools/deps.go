@@ -53,6 +53,6 @@ type Dependencies struct {
 	ListSubagents func() []map[string]any
 	// AnswerSubagent routes an answer to a waiting subagent.
 	AnswerSubagent func(sessionID, answer string) error
-	// GetSubagentStatus returns (status, result, pendingQuestion, error) for a session.
-	GetSubagentStatus func(sessionID string) (status, result, pendingQuestion string, err error)
+	// GetSubagentStatus returns (status, result, claudeSessionID, pendingQuestion, error) for a session.
+	GetSubagentStatus func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error)
 }
