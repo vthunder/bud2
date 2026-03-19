@@ -456,8 +456,9 @@ func main() {
 		reflexLog,
 		statePath, // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
-			Model:              claudeModel,
-			WorkDir:            statePath, // Run Claude from state/ to pick up .mcp.json
+			Model:        claudeModel,
+			WorkDir:      statePath, // Run Claude from state/ to pick up .mcp.json
+			MCPServerURL: fmt.Sprintf("http://127.0.0.1:%s/mcp", mcpHTTPPort),
 			BotAuthor:          "Bud",     // Kept for compatibility, but no longer used
 			SessionTracker:     sessionTracker,
 			WakeupInstructions: wakeupInstructions,

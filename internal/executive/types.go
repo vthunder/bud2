@@ -13,6 +13,11 @@ type ClaudeConfig struct {
 	// Working directory for Claude
 	WorkDir string
 
+	// MCPServerURL is the HTTP URL for the bud2 MCP server.
+	// When set, passed explicitly via WithMcpServers so the SDK subprocess
+	// doesn't have to auto-discover it from .mcp.json.
+	MCPServerURL string
+
 	// PromptMode controls how the prompt is constructed
 	// "bud" (default): Full Bud system prompt with identity, memories, tools
 	// "custom": Use CustomSystemPrompt verbatim, skip Bud-specific additions

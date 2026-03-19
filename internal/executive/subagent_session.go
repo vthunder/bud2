@@ -1,29 +1,33 @@
 // Package executive provides the executive session manager for Bud.
 // This file implements the subagent session infrastructure for Project 2:
-// long-lived Claude subprocesses that work autonomously under executive supervision.
+// long-lived Claude subagents that work autonomously under executive supervision.
+//
+// Question routing uses AskUserQuestion interception via CanUseTool:
+//  1. Subagent calls AskUserQuestion.
+//  2. CanUseTool hook fires, blocks on answerReady channel.
+//  3. Executive receives QuestionNotify, routes question to user.
+//  4. On answer, executive calls Answer() which sends on answerReady.
+//  5. Hook unblocks, returns deny message containing the answer.
+//  6. Claude receives the answer inline and continues — no restart needed.
 package executive
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
 // SubagentStatus describes the current lifecycle state of a subagent session.
 type SubagentStatus int
 
 const (
-	SubagentRunning         SubagentStatus = iota // Claude subprocess is running
-	SubagentWaitingForInput                       // Blocked on request_input tool
+	SubagentRunning         SubagentStatus = iota // Claude session is running
+	SubagentWaitingForInput                       // Blocked on AskUserQuestion; waiting for executive answer
 	SubagentCompleted                             // Finished successfully
 	SubagentFailed                                // Exited with error
 )
@@ -43,15 +47,14 @@ func (s SubagentStatus) String() string {
 	}
 }
 
-// SubagentSession manages a long-lived Claude subprocess for a specific task.
-// The subagent runs autonomously with a restricted tool set and can surface
-// questions to the executive via the request_input MCP tool.
+// SubagentSession manages a Claude SDK session for a specific task.
+// The subagent runs autonomously with a restricted tool set and surfaces
+// questions to the executive via the native AskUserQuestion tool.
 type SubagentSession struct {
 	// Identifiers
-	ID              string    // Bud-internal UUID
-	ClaudeSessionID string    // Claude's session ID (for --resume across turns)
-	Task            string    // Short task description
-	SpawnedAt       time.Time // When the session was created
+	ID        string    // Bud-internal UUID
+	Task      string    // Short task description
+	SpawnedAt time.Time // When the session was created
 
 	// State (protected by mu)
 	mu              sync.Mutex
@@ -60,20 +63,9 @@ type SubagentSession struct {
 	result          string // Final output when Completed
 	lastErr         error  // Error when Failed
 
-	// Signal channels
-	questionReady chan struct{} // Closed when a question is waiting
-	answerReady   chan string   // Executive sends answer here
-
-	// File paths for question/answer IPC (fallback for non-blocking scenarios)
-	stateDir     string // Base state directory
-	questionFile string // {stateDir}/subagent-questions/{ID}.txt
-	answerFile   string // {stateDir}/subagent-answers/{ID}.txt
-
-	// MCP config for this session's request_input server
-	mcpConfigPath string
-
-	// ClaudeSessionID from result event (updated each turn)
-	claudeSessionID string
+	// answerReady receives the answer from the executive.
+	// Buffered(1) so Answer() never blocks.
+	answerReady chan string
 }
 
 // Status returns the current lifecycle status.
@@ -110,33 +102,28 @@ type SubagentManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*SubagentSession
 
-	stateDir    string // For question/answer file IPC
-	mcpBinaryPath string // Path to subagent-mcp binary (request_input server)
-
 	// Notify executive when a subagent has a pending question
 	QuestionNotify chan *SubagentSession
+
+	// Notify executive when a subagent completes or fails
+	DoneNotify chan *SubagentSession
 }
 
-// NewSubagentManager creates a new manager. stateDir is the bud state directory.
+// NewSubagentManager creates a new manager.
 func NewSubagentManager(stateDir string) *SubagentManager {
-	m := &SubagentManager{
+	return &SubagentManager{
 		sessions:       make(map[string]*SubagentSession),
-		stateDir:       stateDir,
 		QuestionNotify: make(chan *SubagentSession, 16),
+		DoneNotify:     make(chan *SubagentSession, 16),
 	}
-	// Ensure question/answer directories exist
-	os.MkdirAll(filepath.Join(stateDir, "subagent-questions"), 0755)
-	os.MkdirAll(filepath.Join(stateDir, "subagent-answers"), 0755)
-	return m
 }
 
 // SubagentConfig controls how a subagent session is spawned.
 type SubagentConfig struct {
-	// Task is what the subagent should do (injected as system prompt).
+	// Task is what the subagent should do.
 	Task string
 
 	// SystemPromptAppend is extra content appended to the subagent's system prompt.
-	// Use this to restrict tools, set constraints, or give role context.
 	SystemPromptAppend string
 
 	// Model overrides the default model (empty = use default).
@@ -151,36 +138,21 @@ type SubagentConfig struct {
 }
 
 // Spawn creates a new SubagentSession and starts it in a background goroutine.
-// Returns the session ID. The session runs until the task is done, it calls
-// signal_done, or it encounters an unrecoverable error.
 func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*SubagentSession, error) {
 	id := generateSessionUUID()
 
 	session := &SubagentSession{
-		ID:            id,
-		Task:          cfg.Task,
-		SpawnedAt:     time.Now(),
-		status:        SubagentRunning,
-		questionReady: make(chan struct{}),
-		answerReady:   make(chan string, 1),
-		stateDir:      m.stateDir,
-		questionFile:  filepath.Join(m.stateDir, "subagent-questions", id+".txt"),
-		answerFile:    filepath.Join(m.stateDir, "subagent-answers", id+".txt"),
+		ID:          id,
+		Task:        cfg.Task,
+		SpawnedAt:   time.Now(),
+		status:      SubagentRunning,
+		answerReady: make(chan string, 1),
 	}
 
-	// Build the MCP config for request_input
-	mcpConfigPath, err := m.writeMCPConfig(session)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write MCP config: %w", err)
-	}
-	session.mcpConfigPath = mcpConfigPath
-
-	// Register session
 	m.mu.Lock()
 	m.sessions[id] = session
 	m.mu.Unlock()
 
-	// Start the session goroutine
 	go m.runSession(ctx, session, cfg)
 
 	log.Printf("[subagent-manager] Spawned session %s: %s", id, truncate(cfg.Task, 60))
@@ -188,7 +160,6 @@ func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*Subag
 }
 
 // Answer provides a reply to a subagent's pending question.
-// Returns error if the session is not waiting for input.
 func (m *SubagentManager) Answer(sessionID, answer string) error {
 	m.mu.RLock()
 	session, ok := m.sessions[sessionID]
@@ -206,9 +177,10 @@ func (m *SubagentManager) Answer(sessionID, answer string) error {
 	session.pendingQuestion = ""
 	session.mu.Unlock()
 
-	// Write answer to file (the MCP server polls this)
-	if err := os.WriteFile(session.answerFile, []byte(answer), 0644); err != nil {
-		return fmt.Errorf("failed to write answer: %w", err)
+	select {
+	case session.answerReady <- answer:
+	default:
+		return fmt.Errorf("answer channel full for session %s", sessionID)
 	}
 
 	log.Printf("[subagent-manager] Answer provided to session %s", sessionID)
@@ -246,298 +218,119 @@ func (m *SubagentManager) Cleanup(olderThan time.Duration) int {
 		s.mu.Unlock()
 		if done && old {
 			delete(m.sessions, id)
-			os.Remove(s.questionFile)
-			os.Remove(s.answerFile)
-			if s.mcpConfigPath != "" {
-				os.Remove(s.mcpConfigPath)
-			}
 			removed++
 		}
 	}
 	return removed
 }
 
-// runSession runs the subagent Claude subprocess to completion.
-// It loops, allowing multi-turn sessions via --resume when question routing occurs.
+// runSession runs the subagent Claude session to completion using the SDK.
+// Uses CanUseTool to intercept AskUserQuestion and block until the executive
+// provides an answer — no subprocess restart needed.
 func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSession, cfg SubagentConfig) {
-	defer func() {
-		// Clean up question file on exit
-		os.Remove(session.questionFile)
-	}()
+	questionCallback := claudecode.WithCanUseTool(func(
+		ctx context.Context,
+		toolName string,
+		input map[string]any,
+		permCtx claudecode.ToolPermissionContext,
+	) (claudecode.PermissionResult, error) {
+		if toolName != "AskUserQuestion" {
+			return claudecode.NewPermissionResultAllow(), nil
+		}
 
-	// Build system prompt for the subagent
-	systemPrompt := buildSubagentSystemPrompt(cfg)
+		question := extractAskUserQuestionText(input)
 
-	// Build the prompt (task description as first user turn)
+		session.mu.Lock()
+		session.status = SubagentWaitingForInput
+		session.pendingQuestion = question
+		session.mu.Unlock()
+
+		log.Printf("[subagent] Session %s has question: %s", session.ID, truncate(question, 80))
+
+		select {
+		case m.QuestionNotify <- session:
+		case <-ctx.Done():
+			return claudecode.NewPermissionResultDeny("cancelled"), ctx.Err()
+		}
+
+		select {
+		case answer := <-session.answerReady:
+			return claudecode.NewPermissionResultDeny(answer), nil
+		case <-ctx.Done():
+			return claudecode.NewPermissionResultDeny("cancelled"), ctx.Err()
+		}
+	})
+
+	opts := []claudecode.Option{
+		claudecode.WithAppendSystemPrompt(buildSubagentSystemPrompt(cfg)),
+		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
+		questionCallback,
+	}
+	if cfg.Model != "" {
+		opts = append(opts, claudecode.WithModel(cfg.Model))
+	}
+	if cfg.WorkDir != "" {
+		opts = append(opts, claudecode.WithCwd(cfg.WorkDir))
+	}
+	if cfg.AllowedTools != "" {
+		tools := strings.Split(cfg.AllowedTools, ",")
+		opts = append(opts, claudecode.WithAllowedTools(tools...))
+	}
+
 	prompt := fmt.Sprintf("## Task\n%s\n\nBegin work on this task. When you are done, call signal_done.", cfg.Task)
 
-	const maxTurns = 20 // Safety valve against infinite loops
-	for turn := 0; turn < maxTurns; turn++ {
-		// Clear previous question file before each turn
-		os.Remove(session.questionFile)
-
-		// Build args
-		args := []string{
-			"--print",
-			"--dangerously-skip-permissions",
-			"--output-format", "stream-json",
-			"--verbose",
-			"--append-system-prompt", systemPrompt,
+	var result strings.Builder
+	err := claudecode.WithClient(ctx, func(client claudecode.Client) error {
+		if err := client.Query(ctx, prompt); err != nil {
+			return err
 		}
-
-		if session.claudeSessionID != "" {
-			args = append(args, "--resume", session.claudeSessionID)
-		}
-		if cfg.Model != "" {
-			args = append(args, "--model", cfg.Model)
-		}
-		if session.mcpConfigPath != "" {
-			args = append(args, "--mcp-config", session.mcpConfigPath)
-		}
-		if cfg.AllowedTools != "" {
-			args = append(args, "--allowedTools", cfg.AllowedTools)
-		}
-		args = append(args, prompt)
-
-		log.Printf("[subagent] Session %s turn %d: running claude (resume=%s)", session.ID, turn, session.claudeSessionID)
-
-		result, newSessionID, err := runSubagentClaude(ctx, args, cfg.WorkDir)
-
-		// Store new Claude session ID for --resume on next turn
-		if newSessionID != "" {
-			session.mu.Lock()
-			session.claudeSessionID = newSessionID
-			session.mu.Unlock()
-		}
-
-		if err != nil {
-			log.Printf("[subagent] Session %s turn %d error: %v", session.ID, turn, err)
-			session.mu.Lock()
-			session.status = SubagentFailed
-			session.lastErr = err
-			session.mu.Unlock()
-			return
-		}
-
-		// Check if a question was written to the question file
-		questionData, qerr := os.ReadFile(session.questionFile)
-		if qerr == nil && len(questionData) > 0 {
-			question := strings.TrimSpace(string(questionData))
-			log.Printf("[subagent] Session %s has question: %s", session.ID, truncate(question, 80))
-
-			// Notify executive
-			session.mu.Lock()
-			session.status = SubagentWaitingForInput
-			session.pendingQuestion = question
-			session.mu.Unlock()
-
-			// Send to notification channel (non-blocking — executive may not be listening)
-			select {
-			case m.QuestionNotify <- session:
-			default:
+		for msg := range client.ReceiveMessages(ctx) {
+			if a, ok := msg.(*claudecode.AssistantMessage); ok {
+				for _, b := range a.Content {
+					if t, ok := b.(*claudecode.TextBlock); ok {
+						result.WriteString(t.Text)
+					}
+				}
 			}
-
-			// Wait for answer file to appear (poll)
-			answer, waitErr := waitForAnswer(ctx, session.answerFile, 30*time.Minute)
-			if waitErr != nil {
-				log.Printf("[subagent] Session %s: answer wait failed: %v", session.ID, waitErr)
-				session.mu.Lock()
-				session.status = SubagentFailed
-				session.lastErr = waitErr
-				session.mu.Unlock()
-				return
-			}
-
-			// Resume with the answer as the new prompt
-			prompt = fmt.Sprintf("The answer to your question is: %s\n\nPlease continue your task.", answer)
-			os.Remove(session.answerFile)
-			continue
 		}
+		return nil
+	}, opts...)
 
-		// No question — session completed
-		log.Printf("[subagent] Session %s completed", session.ID)
-		session.mu.Lock()
-		session.status = SubagentCompleted
-		session.result = result
-		session.mu.Unlock()
-		return
-	}
-
-	// Hit max turns
 	session.mu.Lock()
-	session.status = SubagentFailed
-	session.lastErr = fmt.Errorf("exceeded max turns (%d)", maxTurns)
+	session.result = result.String()
+	if err != nil {
+		session.status = SubagentFailed
+		session.lastErr = err
+		log.Printf("[subagent] Session %s failed: %v", session.ID, err)
+	} else {
+		session.status = SubagentCompleted
+		log.Printf("[subagent] Session %s completed", session.ID)
+	}
 	session.mu.Unlock()
+
+	select {
+	case m.DoneNotify <- session:
+	default:
+	}
 }
 
-// runSubagentClaude runs claude --print with the given args and returns
-// (resultText, claudeSessionID, error).
-func runSubagentClaude(ctx context.Context, args []string, workDir string) (string, string, error) {
-	log.Printf("[subagent] Running: claude %s", strings.Join(args, " "))
-
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	if workDir != "" {
-		cmd.Dir = workDir
+// extractAskUserQuestionText extracts the question from AskUserQuestion tool input.
+// Input schema: {"questions": [{"question": "..."}]}
+func extractAskUserQuestionText(input map[string]any) string {
+	questions, ok := input["questions"]
+	if !ok {
+		return ""
 	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", "", fmt.Errorf("stdout pipe: %w", err)
+	list, ok := questions.([]any)
+	if !ok || len(list) == 0 {
+		return ""
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return "", "", fmt.Errorf("stderr pipe: %w", err)
+	first, ok := list[0].(map[string]any)
+	if !ok {
+		return ""
 	}
-
-	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("start: %w", err)
-	}
-
-	// Drain stderr
-	go func() {
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
-			log.Printf("[subagent stderr] %s", sc.Text())
-		}
-	}()
-
-	resultText, sessionID := parseSubagentOutput(stdout)
-
-	if err := cmd.Wait(); err != nil {
-		if ctx.Err() != nil {
-			return resultText, sessionID, ctx.Err()
-		}
-		return resultText, sessionID, fmt.Errorf("claude exit: %w", err)
-	}
-
-	return resultText, sessionID, nil
-}
-
-// parseSubagentOutput reads stream-json from the Claude subprocess and
-// extracts the result text and session ID.
-func parseSubagentOutput(r io.Reader) (string, string) {
-	var resultText, sessionID string
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 4*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			continue
-		}
-		var eventType string
-		if v, ok := raw["type"]; ok {
-			json.Unmarshal(v, &eventType)
-		}
-
-		switch eventType {
-		case "result":
-			if v, ok := raw["session_id"]; ok {
-				json.Unmarshal(v, &sessionID)
-			}
-			if v, ok := raw["result"]; ok {
-				json.Unmarshal(v, &resultText)
-			}
-		case "assistant":
-			// Also extract text from assistant content blocks as fallback
-			if v, ok := raw["message"]; ok {
-				var msg struct {
-					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
-					} `json:"content"`
-				}
-				if err := json.Unmarshal(v, &msg); err == nil && resultText == "" {
-					var sb strings.Builder
-					for _, block := range msg.Content {
-						if block.Type == "text" {
-							sb.WriteString(block.Text)
-						}
-					}
-					if sb.Len() > 0 {
-						resultText = sb.String()
-					}
-				}
-			}
-		}
-	}
-
-	return resultText, sessionID
-}
-
-// waitForAnswer polls for the answer file until it appears or ctx is cancelled.
-func waitForAnswer(ctx context.Context, answerFile string, timeout time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		default:
-		}
-		data, err := os.ReadFile(answerFile)
-		if err == nil && len(data) > 0 {
-			return strings.TrimSpace(string(data)), nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return "", fmt.Errorf("timeout waiting for answer after %v", timeout)
-}
-
-// writeMCPConfig writes the MCP config JSON for the subagent's request_input server.
-// Returns the path to the written config file.
-func (m *SubagentManager) writeMCPConfig(session *SubagentSession) (string, error) {
-	// Find the subagent-mcp binary
-	mcpBinary := m.mcpBinaryPath
-	if mcpBinary == "" {
-		// Look for it in the same directory as the current binary
-		execPath, err := os.Executable()
-		if err == nil {
-			candidate := filepath.Join(filepath.Dir(execPath), "subagent-mcp")
-			if _, err := os.Stat(candidate); err == nil {
-				mcpBinary = candidate
-			}
-		}
-	}
-	if mcpBinary == "" {
-		// Fallback: look in bud2/bin/
-		candidate := filepath.Join(m.stateDir, "..", "bin", "subagent-mcp")
-		candidate = filepath.Clean(candidate)
-		if _, err := os.Stat(candidate); err == nil {
-			mcpBinary = candidate
-		}
-	}
-	if mcpBinary == "" {
-		return "", fmt.Errorf("subagent-mcp binary not found (looked in exec dir and ../bin/)")
-	}
-
-	config := map[string]any{
-		"mcpServers": map[string]any{
-			"subagent": map[string]any{
-				"command": mcpBinary,
-				"args": []string{
-					"--session-id", session.ID,
-					"--state-dir", m.stateDir,
-				},
-			},
-		},
-	}
-
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	configPath := filepath.Join(m.stateDir, "subagent-questions", session.ID+"-mcp.json")
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		return "", err
-	}
-
-	return configPath, nil
+	q, _ := first["question"].(string)
+	return q
 }
 
 // buildSubagentSystemPrompt constructs the system prompt for a subagent session.
@@ -547,8 +340,8 @@ func buildSubagentSystemPrompt(cfg SubagentConfig) string {
 
 CONSTRAINTS:
 - Do NOT use talk_to_user or discord_react — you cannot communicate directly with the user.
-- Do NOT use AskUserQuestion.
-- If you need information from the user, call the mcp__subagent__request_input tool with your question.
+- If you need information from the user, call AskUserQuestion with your question.
+  You will receive the answer inline and can continue your work.
 - When your task is complete, call signal_done with a summary.
 - Keep reasoning internal. Output decisions and outcomes, not your full thought process.
 `)

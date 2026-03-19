@@ -28,6 +28,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/severity1/claude-agent-sdk-go v0.6.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.7 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect

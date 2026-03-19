@@ -82,6 +82,11 @@ type ExecutiveV2Config struct {
 	OnExecDone          func(focusID, summary string, durationSec float64, usage *SessionUsage)
 	OnMemoryEval        func(eval string) // Called when Claude outputs memory self-evaluation
 
+	// MCPServerURL is the HTTP URL for the bud2 MCP server (e.g. "http://127.0.0.1:8066/mcp").
+	// Passed directly to Claude SDK sessions so MCP tools are available without
+	// relying on .mcp.json auto-discovery.
+	MCPServerURL string
+
 	// WakeupInstructions is the content of seed/wakeup.md, injected into
 	// autonomous wake prompts to give Claude concrete work to do.
 	WakeupInstructions string
@@ -487,8 +492,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 
 	// Send to Claude
 	claudeCfg := ClaudeConfig{
-		Model:   e.config.Model,
-		WorkDir: e.config.WorkDir,
+		Model:        e.config.Model,
+		WorkDir:      e.config.WorkDir,
+		MCPServerURL: e.config.MCPServerURL,
 	}
 
 	startTime := time.Now()
@@ -561,7 +567,10 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		log.Printf("✅ Session complete in %.1fs (no usage data)", duration)
 	}
 
-	// One-shot sessions: no state tracking needed (each prompt is independent)
+	// Mark memories as seen so they're not re-injected on resume turns
+	if len(memoryIDs) > 0 {
+		e.session.MarkMemoriesSeen(memoryIDs)
+	}
 
 	// Log completion with usage data
 	if e.config.OnExecDone != nil {
@@ -697,6 +706,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			stopRetrieve()
 			if err == nil && result != nil {
 				for _, t := range result.Traces {
+					if e.session.HasSeenMemory(t.ID) {
+						continue
+					}
 					allMemories = append(allMemories, focus.MemorySummary{
 						ID:        t.ID,
 						Summary:   t.Summary,
@@ -717,6 +729,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 				traces, err := e.memory.GetActivatedTraces(0.1, memoryLimit)
 				if err == nil {
 					for _, t := range traces {
+						if e.session.HasSeenMemory(t.ID) {
+							continue
+						}
 						allMemories = append(allMemories, focus.MemorySummary{
 							ID:        t.ID,
 							Summary:   t.Summary,
@@ -728,7 +743,6 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 			}
 		}()
 
-		// One-shot sessions: include all retrieved memories (no deduplication needed)
 		bundle.Memories = allMemories
 		bundle.PriorMemoriesCount = 0
 

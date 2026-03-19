@@ -1,20 +1,17 @@
 package executive
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 	"github.com/vthunder/bud2/internal/logging"
 )
 
@@ -30,7 +27,7 @@ const (
 	MaxContextTokens = 150000
 )
 
-// SimpleSession manages a single persistent Claude session via `claude -p`
+// SimpleSession manages a single persistent Claude session via the SDK
 type SimpleSession struct {
 	mu sync.Mutex
 
@@ -99,7 +96,6 @@ func (s *SimpleSession) resetPendingPath() string {
 }
 
 // isResetPending checks if a memory reset is pending
-// When true, new sessions should not be started until Reset() is called
 func (s *SimpleSession) isResetPending() bool {
 	path := s.resetPendingPath()
 	if path == "" {
@@ -254,6 +250,7 @@ func (s *SimpleSession) PrepareNewSession() {
 	s.sessionID = generateSessionUUID()
 	s.sessionStartTime = time.Now()
 	s.memoryIDMap = make(map[string]string)
+	s.seenMemoryIDs = make(map[string]bool)
 	s.claudeSessionID = ""
 	s.isResuming = false
 }
@@ -285,7 +282,8 @@ func (s *SimpleSession) IsResuming() bool {
 	return s.isResuming
 }
 
-// OnToolCall sets the callback for tool calls
+// OnToolCall sets the callback for tool calls (informational — actual execution
+// happens inside the Claude subprocess via MCP).
 func (s *SimpleSession) OnToolCall(fn func(name string, args map[string]any) (string, error)) {
 	s.onToolCall = fn
 }
@@ -295,7 +293,7 @@ func (s *SimpleSession) OnOutput(fn func(text string)) {
 	s.onOutput = fn
 }
 
-// SendPrompt sends a prompt to Claude using print mode (non-interactive)
+// SendPrompt sends a prompt to Claude and blocks until the response is complete.
 func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg ClaudeConfig) error {
 	// Check for reset pending before sending
 	if s.isResetPending() {
@@ -313,299 +311,128 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Reset text output tracking for new prompt
 	s.currentPromptHasText = false
 
-	args := []string{
-		"--print",
-		"--dangerously-skip-permissions",
-		"--output-format", "stream-json",
-		"--verbose",
+	opts := []claudecode.Option{
+		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
 	}
 
-	// Use --resume when a Claude session ID from a prior turn is available.
-	// This reloads the full session history, eliminating the need to re-inject
-	// conversation buffer and core identity in the prompt.
-	// Otherwise, pass --session-id so the CLI uses our UUID as the session
-	// file name, unifying bud's tracking ID with the --resume ID.
+	// Resume existing Claude session when available, otherwise let the SDK
+	// create a new session (no --session-id equivalent in SDK).
 	if s.claudeSessionID != "" && s.isResuming {
 		log.Printf("[simple-session] Resuming Claude session %s (bud turn %s)", s.claudeSessionID, s.sessionID)
-		args = append(args, "--resume", s.claudeSessionID)
-	} else {
-		args = append(args, "--session-id", s.sessionID)
+		opts = append(opts, claudecode.WithResume(s.claudeSessionID))
 	}
 
+	if cfg.MCPServerURL != "" {
+		opts = append(opts, claudecode.WithMcpServers(map[string]claudecode.McpServerConfig{
+			"bud2": &claudecode.McpHTTPServerConfig{
+				Type: claudecode.McpServerTypeHTTP,
+				URL:  cfg.MCPServerURL,
+			},
+		}))
+	}
 	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
+		opts = append(opts, claudecode.WithModel(cfg.Model))
 	}
-
-	cmd := exec.CommandContext(ctx, "claude", args...)
 	if cfg.WorkDir != "" {
-		cmd.Dir = cfg.WorkDir
+		opts = append(opts, claudecode.WithCwd(cfg.WorkDir))
 	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stderr pipe: %w", err)
-	}
-
-	// Starting print mode - log removed for cleaner output
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start claude: %w", err)
-	}
-
-	go func() {
-		defer stdin.Close()
-		io.WriteString(stdin, prompt)
-	}()
-
-	var wg sync.WaitGroup
-	var stderrBuf strings.Builder
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		s.processStreamJSON(stdout)
-	}()
-
-	go func() {
-		defer wg.Done()
-		s.processStderr(stderr, &stderrBuf)
-	}()
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
 
 	const sessionTimeout = 30 * time.Minute
-	select {
-	case <-done:
-		// Session completed normally
-	case <-time.After(sessionTimeout):
-		log.Printf("[simple-session] Session %s timed out after %v, killing subprocess", s.sessionID, sessionTimeout)
-		cmd.Process.Kill()
-		<-done
-		return fmt.Errorf("claude session timed out after %v", sessionTimeout)
-	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, sessionTimeout)
+	defer cancel()
 
-	if err := cmd.Wait(); err != nil {
+	err := claudecode.WithClient(timeoutCtx, func(client claudecode.Client) error {
+		if err := client.Query(timeoutCtx, prompt); err != nil {
+			return err
+		}
+		for msg := range client.ReceiveMessages(timeoutCtx) {
+			switch m := msg.(type) {
+			case *claudecode.AssistantMessage:
+				for _, block := range m.Content {
+					switch b := block.(type) {
+					case *claudecode.TextBlock:
+						if !s.currentPromptHasText {
+							s.currentPromptHasText = true
+						}
+						logging.Debug("simple-session", "Text block (%d chars)", len(b.Text))
+						if s.onOutput != nil {
+							s.onOutput(b.Text)
+						}
+					case *claudecode.ToolUseBlock:
+						logging.Debug("simple-session", "Tool call: %s", b.Name)
+						if s.onToolCall != nil {
+							s.onToolCall(b.Name, b.Input)
+						}
+					}
+				}
+			case *claudecode.ResultMessage:
+				s.claudeSessionID = m.SessionID
+				s.lastUsage = parseUsageFromResult(m)
+				logging.Debug("simple-session", "Result: session=%s turns=%d duration=%dms",
+					m.SessionID, m.NumTurns, m.DurationMs)
+			}
+		}
+		return nil
+	}, opts...)
+
+	if err != nil {
 		if ctx.Err() != nil {
 			log.Printf("[simple-session] Session %s interrupted (context cancelled)", s.sessionID)
 			return ErrInterrupted
 		}
-		if stderrBuf.Len() > 0 {
-			return fmt.Errorf("claude exited with error: %w\nstderr: %s", err, stderrBuf.String())
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+			log.Printf("[simple-session] Session %s timed out after %v", s.sessionID, sessionTimeout)
+			return fmt.Errorf("claude session timed out after %v", sessionTimeout)
 		}
-		return fmt.Errorf("claude exited with error: %w", err)
+		// Ignore unknown message type errors (e.g. rate_limit_event) — non-fatal
+		if strings.Contains(err.Error(), "unknown message type") {
+			return nil
+		}
+		return err
 	}
 
 	return nil
 }
 
-// processStreamJSON parses Claude's stream-json output
-func (s *SimpleSession) processStreamJSON(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var event StreamEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			log.Printf("[simple-session] Failed to parse event: %v", err)
-			continue
-		}
-
-		// For result events, parse usage from the full raw JSON
-		if event.Type == "result" {
-			s.parseResultUsage([]byte(line))
-		}
-
-		s.handleStreamEvent(event)
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Printf("[simple-session] Scanner error: %v", err)
-	}
-}
-
-func (s *SimpleSession) handleStreamEvent(event StreamEvent) {
-	// Log all events for debugging
-	if event.Type != "content_block_delta" {
-		logging.Debug("simple-session", "Event type: %s", event.Type)
-	}
-
-	switch event.Type {
-	case "assistant":
-		// Process text from assistant event as fallback
-		// Skip if we've already received text (to avoid duplicates with result event)
-		if s.currentPromptHasText {
-			return
-		}
-		if event.Message != nil {
-			var msg struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			}
-			if err := json.Unmarshal(event.Message, &msg); err == nil {
-				for _, block := range msg.Content {
-					if block.Type == "text" && block.Text != "" {
-						logging.Debug("simple-session", "Assistant event text (%d chars)", len(block.Text))
-						s.currentPromptHasText = true
-						if s.onOutput != nil {
-							s.onOutput(block.Text)
-						}
-					}
-				}
-			}
-		}
-
-	case "tool_use":
-		if event.Tool != nil && s.onToolCall != nil {
-			logging.Debug("simple-session", "Tool call: %s", event.Tool.Name)
-			result, err := s.onToolCall(event.Tool.Name, event.Tool.Args)
-			if err != nil {
-				logging.Debug("simple-session", "Tool error: %v", err)
-			} else {
-				logging.Debug("simple-session", "Tool result: %s", truncatePrompt(result, 100))
-			}
-		}
-
-	case "result":
-		// Process result event WITH ANTI-DUPLICATION GUARD
-		// Skip if we already got text from assistant event (prevents duplicate fallback)
-		if s.currentPromptHasText {
-			return
-		}
-		if event.Result != nil {
-			var result string
-			if err := json.Unmarshal(event.Result, &result); err == nil {
-				if result != "" {
-					logging.Debug("simple-session", "Result event text (%d chars)", len(result))
-					s.currentPromptHasText = true
-					if s.onOutput != nil {
-						s.onOutput(result)
-					}
-				} else {
-					logging.Debug("simple-session", "Result event had empty text")
-				}
-			} else {
-				logging.Debug("simple-session", "Result event unmarshal failed: %v", err)
-			}
-		} else {
-			logging.Debug("simple-session", "Result event had nil Result field")
-		}
-
-	case "content_block_delta":
-		var delta struct {
-			Delta struct {
-				Text string `json:"text"`
-			} `json:"delta"`
-		}
-		if err := json.Unmarshal(event.Content, &delta); err == nil {
-			if delta.Delta.Text != "" {
-				s.currentPromptHasText = true
-				if s.onOutput != nil {
-					s.onOutput(delta.Delta.Text)
-				}
-			}
-		}
-	}
-}
-
-func (s *SimpleSession) processStderr(r io.Reader, buf *strings.Builder) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			log.Printf("[simple-session stderr] %s", line)
-			if buf != nil {
-				buf.WriteString(line + "\n")
-			}
-		}
-	}
-}
-
-// LastUsage returns the usage metrics from the last completed prompt, or nil
-func (s *SimpleSession) LastUsage() *SessionUsage {
-	return s.lastUsage
-}
-
-// ClaudeSessionID returns the Claude-assigned session ID from the last completed
-// prompt. Use this value with `claude --resume` to reload the session.
-func (s *SimpleSession) ClaudeSessionID() string {
-	return s.claudeSessionID
-}
-
-// parseResultUsage extracts token usage from a raw result event JSON line
-func (s *SimpleSession) parseResultUsage(raw []byte) {
-	var result struct {
-		SessionID     string `json:"session_id"`
-		NumTurns      int    `json:"num_turns"`
-		DurationMs    int    `json:"duration_ms"`
-		DurationApiMs int    `json:"duration_api_ms"`
-		Usage         struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-		ModelUsage map[string]struct {
-			ContextWindow   int `json:"contextWindow"`
-			MaxOutputTokens int `json:"maxOutputTokens"`
-		} `json:"modelUsage"`
-	}
-
-	if err := json.Unmarshal(raw, &result); err != nil {
-		log.Printf("[simple-session] Failed to parse result usage: %v", err)
-		return
-	}
-
+// parseUsageFromResult extracts SessionUsage from a ResultMessage.
+func parseUsageFromResult(m *claudecode.ResultMessage) *SessionUsage {
 	usage := &SessionUsage{
-		InputTokens:              result.Usage.InputTokens,
-		OutputTokens:             result.Usage.OutputTokens,
-		CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
-		NumTurns:                 result.NumTurns,
-		DurationMs:               result.DurationMs,
-		DurationApiMs:            result.DurationApiMs,
+		NumTurns:      m.NumTurns,
+		DurationMs:    m.DurationMs,
+		DurationApiMs: m.DurationAPIMs,
 	}
-
-	// Extract context window from first model in modelUsage
-	for _, m := range result.ModelUsage {
-		usage.ContextWindow = m.ContextWindow
-		usage.MaxOutputTokens = m.MaxOutputTokens
-		break
+	if m.Usage != nil {
+		u := *m.Usage
+		usage.InputTokens = intFromUsage(u, "input_tokens")
+		usage.OutputTokens = intFromUsage(u, "output_tokens")
+		usage.CacheCreationInputTokens = intFromUsage(u, "cache_creation_input_tokens")
+		usage.CacheReadInputTokens = intFromUsage(u, "cache_read_input_tokens")
 	}
-
-	s.lastUsage = usage
-	if result.SessionID != "" {
-		s.claudeSessionID = result.SessionID
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		logging.Debug("simple-session", "Usage: input=%d output=%d cache_read=%d turns=%d duration=%dms",
+			usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.NumTurns, usage.DurationMs)
 	}
-	logging.Debug("simple-session", "Usage: input=%d output=%d cache_read=%d turns=%d duration=%dms",
-		usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.NumTurns, usage.DurationMs)
+	return usage
 }
 
-// Close is a no-op since there's no persistent process to clean up in -p mode
+// intFromUsage extracts an int value from the Usage map by key.
+func intFromUsage(u map[string]any, key string) int {
+	v, ok := u[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
+}
+
+// Close is a no-op since there's no persistent process to clean up
 func (s *SimpleSession) Close() error {
 	return nil
 }
@@ -628,125 +455,15 @@ func (s *SimpleSession) Reset() {
 	log.Printf("[simple-session] Session reset complete, new session ID: %s", s.sessionID)
 }
 
-// findSessionFile looks for the Claude session file
-func (s *SimpleSession) findSessionFile() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-
-	projectsDir := homeDir + "/.claude/projects"
-	entries, err := os.ReadDir(projectsDir)
-	if err != nil {
-		return ""
-	}
-
-	sessionFile := s.sessionID + ".jsonl"
-	for _, entry := range entries {
-		if entry.IsDir() {
-			path := projectsDir + "/" + entry.Name() + "/" + sessionFile
-			if _, err := os.Stat(path); err == nil {
-				return path
-			}
-		}
-	}
-
-	return ""
+// LastUsage returns the usage metrics from the last completed prompt, or nil
+func (s *SimpleSession) LastUsage() *SessionUsage {
+	return s.lastUsage
 }
 
-// SessionContentSize calculates the actual content size of the session since
-// the last compaction boundary. This counts only the message/content fields
-// from user and assistant entries, excluding thinking blocks and metadata.
-// Returns 0 if the file doesn't exist or can't be parsed.
-func (s *SimpleSession) SessionContentSize() int64 {
-	path := s.findSessionFile()
-	if path == "" {
-		return 0
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer file.Close()
-
-	// First pass: find last compaction boundary line number
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB max line size
-
-	var lastCompactLine int
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-		// Look for compact_boundary subtype
-		if strings.Contains(line, `"subtype":"compact_boundary"`) ||
-			strings.Contains(line, `"subtype": "compact_boundary"`) {
-			lastCompactLine = lineNum
-		}
-	}
-
-	// Second pass: sum content from entries after last compaction
-	file.Seek(0, 0)
-	scanner = bufio.NewScanner(file)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	var totalSize int64
-	lineNum = 0
-	for scanner.Scan() {
-		lineNum++
-		if lineNum <= lastCompactLine {
-			continue
-		}
-
-		line := scanner.Text()
-		totalSize += extractContentSize(line)
-	}
-
-	return totalSize
-}
-
-// extractContentSize extracts the size of actual content from a session entry
-func extractContentSize(line string) int64 {
-	var entry struct {
-		Type    string `json:"type"`
-		Message struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-
-	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		return 0
-	}
-
-	switch entry.Type {
-	case "user":
-		// User content is a string
-		var content string
-		if err := json.Unmarshal(entry.Message.Content, &content); err == nil {
-			return int64(len(content))
-		}
-
-	case "assistant":
-		// Assistant content is an array of content blocks
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(entry.Message.Content, &blocks); err == nil {
-			var size int64
-			for _, block := range blocks {
-				// Only count text blocks, skip thinking
-				if block.Type == "text" {
-					size += int64(len(block.Text))
-				}
-			}
-			return size
-		}
-	}
-
-	return 0
+// ClaudeSessionID returns the Claude-assigned session ID from the last completed
+// prompt. Use this value with `claude --resume` to reload the session.
+func (s *SimpleSession) ClaudeSessionID() string {
+	return s.claudeSessionID
 }
 
 // ShouldReset returns true if the session should be reset before sending
