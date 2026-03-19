@@ -158,7 +158,7 @@ type SubagentConfig struct {
 func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*SubagentSession, error) {
 	tempID := generateSessionUUID()
 
-	taskCtx, taskCancel := context.WithTimeout(ctx, 3*time.Minute)
+	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	session := &SubagentSession{
 		ID:            tempID,
