@@ -267,7 +267,10 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 
 	opts := []claudecode.Option{
 		claudecode.WithAppendSystemPrompt(buildSubagentSystemPrompt(cfg)),
-		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
+		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
+		claudecode.WithStderrCallback(func(line string) {
+			log.Printf("[subagent-%s stderr] %s", session.ID[:8], line)
+		}),
 		questionCallback,
 	}
 	if cfg.MCPServerURL != "" {
@@ -291,9 +294,12 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 
 	prompt := fmt.Sprintf("## Task\n%s\n\nBegin work on this task. When you are done, finish your response.", cfg.Task)
 
+	log.Printf("[subagent-%s] Starting session (acceptEdits mode)", session.ID[:8])
 	var result strings.Builder
 	err := claudecode.WithClient(ctx, func(client claudecode.Client) error {
+		log.Printf("[subagent-%s] Client connected, sending query", session.ID[:8])
 		if err := client.Query(ctx, prompt); err != nil {
+			log.Printf("[subagent-%s] Query error: %v", session.ID[:8], err)
 			return err
 		}
 		for msg := range client.ReceiveMessages(ctx) {
