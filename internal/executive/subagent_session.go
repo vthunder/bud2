@@ -318,6 +318,7 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 			return err
 		}
 		msgCount := 0
+	receiveLoop:
 		for msg := range client.ReceiveMessages(ctx) {
 			msgCount++
 			switch m := msg.(type) {
@@ -337,6 +338,7 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 				session.mu.Unlock()
 				log.Printf("[subagent-%s] Claude session ID: %s (turns=%d duration=%dms)",
 					session.ID[:8], m.SessionID, m.NumTurns, m.DurationMs)
+				break receiveLoop
 			}
 		}
 		log.Printf("[subagent-%s] ReceiveMessages loop exited (received %d messages)", session.ID[:8], msgCount)
