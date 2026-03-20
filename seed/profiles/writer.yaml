@@ -1,0 +1,5 @@
+name: writer
+description: Documentation and guide writing tasks with file read/write access
+skills: []
+tools:
+  - mcp__bud2__save_thought

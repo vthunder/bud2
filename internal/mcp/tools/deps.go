@@ -66,4 +66,6 @@ type Dependencies struct {
 	DrainSubagentMemories func(sessionID string) ([]string, error)
 	// PeekSubagentMemories returns the count of staged memories for a session without draining.
 	PeekSubagentMemories func(sessionID string) int
+	// ListJobs returns available job templates. If project is empty, returns only global jobs.
+	ListJobs func(project string) ([]any, error)
 }

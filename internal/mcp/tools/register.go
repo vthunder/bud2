@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/activity"
+	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -1853,18 +1854,49 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("spawn_subagent", mcp.ToolDef{
 		Description: "Spawn a new subagent session to work autonomously on a task. The subagent runs with a restricted tool set (no talk_to_user, no AskUserQuestion) and reports back via signal_done. Use this to delegate research, analysis, or implementation tasks that can run in the background. Returns a session_id for tracking.",
 		Properties: map[string]mcp.PropDef{
-			"task":        {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect."},
+			"task":        {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
 			"constraints": {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
 			"profile":     {Type: "string", Description: "Optional skill profile to load (e.g. 'researcher', 'coder', 'reviewer'). Expands tool access and injects behavioral guidance from state/system/profiles/. Omit to use the default restricted tool set."},
+			"job":         {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
+			"params":      {Type: "object", Description: "Parameter values for the job template (map of string→string). Required params must be provided."},
 		},
-		Required: []string{"task"},
 	}, func(ctx any, args map[string]any) (string, error) {
-		task, ok := args["task"].(string)
-		if !ok || task == "" {
-			return "", fmt.Errorf("task is required")
-		}
+		task, _ := args["task"].(string)
 		constraints, _ := args["constraints"].(string)
 		profile, _ := args["profile"].(string)
+		jobRef, _ := args["job"].(string)
+
+		if jobRef != "" {
+			// Load and render the job template.
+			rawParams, _ := args["params"].(map[string]any)
+			params := make(map[string]string, len(rawParams))
+			for k, v := range rawParams {
+				if s, ok := v.(string); ok {
+					params[k] = s
+				}
+			}
+			jobDef, body, err := executive.LoadJob(deps.StatePath, jobRef)
+			if err != nil {
+				return "", fmt.Errorf("load job %q: %w", jobRef, err)
+			}
+			rendered, err := executive.RenderJobTemplate(body, jobDef, params)
+			if err != nil {
+				return "", fmt.Errorf("render job %q: %w", jobRef, err)
+			}
+			if task == "" {
+				task = rendered
+			} else {
+				task = rendered + "\n\n" + task
+			}
+			// Use job's profile as default if not explicitly set.
+			if profile == "" && jobDef.Profile != "" {
+				profile = jobDef.Profile
+			}
+		}
+
+		if task == "" {
+			return "", fmt.Errorf("task is required (or provide a job)")
+		}
 
 		sessionID, err := deps.SpawnSubagent(task, constraints, profile)
 		if err != nil {
@@ -1872,10 +1904,12 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		}
 
 		msg := fmt.Sprintf("Subagent started. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID)
-		if profile != "" {
+		if jobRef != "" {
+			msg = fmt.Sprintf("Subagent started from job %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID)
+		} else if profile != "" {
 			msg = fmt.Sprintf("Subagent started with profile %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID)
 		}
-		log.Printf("Spawned subagent %s (profile=%q): %s", sessionID, profile, truncate(task, 60))
+		log.Printf("Spawned subagent %s (job=%q profile=%q): %s", sessionID, jobRef, profile, truncate(task, 60))
 		return msg, nil
 	})
 
@@ -1891,6 +1925,24 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		data, _ := json.MarshalIndent(sessions, "", "  ")
 		return string(data), nil
 	})
+
+	// list_jobs — list available job templates
+	if deps.ListJobs != nil {
+		server.RegisterTool("list_jobs", mcp.ToolDef{
+			Description: "List available job templates. Without project, returns only global jobs. With project, returns global + project jobs combined. Use job refs with spawn_subagent's job param.",
+			Properties: map[string]mcp.PropDef{
+				"project": {Type: "string", Description: "Optional project name (e.g. 'sandmill') to include project-specific jobs alongside global ones."},
+			},
+		}, func(ctx any, args map[string]any) (string, error) {
+			project, _ := args["project"].(string)
+			listings, err := deps.ListJobs(project)
+			if err != nil {
+				return "", fmt.Errorf("list jobs: %w", err)
+			}
+			data, _ := json.MarshalIndent(listings, "", "  ")
+			return string(data), nil
+		})
+	}
 
 	// get_subagent_status — get detailed status for a session
 	server.RegisterTool("get_subagent_status", mcp.ToolDef{

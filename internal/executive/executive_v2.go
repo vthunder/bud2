@@ -331,7 +331,7 @@ func (e *ExecutiveV2) Start() error {
 }
 
 // watchSubagentQuestions listens on the SubagentManager's QuestionNotify channel
-// and adds a P1 focus item whenever a subagent needs user input.
+// and adds a P2 focus item whenever a subagent needs user input.
 func (e *ExecutiveV2) watchSubagentQuestions() {
 	for session := range e.subagents.QuestionNotify {
 		session.mu.Lock()
@@ -349,7 +349,7 @@ func (e *ExecutiveV2) watchSubagentQuestions() {
 		item := &focus.PendingItem{
 			ID:       "subagent-question-" + sessionID,
 			Type:     "subagent-question",
-			Priority: focus.P1UserInput,
+			Priority: focus.P2DueTask,
 			Content:  fmt.Sprintf("Subagent working on '%s' has a question: %s", truncate(task, 50), question),
 			Salience: 0.9,
 		}
