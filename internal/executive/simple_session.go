@@ -344,47 +344,81 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	timeoutCtx, cancel := context.WithTimeout(ctx, sessionTimeout)
 	defer cancel()
 
+	logging.Debug("simple-session", "SendPrompt: prompt_len=%d resuming=%v", len(prompt), s.isResuming)
+
 	err := claudecode.WithClient(timeoutCtx, func(client claudecode.Client) error {
 		if err := client.Query(timeoutCtx, prompt); err != nil {
 			return err
 		}
-	receiveLoop:
-		for msg := range client.ReceiveMessages(timeoutCtx) {
-			switch m := msg.(type) {
-			case *claudecode.StreamEvent:
-				// Capture session ID from the first streaming event — this arrives
-				// within milliseconds and ensures claudeSessionID is set before
-				// signal_done can cancel the context (which skips ResultMessage).
-				if m.SessionID != "" && s.claudeSessionID == "" {
-					s.claudeSessionID = m.SessionID
-					logging.Debug("simple-session", "Captured Claude session ID early: %s", m.SessionID)
+		msgCount := 0
+		heartbeatDone := make(chan struct{})
+		go func() {
+			t := time.NewTicker(60 * time.Second)
+			defer t.Stop()
+			lastCount := 0
+			for {
+				select {
+				case <-t.C:
+					if msgCount == lastCount {
+						log.Printf("[simple-session] WARNING: no new messages for 60s (msgs_so_far=%d)", msgCount)
+					}
+					lastCount = msgCount
+				case <-heartbeatDone:
+					return
+				case <-timeoutCtx.Done():
+					return
 				}
-			case *claudecode.AssistantMessage:
-				for _, block := range m.Content {
-					switch b := block.(type) {
-					case *claudecode.TextBlock:
-						if !s.currentPromptHasText {
-							s.currentPromptHasText = true
-						}
-						logging.Debug("simple-session", "Text block (%d chars)", len(b.Text))
-						if s.onOutput != nil {
-							s.onOutput(b.Text)
-						}
-					case *claudecode.ToolUseBlock:
-						logging.Debug("simple-session", "Tool call: %s", b.Name)
-						if s.onToolCall != nil {
-							s.onToolCall(b.Name, b.Input)
+			}
+		}()
+		msgCh := client.ReceiveMessages(timeoutCtx)
+	receiveLoop:
+		for {
+			select {
+			case msg, ok := <-msgCh:
+				if !ok {
+					break receiveLoop
+				}
+				msgCount++
+				switch m := msg.(type) {
+				case *claudecode.StreamEvent:
+					// Capture session ID from the first streaming event — this arrives
+					// within milliseconds and ensures claudeSessionID is set before
+					// signal_done can cancel the context (which skips ResultMessage).
+					if m.SessionID != "" && s.claudeSessionID == "" {
+						s.claudeSessionID = m.SessionID
+						logging.Debug("simple-session", "Captured Claude session ID early: %s", m.SessionID)
+					}
+				case *claudecode.AssistantMessage:
+					for _, block := range m.Content {
+						switch b := block.(type) {
+						case *claudecode.TextBlock:
+							if !s.currentPromptHasText {
+								s.currentPromptHasText = true
+							}
+							logging.Debug("simple-session", "Text block (%d chars)", len(b.Text))
+							if s.onOutput != nil {
+								s.onOutput(b.Text)
+							}
+						case *claudecode.ToolUseBlock:
+							logging.Debug("simple-session", "Tool call: %s", b.Name)
+							if s.onToolCall != nil {
+								s.onToolCall(b.Name, b.Input)
+							}
 						}
 					}
+				case *claudecode.ResultMessage:
+					s.claudeSessionID = m.SessionID
+					s.lastUsage = parseUsageFromResult(m)
+					log.Printf("[simple-session] Claude session ID: %s (turns=%d duration=%dms)",
+						m.SessionID, m.NumTurns, m.DurationMs)
+					break receiveLoop
 				}
-			case *claudecode.ResultMessage:
-				s.claudeSessionID = m.SessionID
-				s.lastUsage = parseUsageFromResult(m)
-				log.Printf("[simple-session] Claude session ID: %s (turns=%d duration=%dms)",
-					m.SessionID, m.NumTurns, m.DurationMs)
+			case <-timeoutCtx.Done():
+				log.Printf("[simple-session] Context cancelled, exiting receive loop (msgs_so_far=%d)", msgCount)
 				break receiveLoop
 			}
 		}
+		close(heartbeatDone)
 		return nil
 	}, opts...)
 

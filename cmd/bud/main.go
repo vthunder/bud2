@@ -1015,6 +1015,13 @@ func main() {
 			return err
 		})
 
+		// Wire /stop to kill whatever session is currently running
+		discordSense.SetOnStop(exec.InterruptCurrentSession)
+
+		// Wire /debug-executive to toggle the live debug stream
+		dbg := newExecutiveDebugger(exec, discordSense.Session())
+		discordSense.SetOnDebugExecutive(dbg.Toggle)
+
 		// Register slash commands (guild-specific for fast updates, or global if no guild ID)
 		if err := discordSense.RegisterSlashCommands(discordGuildID); err != nil {
 			log.Printf("Warning: failed to register slash commands: %v", err)

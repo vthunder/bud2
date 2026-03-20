@@ -382,7 +382,6 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle the request
 	resp := s.handleRequest(req)
 
 	// Set headers

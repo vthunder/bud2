@@ -61,7 +61,14 @@ type ExecutiveV2 struct {
 	// signal_done termination support
 	signalDoneCancel func() // cancels current session when signal_done fires
 	signalDoneActive bool   // true when signal_done triggered the cancel
+
+	// Debug event subscribers and history ring buffer
+	debugMu        sync.RWMutex
+	debugListeners map[string]func(DebugEvent)
+	debugHistory   []DebugEvent // ring buffer of recent events for replay on subscribe
 }
+
+const debugHistoryMax = 200
 
 // ExecutiveV2Config holds configuration for the v2 executive
 type ExecutiveV2Config struct {
@@ -104,14 +111,15 @@ func NewExecutiveV2(
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
 	exec := &ExecutiveV2{
-		session:       NewSimpleSession(statePath),
-		attention:     focus.New(),
-		queue:         focus.NewQueue(statePath, 100),
-		memory:        memory,
-		reflexLog:     reflexLog,
-		subagents:     NewSubagentManager(statePath),
-		mcpToolCalled: make(map[string]bool),
-		config:        cfg,
+		session:        NewSimpleSession(statePath),
+		attention:      focus.New(),
+		queue:          focus.NewQueue(statePath, 100),
+		memory:         memory,
+		reflexLog:      reflexLog,
+		subagents:      NewSubagentManager(statePath),
+		mcpToolCalled:  make(map[string]bool),
+		debugListeners: make(map[string]func(DebugEvent)),
+		config:         cfg,
 	}
 
 	// Load core identity from state/system/core.md
@@ -410,6 +418,63 @@ func (e *ExecutiveV2) RequestBackgroundInterrupt() {
 	}
 }
 
+// InterruptCurrentSession cancels whatever session is currently running (P1 or background).
+// Used by /stop to kill a stuck or unwanted session immediately.
+func (e *ExecutiveV2) InterruptCurrentSession() {
+	e.backgroundMu.Lock()
+	defer e.backgroundMu.Unlock()
+	if e.signalDoneCancel != nil {
+		log.Printf("[executive] InterruptCurrentSession: cancelling active session")
+		e.signalDoneCancel()
+	} else {
+		log.Printf("[executive] InterruptCurrentSession: no active session")
+	}
+}
+
+// AddDebugListener registers a callback that receives real-time session events.
+// It immediately replays buffered history to the new listener so it can see
+// events that occurred before it subscribed.
+func (e *ExecutiveV2) AddDebugListener(id string, fn func(DebugEvent)) {
+	e.debugMu.Lock()
+	e.debugListeners[id] = fn
+	history := make([]DebugEvent, len(e.debugHistory))
+	copy(history, e.debugHistory)
+	e.debugMu.Unlock()
+
+	// Replay history outside the lock. The listener is already registered above,
+	// so no live events will be missed — at worst a few events appear twice if
+	// they were in-flight during registration, which is fine for a debug stream.
+	for _, event := range history {
+		fn(event)
+	}
+}
+
+// RemoveDebugListener unregisters a debug listener by id.
+func (e *ExecutiveV2) RemoveDebugListener(id string) {
+	e.debugMu.Lock()
+	delete(e.debugListeners, id)
+	e.debugMu.Unlock()
+}
+
+func (e *ExecutiveV2) notifyDebug(event DebugEvent) {
+	event.At = time.Now()
+
+	e.debugMu.Lock()
+	e.debugHistory = append(e.debugHistory, event)
+	if len(e.debugHistory) > debugHistoryMax {
+		e.debugHistory = e.debugHistory[len(e.debugHistory)-debugHistoryMax:]
+	}
+	listeners := make([]func(DebugEvent), 0, len(e.debugListeners))
+	for _, fn := range e.debugListeners {
+		listeners = append(listeners, fn)
+	}
+	e.debugMu.Unlock()
+
+	for _, fn := range listeners {
+		fn(event)
+	}
+}
+
 // SignalDone cancels the currently running Claude subprocess after signal_done is called.
 // This prevents sessions from running the full 30-minute timeout when Claude has already
 // finished its work.
@@ -532,9 +597,11 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	var output strings.Builder
 	e.session.OnOutput(func(text string) {
 		output.WriteString(text)
+		e.notifyDebug(DebugEvent{Type: DebugEventText, Text: text})
 	})
 
 	e.session.OnToolCall(func(name string, args map[string]any) (string, error) {
+		e.notifyDebug(DebugEvent{Type: DebugEventToolCall, Tool: name, Args: args})
 		// Track responses to user (talk_to_user or emoji reaction)
 		// Note: This won't fire for MCP tools, but we keep it for any non-MCP tools
 		if strings.HasSuffix(name, "talk_to_user") || strings.HasSuffix(name, "send_message") || strings.HasSuffix(name, "respond_to_user") {
@@ -554,6 +621,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	startTime := time.Now()
+
+	e.notifyDebug(DebugEvent{
+		Type:     DebugEventSessionStart,
+		ItemID:   item.ID,
+		Focus:    truncate(item.Content, 200),
+		Priority: fmt.Sprintf("P%d", int(item.Priority)),
+	})
 
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
@@ -596,6 +670,12 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	duration := time.Since(startTime).Seconds()
+
+	e.notifyDebug(DebugEvent{
+		Type:     DebugEventSessionEnd,
+		Duration: duration,
+		Usage:    e.session.LastUsage(),
+	})
 
 	if e.config.SessionTracker != nil {
 		e.config.SessionTracker.CompleteSession(e.session.SessionID())
@@ -1389,6 +1469,9 @@ func (e *ExecutiveV2) TodayThinkingMinutes() float64 {
 
 // Stop shuts down the executive
 func (e *ExecutiveV2) Stop() error {
+	// Cancel any active session so the subprocess is killed cleanly
+	e.InterruptCurrentSession()
+
 	// Save queue state
 	if err := e.queue.Save(); err != nil {
 		log.Printf("[executive-v2] Warning: failed to save queue: %v", err)

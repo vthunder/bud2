@@ -439,44 +439,54 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 			return err
 		}
 		msgCount := 0
+		msgCh := client.ReceiveMessages(ctx)
 	receiveLoop:
-		for msg := range client.ReceiveMessages(ctx) {
-			msgCount++
-			switch typedMsg := msg.(type) {
-			case *claudecode.StreamEvent:
-				// Capture Claude session ID from the first StreamEvent and
-				// signal Spawn() so it can re-key the session.
-				// The channel is buffered(1); subsequent StreamEvents hit default.
-				if typedMsg.SessionID != "" {
-					select {
-					case session.claudeIDReady <- typedMsg.SessionID:
-					default:
-					}
+		for {
+			select {
+			case msg, ok := <-msgCh:
+				if !ok {
+					break receiveLoop
 				}
-			case *claudecode.AssistantMessage:
-				for _, b := range typedMsg.Content {
-					switch block := b.(type) {
-					case *claudecode.TextBlock:
-						result.WriteString(block.Text)
-						log.Printf("[subagent-%s] text output (%d chars)", session.ID[:8], len(block.Text))
-						session.appendEvent(SubagentEvent{
-							Kind:    SubagentEventText,
-							At:      time.Now(),
-							Summary: truncate(block.Text, 120),
-						})
-					case *claudecode.ToolUseBlock:
-						log.Printf("[subagent-%s] calling tool: %s", session.ID[:8], block.Name)
-						session.appendEvent(SubagentEvent{
-							Kind:     SubagentEventToolCall,
-							At:       time.Now(),
-							ToolName: block.Name,
-							Summary:  summarizeToolInput(block.Name, block.Input),
-						})
+				msgCount++
+				switch typedMsg := msg.(type) {
+				case *claudecode.StreamEvent:
+					// Capture Claude session ID from the first StreamEvent and
+					// signal Spawn() so it can re-key the session.
+					// The channel is buffered(1); subsequent StreamEvents hit default.
+					if typedMsg.SessionID != "" {
+						select {
+						case session.claudeIDReady <- typedMsg.SessionID:
+						default:
+						}
 					}
+				case *claudecode.AssistantMessage:
+					for _, b := range typedMsg.Content {
+						switch block := b.(type) {
+						case *claudecode.TextBlock:
+							result.WriteString(block.Text)
+							log.Printf("[subagent-%s] text output (%d chars)", session.ID[:8], len(block.Text))
+							session.appendEvent(SubagentEvent{
+								Kind:    SubagentEventText,
+								At:      time.Now(),
+								Summary: truncate(block.Text, 120),
+							})
+						case *claudecode.ToolUseBlock:
+							log.Printf("[subagent-%s] calling tool: %s", session.ID[:8], block.Name)
+							session.appendEvent(SubagentEvent{
+								Kind:     SubagentEventToolCall,
+								At:       time.Now(),
+								ToolName: block.Name,
+								Summary:  summarizeToolInput(block.Name, block.Input),
+							})
+						}
+					}
+				case *claudecode.ResultMessage:
+					log.Printf("[subagent-%s] Claude session complete (turns=%d duration=%dms)",
+						session.ID[:8], typedMsg.NumTurns, typedMsg.DurationMs)
+					break receiveLoop
 				}
-			case *claudecode.ResultMessage:
-				log.Printf("[subagent-%s] Claude session complete (turns=%d duration=%dms)",
-					session.ID[:8], typedMsg.NumTurns, typedMsg.DurationMs)
+			case <-ctx.Done():
+				log.Printf("[subagent-%s] Context cancelled, exiting receive loop (msgs_so_far=%d)", session.ID[:8], msgCount)
 				break receiveLoop
 			}
 		}

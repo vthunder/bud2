@@ -55,6 +55,40 @@ func (u *SessionUsage) CacheHitRate() float64 {
 	return float64(u.CacheReadInputTokens) / float64(total)
 }
 
+// DebugEventType identifies the kind of debug event
+type DebugEventType string
+
+const (
+	DebugEventSessionStart DebugEventType = "session_start"
+	DebugEventText         DebugEventType = "text"
+	DebugEventToolCall     DebugEventType = "tool_call"
+	DebugEventSessionEnd   DebugEventType = "session_end"
+)
+
+// DebugEvent carries real-time information about an active executive session.
+// Emitted for each session_start, text output chunk, tool call, and session_end.
+type DebugEvent struct {
+	Type DebugEventType
+	At   time.Time // when the event was emitted
+
+	// session_start
+	ItemID   string
+	Focus    string // truncated item content
+	Priority string
+
+	// text
+	Text string
+
+	// tool_call
+	Tool string
+	Args map[string]any
+
+	// session_end
+	Duration float64
+	Usage    *SessionUsage
+	Err      error
+}
+
 // StreamEvent represents a Claude stream-json event
 type StreamEvent struct {
 	Type    string          `json:"type"`

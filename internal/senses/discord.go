@@ -28,7 +28,9 @@ type DiscordSense struct {
 	channelID string
 	ownerID   string
 	botID     string
-	onMessage func(*memory.InboxMessage) // direct callback for message processing
+	onMessage        func(*memory.InboxMessage) // direct callback for message processing
+	onStop           func()                     // called immediately when /stop slash command is received
+	onDebugExecutive func(channelID string) string // called for /debug-executive; returns response text
 
 	// Connection health tracking
 	mu               sync.RWMutex
@@ -466,6 +468,39 @@ func (d *DiscordSense) handleInteraction(s *discordgo.Session, i *discordgo.Inte
 		channelID = d.channelID
 	}
 
+	// /debug-executive toggles the live debug stream into a thread
+	if cmdName == "debug-executive" {
+		responseMsg := "Debug stream toggled."
+		if d.onDebugExecutive != nil {
+			responseMsg = d.onDebugExecutive(channelID)
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: responseMsg,
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		log.Printf("[discord-sense] /debug-executive from %s", authorName)
+		return
+	}
+
+	// /stop is handled immediately without queuing — it kills the active session
+	if cmdName == "stop" {
+		if d.onStop != nil {
+			d.onStop()
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "⏹ Stopping current session.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		log.Printf("[discord-sense] /stop received from %s", authorName)
+		return
+	}
+
 	// Send deferred response immediately (Discord requires response within 3 seconds)
 	// We'll follow up with the actual response later via InteractionResponseEdit
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -510,6 +545,18 @@ func (d *DiscordSense) handleInteraction(s *discordgo.Session, i *discordgo.Inte
 	}
 }
 
+// SetOnDebugExecutive sets the callback invoked when /debug-executive is received.
+// fn receives the channel ID and returns the response message to show the user.
+func (d *DiscordSense) SetOnDebugExecutive(fn func(channelID string) string) {
+	d.onDebugExecutive = fn
+}
+
+// SetOnStop sets the callback invoked when the /stop slash command is received.
+// The callback is called synchronously before the interaction is acknowledged.
+func (d *DiscordSense) SetOnStop(fn func()) {
+	d.onStop = fn
+}
+
 // RegisterSlashCommands registers application commands with Discord
 // If guildID is empty, commands are registered globally (takes up to 1 hour to propagate)
 func (d *DiscordSense) RegisterSlashCommands(guildID string) error {
@@ -525,6 +572,14 @@ func (d *DiscordSense) RegisterSlashCommands(guildID string) error {
 					Required:    true,
 				},
 			},
+		},
+		{
+			Name:        "stop",
+			Description: "Stop the current session if it is stuck or taking too long",
+		},
+		{
+			Name:        "debug-executive",
+			Description: "Toggle a live debug stream of the executive session into a Discord thread",
 		},
 	}
 
