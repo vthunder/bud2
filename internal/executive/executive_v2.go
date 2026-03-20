@@ -94,6 +94,11 @@ type ExecutiveV2Config struct {
 	// relying on .mcp.json auto-discovery.
 	MCPServerURL string
 
+	// MaxAutonomousSessionDuration caps how long a wake session can run.
+	// Zero means no cap (limited only by signal_done or the Claude subprocess timeout).
+	// Recommended: 8-10 minutes to enforce coordinator-style wake sessions.
+	MaxAutonomousSessionDuration time.Duration
+
 	// WakeupInstructions is the content of seed/wakeup.md, injected into
 	// autonomous wake prompts to give Claude concrete work to do.
 	WakeupInstructions string
@@ -317,6 +322,10 @@ func (e *ExecutiveV2) Start() error {
 	// will populate SubagentQuestions so Claude can relay them to the user.
 	go e.watchSubagentQuestions()
 
+	// Watch for subagent completion/failure and inject P3 items so the executive
+	// is woken to review results and approve staged memories.
+	go e.watchSubagentDone()
+
 	log.Println("[executive-v2] Started")
 	return nil
 }
@@ -346,6 +355,45 @@ func (e *ExecutiveV2) watchSubagentQuestions() {
 		}
 		if err := e.queue.Add(item); err != nil {
 			log.Printf("[executive-v2] Warning: failed to enqueue subagent question item: %v", err)
+		}
+	}
+}
+
+// watchSubagentDone listens on the SubagentManager's DoneNotify channel and
+// adds a P3 focus item whenever a subagent completes, fails, or is stopped.
+// This wakes the executive to review results without interrupting user input.
+func (e *ExecutiveV2) watchSubagentDone() {
+	for session := range e.subagents.DoneNotify {
+		session.mu.Lock()
+		status := session.status
+		task := session.Task
+		sessionID := session.ID
+		result := session.result
+		session.mu.Unlock()
+
+		label := "completed"
+		if status == SubagentFailed {
+			label = "failed"
+		} else if status == SubagentStopped {
+			label = "stopped"
+		}
+
+		log.Printf("[executive-v2] Subagent %s %s", sessionID, label)
+
+		summary := truncate(result, 120)
+		if summary == "" {
+			summary = "(no output)"
+		}
+
+		item := &focus.PendingItem{
+			ID:       "subagent-done-" + sessionID,
+			Type:     "subagent-done",
+			Priority: focus.P3ActiveWork,
+			Content:  fmt.Sprintf("Subagent %s working on '%s': %s", label, truncate(task, 60), summary),
+			Salience: 0.6,
+		}
+		if err := e.queue.Add(item); err != nil {
+			log.Printf("[executive-v2] Warning: failed to enqueue subagent-done item: %v", err)
 		}
 	}
 }
@@ -659,8 +707,17 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.config.SessionTracker.StartSession(e.session.SessionID(), item.ID)
 	}
 
-	// Wrap context so we can cancel the subprocess on signal_done
-	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	// Wrap context so we can cancel the subprocess on signal_done.
+	// For autonomous wake sessions, also enforce a hard cap so the executive
+	// stays short and delegates real work to subagents.
+	var sessionCtx context.Context
+	var sessionCancel context.CancelFunc
+	if item.Type == "wake" && e.config.MaxAutonomousSessionDuration > 0 {
+		sessionCtx, sessionCancel = context.WithTimeout(ctx, e.config.MaxAutonomousSessionDuration)
+		log.Printf("[executive-v2] Wake session capped at %v", e.config.MaxAutonomousSessionDuration)
+	} else {
+		sessionCtx, sessionCancel = context.WithCancel(ctx)
+	}
 	e.backgroundMu.Lock()
 	e.signalDoneCancel = sessionCancel
 	e.signalDoneActive = false
