@@ -37,11 +37,12 @@ type CalendarSense struct {
 	statePath        string         // Path to persist state (survives restarts)
 
 	// State tracking
-	mu              sync.RWMutex
-	lastPoll        time.Time
-	notifiedEvents  map[string]time.Time // eventID -> when we notified
-	notifiedBriefs  map[string]time.Time // date -> when we sent sprint brief
-	lastDailyAgenda time.Time            // when we last sent daily agenda
+	mu                    sync.RWMutex
+	lastPoll              time.Time
+	notifiedEvents        map[string]time.Time // eventID -> when we notified
+	notifiedBriefs        map[string]time.Time // date -> when we sent sprint brief
+	lastDailyAgenda       time.Time            // when we last sent daily agenda
+	lastPredictionReview  time.Time            // when we last sent prediction review impulse
 
 	// Control
 	stopChan chan struct{}
@@ -54,9 +55,10 @@ type CalendarSense struct {
 
 // calendarState is the persisted state structure
 type calendarState struct {
-	NotifiedEvents  map[string]time.Time `json:"notified_events"`
-	NotifiedBriefs  map[string]time.Time `json:"notified_briefs"`
-	LastDailyAgenda time.Time            `json:"last_daily_agenda"`
+	NotifiedEvents       map[string]time.Time `json:"notified_events"`
+	NotifiedBriefs       map[string]time.Time `json:"notified_briefs"`
+	LastDailyAgenda      time.Time            `json:"last_daily_agenda"`
+	LastPredictionReview time.Time            `json:"last_prediction_review"`
 }
 
 // CalendarConfig holds configuration for the calendar sense
@@ -166,6 +168,9 @@ func (c *CalendarSense) poll() {
 	// Check for daily agenda (send once per day, in the morning)
 	c.checkDailyAgenda(ctx)
 
+	// Check for prediction review impulse (send once per day at 14:00)
+	c.checkPredictionReview()
+
 	// Check for upcoming meetings that need reminders
 	c.checkUpcomingMeetings(ctx)
 
@@ -251,6 +256,52 @@ func (c *CalendarSense) checkDailyAgenda(ctx context.Context) {
 	c.Save() // Persist to survive restarts
 
 	log.Printf("[calendar-sense] Sent daily agenda with %d events", len(relevantEvents))
+}
+
+func (c *CalendarSense) checkPredictionReview() {
+	nowUTC := time.Now()
+	nowLocal := nowUTC.In(c.timezone)
+	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, c.timezone)
+
+	c.mu.RLock()
+	lastReview := c.lastPredictionReview
+	c.mu.RUnlock()
+
+	// Fire once per day at 14:00 in user's timezone.
+	hour := nowLocal.Hour()
+	if hour < 14 || hour >= 15 {
+		return
+	}
+
+	// Check if we already fired today.
+	if !lastReview.IsZero() && lastReview.After(today) {
+		return
+	}
+
+	msg := &memory.InboxMessage{
+		ID:        fmt.Sprintf("prediction-review-%s", today.Format("2006-01-02")),
+		Type:      "impulse",
+		Subtype:   "prediction_review",
+		Content:   "Time to review predictions and forecasts.",
+		Timestamp: nowUTC,
+		Status:    "pending",
+		Extra: map[string]any{
+			"source":       "calendar",
+			"impulse_type": "prediction_review",
+			"date":         today.Format("2006-01-02"),
+		},
+	}
+
+	if c.onMessage != nil {
+		c.onMessage(msg)
+	}
+
+	c.mu.Lock()
+	c.lastPredictionReview = nowUTC
+	c.mu.Unlock()
+	c.Save()
+
+	log.Printf("[calendar-sense] Sent prediction review impulse")
 }
 
 func (c *CalendarSense) checkUpcomingMeetings(ctx context.Context) {
@@ -618,6 +669,7 @@ func (c *CalendarSense) Load() error {
 		c.notifiedBriefs = state.NotifiedBriefs
 	}
 	c.lastDailyAgenda = state.LastDailyAgenda
+	c.lastPredictionReview = state.LastPredictionReview
 
 	log.Printf("[calendar-sense] Loaded state: %d notified events, %d notified briefs, last agenda %v",
 		len(c.notifiedEvents), len(c.notifiedBriefs), c.lastDailyAgenda)
@@ -632,9 +684,10 @@ func (c *CalendarSense) Save() error {
 
 	c.mu.RLock()
 	state := calendarState{
-		NotifiedEvents:  c.notifiedEvents,
-		NotifiedBriefs:  c.notifiedBriefs,
-		LastDailyAgenda: c.lastDailyAgenda,
+		NotifiedEvents:       c.notifiedEvents,
+		NotifiedBriefs:       c.notifiedBriefs,
+		LastDailyAgenda:      c.lastDailyAgenda,
+		LastPredictionReview: c.lastPredictionReview,
 	}
 	c.mu.RUnlock()
 

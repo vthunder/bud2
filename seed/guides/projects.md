@@ -54,8 +54,9 @@ Freeform notes about the project. Use for:
 - Design sketches and brainstorming
 
 **Important workflow notes:**
-- **Actionable work**: Create proper tasks in Things instead of leaving them as notes
-- **Significant explorations**: For ideas explored from the Ideas project, add entry to `notes/ideas-explored.md` index (title → Things ID from MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`) for cross-project searchability
+- **Actionable work**: Create proper tasks in Things instead of leaving them as notes. Always include in the task notes: the project context and a link to the relevant file(s) in `state/projects/`.
+- **Significant explorations**: For ideas explored from the Ideas project, add entry to `notes/ideas-explored.md` index (title → Things ID from MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`) for cross-project searchability. If the exploration produced a file, include the file path in the index entry.
+- **Things notes policy**: All Things todos created from project work must have notes. At minimum: why the task was created + which project/file it relates to. On completion: what was done and where the output lives.
 
 ### Notion docs
 

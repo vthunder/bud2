@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -170,7 +171,7 @@ func (e *ExecutiveV2) SetTypingCallbacks(start, stop func(channelID string)) {
 // SubagentCallbacks returns the SubagentManager operation callbacks for injection
 // into the MCP tools Dependencies struct. Call this after NewExecutiveV2.
 func (e *ExecutiveV2) SubagentCallbacks() (
-	spawnFn func(task, systemPromptAppend, profile string) (string, error),
+	spawnFn func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error),
 	listFn func() []map[string]any,
 	answerFn func(sessionID, answer string) error,
 	statusFn func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error),
@@ -178,12 +179,13 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 	getLogFn func(sessionID string, lastN int) ([]map[string]any, error),
 	drainMemoriesFn func(sessionID string) ([]string, error),
 	peekMemoriesFn func(sessionID string) int,
+	listMemoriesFn func(sessionID string) []string,
 ) {
 	// subagentBaseTools is the default restricted tool set for subagents:
 	// standard file tools + search_memory only. No talk_to_user, signal_done, etc.
 	const subagentBaseTools = "Read,Write,Edit,Glob,Grep,Bash,mcp__bud2__search_memory"
 
-	spawnFn = func(task, systemPromptAppend, profile string) (string, error) {
+	spawnFn = func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error) {
 		allowedTools := subagentBaseTools
 		promptAppend := systemPromptAppend
 
@@ -191,7 +193,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		if profile != "" {
 			mergedTools, skillPrompt, err := ResolveSubagentConfig(e.session.statePath, profile, subagentBaseTools)
 			if err != nil {
-				log.Printf("[executive-v2] Warning: failed to load profile %q: %v", profile, err)
+				log.Printf("[executive-v2] Warning: failed to load agent %q: %v", profile, err)
 				// Fall through with defaults rather than failing the spawn
 			} else {
 				allowedTools = mergedTools
@@ -209,6 +211,8 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 			SystemPromptAppend: promptAppend,
 			MCPServerURL:       e.config.MCPServerURL,
 			AllowedTools:       allowedTools,
+			WorkflowInstanceID: workflowInstanceID,
+			WorkflowStep:       workflowStep,
 		})
 		if err != nil {
 			return "", err
@@ -299,6 +303,19 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		return len(s.StagedMemories())
 	}
 
+	listMemoriesFn = func(sessionID string) []string {
+		s := e.subagents.Get(sessionID)
+		if s == nil {
+			return nil
+		}
+		staged := s.StagedMemories()
+		contents := make([]string, len(staged))
+		for i, m := range staged {
+			contents[i] = m.Content
+		}
+		return contents
+	}
+
 	return
 }
 
@@ -359,6 +376,68 @@ func (e *ExecutiveV2) watchSubagentQuestions() {
 	}
 }
 
+// AgentOutput is the structured JSON schema that agents may include at the end of their response.
+// Bud auto-posts the observations array to Engram before forwarding the full schema to the executive.
+type AgentOutput struct {
+	AgentID      string             `json:"agent_id"`
+	TaskRef      string             `json:"task_ref"`
+	Level        string             `json:"level"`
+	Observations []AgentObservation `json:"observations"`
+	Next         *AgentNext         `json:"next,omitempty"`
+	Principles   []PrincipleEntry   `json:"principles,omitempty"`
+}
+
+// PrincipleEntry is a reusable principle emitted by an agent, auto-stored to Engram with tag "principle".
+type PrincipleEntry struct {
+	Content string `json:"content"`
+}
+
+// AgentObservation is a single observation from an agent's structured output.
+type AgentObservation struct {
+	Content    string `json:"content"`
+	Source     string `json:"source"`
+	Confidence string `json:"confidence"`
+	Strategic  bool   `json:"strategic"`
+}
+
+// AgentNext signals the agent's recommended next action.
+type AgentNext struct {
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+	Until  string `json:"until,omitempty"`
+}
+
+// parseAgentOutput extracts a structured AgentOutput from a subagent result string.
+// Agents embed a JSON block at the end of their response (inside a ```json fence or bare).
+// Returns nil if no valid agent schema is found.
+func parseAgentOutput(result string) *AgentOutput {
+	// Try to find the last ```json ... ``` block
+	const fence = "```json"
+	if idx := strings.LastIndex(result, fence); idx != -1 {
+		rest := result[idx+len(fence):]
+		if end := strings.Index(rest, "```"); end != -1 {
+			jsonStr := strings.TrimSpace(rest[:end])
+			var out AgentOutput
+			if err := json.Unmarshal([]byte(jsonStr), &out); err == nil && out.AgentID != "" {
+				return &out
+			}
+		}
+	}
+	// Fallback: find the last { ... } block in the result
+	if idx := strings.LastIndex(result, "{"); idx != -1 {
+		// Try progressively smaller substrings starting from the last {
+		for end := len(result); end > idx; end-- {
+			if result[end-1] == '}' {
+				var out AgentOutput
+				if err := json.Unmarshal([]byte(result[idx:end]), &out); err == nil && out.AgentID != "" {
+					return &out
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // watchSubagentDone listens on the SubagentManager's DoneNotify channel and
 // adds a P3 focus item whenever a subagent completes, fails, or is stopped.
 // This wakes the executive to review results without interrupting user input.
@@ -369,6 +448,8 @@ func (e *ExecutiveV2) watchSubagentDone() {
 		task := session.Task
 		sessionID := session.ID
 		result := session.result
+		workflowInstanceID := session.WorkflowInstanceID
+		workflowStep := session.WorkflowStep
 		session.mu.Unlock()
 
 		label := "completed"
@@ -380,9 +461,57 @@ func (e *ExecutiveV2) watchSubagentDone() {
 
 		log.Printf("[executive-v2] Subagent %s %s", sessionID, label)
 
+		// Auto-post structured observations and principles to Engram if agent output schema is detected.
+		if status == SubagentCompleted {
+			if out := parseAgentOutput(result); out != nil {
+				if len(out.Observations) > 0 {
+					for _, obs := range out.Observations {
+						content := obs.Content
+						if obs.Strategic {
+							content = "[strategic] " + content
+						}
+						req := engram.IngestEpisodeRequest{
+							Content:  content,
+							Source:   "agent:" + out.AgentID,
+							Author:   out.AgentID,
+							AuthorID: out.AgentID,
+						}
+						if _, err := e.memory.IngestEpisode(req); err != nil {
+							log.Printf("[executive-v2] Warning: failed to ingest agent observation: %v", err)
+						}
+					}
+					log.Printf("[executive-v2] Ingested %d observations from agent %s", len(out.Observations), out.AgentID)
+				}
+				if len(out.Principles) > 0 {
+					for _, p := range out.Principles {
+						req := engram.IngestEpisodeRequest{
+							Content:  "[principle] " + p.Content,
+							Source:   "principle:" + out.AgentID,
+							Author:   out.AgentID,
+							AuthorID: out.AgentID,
+						}
+						if _, err := e.memory.IngestEpisode(req); err != nil {
+							log.Printf("[executive-v2] Warning: failed to ingest agent principle: %v", err)
+						}
+					}
+					log.Printf("[executive-v2] Ingested %d principles from agent %s", len(out.Principles), out.AgentID)
+				}
+			}
+		}
+
 		summary := truncate(result, 120)
 		if summary == "" {
 			summary = "(no output)"
+		}
+
+		itemData := map[string]any{
+			"session_id": sessionID,
+		}
+		if workflowInstanceID != "" {
+			itemData["workflow_instance_id"] = workflowInstanceID
+		}
+		if workflowStep != "" {
+			itemData["workflow_step"] = workflowStep
 		}
 
 		item := &focus.PendingItem{
@@ -391,6 +520,7 @@ func (e *ExecutiveV2) watchSubagentDone() {
 			Priority: focus.P3ActiveWork,
 			Content:  fmt.Sprintf("Subagent %s working on '%s': %s", label, truncate(task, 60), summary),
 			Salience: 0.6,
+			Data:     itemData,
 		}
 		if err := e.queue.Add(item); err != nil {
 			log.Printf("[executive-v2] Warning: failed to enqueue subagent-done item: %v", err)

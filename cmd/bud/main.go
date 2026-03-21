@@ -238,8 +238,10 @@ func main() {
 		defer profiling.Get().Close()
 	}
 
-	// Seed guides (how-to docs) from defaults if missing
-	seedGuides(statePath)
+	// Seed system directories from defaults if missing
+	for _, dir := range []string{"guides", "agents", "skills", "workflows"} {
+		seedSystemDir(statePath, dir)
+	}
 
 	// Generate .mcp.json in state/ directory for Claude MCP tools
 	if err := writeMCPConfig(statePath, mcpHTTPPort); err != nil {
@@ -374,6 +376,7 @@ func main() {
 		MemoryJudge:    memoryJudge,
 		CalendarClient: calendarClient,
 		GitHubClient:   githubClient,
+		VMControlURL:   os.Getenv("VM_CONTROL_URL"), // defaults to http://127.0.0.1:3099 in vm_browser.go
 		SendMessage: func(channelID, message string) error {
 			if mcpSendMessage != nil {
 				return mcpSendMessage(channelID, message)
@@ -392,61 +395,68 @@ func main() {
 				exec.GetMCPToolCallback()(toolName)
 			}
 		},
-		SpawnSubagent: func(task, systemPromptAppend, profile string) (string, error) {
+		SpawnSubagent: func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error) {
 			if exec == nil {
 				return "", fmt.Errorf("executive not yet initialized")
 			}
-			spawnFn, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
-			return spawnFn(task, systemPromptAppend, profile)
+			spawnFn, _, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
+			return spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
 		},
 		ListSubagents: func() []map[string]any {
 			if exec == nil {
 				return nil
 			}
-			_, listFn, _, _, _, _, _, _ := exec.SubagentCallbacks()
+			_, listFn, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
 			return listFn()
 		},
 		AnswerSubagent: func(sessionID, answer string) error {
 			if exec == nil {
 				return fmt.Errorf("executive not yet initialized")
 			}
-			_, _, answerFn, _, _, _, _, _ := exec.SubagentCallbacks()
+			_, _, answerFn, _, _, _, _, _, _ := exec.SubagentCallbacks()
 			return answerFn(sessionID, answer)
 		},
 		GetSubagentStatus: func(sessionID string) (string, string, string, string, error) {
 			if exec == nil {
 				return "", "", "", "", fmt.Errorf("executive not yet initialized")
 			}
-			_, _, _, statusFn, _, _, _, _ := exec.SubagentCallbacks()
+			_, _, _, statusFn, _, _, _, _, _ := exec.SubagentCallbacks()
 			return statusFn(sessionID)
 		},
 		StopSubagent: func(sessionID string) error {
 			if exec == nil {
 				return fmt.Errorf("executive not yet initialized")
 			}
-			_, _, _, _, stopFn, _, _, _ := exec.SubagentCallbacks()
+			_, _, _, _, stopFn, _, _, _, _ := exec.SubagentCallbacks()
 			return stopFn(sessionID)
 		},
 		GetSubagentLog: func(sessionID string, lastN int) ([]map[string]any, error) {
 			if exec == nil {
 				return nil, fmt.Errorf("executive not yet initialized")
 			}
-			_, _, _, _, _, getLogFn, _, _ := exec.SubagentCallbacks()
+			_, _, _, _, _, getLogFn, _, _, _ := exec.SubagentCallbacks()
 			return getLogFn(sessionID, lastN)
 		},
 		DrainSubagentMemories: func(sessionID string) ([]string, error) {
 			if exec == nil {
 				return nil, fmt.Errorf("executive not yet initialized")
 			}
-			_, _, _, _, _, _, drainFn, _ := exec.SubagentCallbacks()
+			_, _, _, _, _, _, drainFn, _, _ := exec.SubagentCallbacks()
 			return drainFn(sessionID)
 		},
 		PeekSubagentMemories: func(sessionID string) int {
 			if exec == nil {
 				return 0
 			}
-			_, _, _, _, _, _, _, peekFn := exec.SubagentCallbacks()
+			_, _, _, _, _, _, _, peekFn, _ := exec.SubagentCallbacks()
 			return peekFn(sessionID)
+		},
+		ListSubagentMemories: func(sessionID string) []string {
+			if exec == nil {
+				return nil
+			}
+			_, _, _, _, _, _, _, _, listMemsFn := exec.SubagentCallbacks()
+			return listMemsFn(sessionID)
 		},
 		ListJobs: func(project string) ([]any, error) {
 			listings, err := executive.ListJobs(statePath, project)
@@ -1384,47 +1394,31 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// seedGuides copies seed/guides/ to state/system/guides/ if the directory doesn't exist
-// These are "how to" docs that teach Bud how to use various capabilities
-func seedGuides(statePath string) {
-	guidesDir := filepath.Join(statePath, "system", "guides")
+// seedSystemDir copies seed/{dirName}/ to state/system/{dirName}/ if the destination
+// directory doesn't already exist. Handles both flat and nested directory structures.
+func seedSystemDir(statePath, dirName string) {
+	dstDir := filepath.Join(statePath, "system", dirName)
 
-	if _, err := os.Stat(guidesDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(dstDir); !os.IsNotExist(err) {
+		return // already seeded
+	}
+
+	srcDir := filepath.Join("seed", dirName)
+	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+		return // no seed source, skip silently
+	}
+
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		log.Printf("[main] Warning: failed to create %s dir: %v", dirName, err)
 		return
 	}
 
-	if err := os.MkdirAll(guidesDir, 0755); err != nil {
-		log.Printf("[main] Warning: failed to create guides dir: %v", err)
+	if err := os.CopyFS(dstDir, os.DirFS(srcDir)); err != nil {
+		log.Printf("[main] Warning: failed to seed %s: %v", dirName, err)
 		return
 	}
 
-	seedDir := "seed/guides"
-	entries, err := os.ReadDir(seedDir)
-	if err != nil {
-		log.Printf("[main] Warning: failed to read seed guides: %v", err)
-		return
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		src := filepath.Join(seedDir, entry.Name())
-		dst := filepath.Join(guidesDir, entry.Name())
-
-		data, err := os.ReadFile(src)
-		if err != nil {
-			log.Printf("[main] Warning: failed to read %s: %v", src, err)
-			continue
-		}
-
-		if err := os.WriteFile(dst, data, 0644); err != nil {
-			log.Printf("[main] Warning: failed to write %s: %v", dst, err)
-			continue
-		}
-
-		log.Printf("[main] Seeded guide: %s", entry.Name())
-	}
+	log.Printf("[main] Seeded system/%s from seed/%s", dirName, dirName)
 }
 
 // writeMCPConfig writes .mcp.json to the state directory with HTTP MCP server configuration

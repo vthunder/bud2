@@ -145,6 +145,26 @@ setup_things() {
     fi
 }
 
+# Symlink skills from state/system/skills/ into ~/.claude/skills/
+setup_skills() {
+    echo "Setting up skill symlinks..."
+    SKILLS_SRC="$BUD_DIR/state/system/skills"
+    SKILLS_DEST="$HOME/.claude/skills"
+    mkdir -p "$SKILLS_DEST"
+
+    for skill_dir in "$SKILLS_SRC"/*/; do
+        skill="$(basename "$skill_dir")"
+        if [ -L "$SKILLS_DEST/$skill" ]; then
+            echo "  already linked: $skill"
+        elif [ -e "$SKILLS_DEST/$skill" ]; then
+            echo "  WARNING: $SKILLS_DEST/$skill exists and is not a symlink — skipping"
+        else
+            ln -s "$skill_dir" "$SKILLS_DEST/$skill"
+            echo "  linked: $skill"
+        fi
+    done
+}
+
 # Check for .env
 check_env() {
     if [ ! -f "$BUD_DIR/.env" ]; then
@@ -162,6 +182,7 @@ generate_plists
 build_bud
 setup_sidecar
 setup_things
+setup_skills
 check_env
 install_services
 

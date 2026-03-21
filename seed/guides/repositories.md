@@ -101,12 +101,22 @@ launchctl kickstart -k gui/501/com.bud.daemon
 
 **Why this matters**: Changes to the daemon code only take effect after restart. The running daemon won't see code changes until it's restarted.
 
-### Deployment Workflow
+### Using trigger_redeploy MCP Tool
 
-1. **Make code changes** in `~/src/bud2`
-2. **Build**: `~/src/bud2/scripts/build.sh`
-3. **Restart**: `launchctl kickstart -k gui/501/com.bud.daemon`
-4. **Verify**: Check logs at `~/Library/Logs/bud.log`
+The `trigger_redeploy` MCP tool kicks off a full deploy (git pull + build + restart).
+
+**MANDATORY RULE: Always announce before deploying.**
+
+Before calling `trigger_redeploy`, I MUST call `talk_to_user` with:
+1. What I'm deploying
+2. Why (the specific reason/change)
+
+Example:
+> "Deploying now: adding `idx_trace_sources_episode` index to fix the 400ms `get_unconsolidated` query bottleneck."
+
+**Never call `trigger_redeploy` silently.** The restart will cause session death, and the next session won't know what happened. The announcement is the only durable record visible to the user.
+
+This applies even during autonomous wakes — announce first, then deploy.
 
 ### Pre-Deploy Checklist
 
@@ -130,14 +140,62 @@ When redeploying with subagents potentially running, follow this checklist to en
 
 After the new session starts, a startup impulse will automatically trigger the `startup` job, which reads the restart notes and re-spawns any interrupted subagents.
 
+---
+
+### Deployment Workflow (Manual)
+
+**IMPORTANT: deploy.sh blocks for 60-90s. Sessions die mid-deploy. Use this protocol:**
+
+1. **Make code changes** in `~/src/bud2`, commit to git
+2. **Run deploy in background**:
+   ```bash
+   nohup ./deploy/deploy.sh > /tmp/bud-deploy.log 2>&1 &
+   echo "Deploy started (pid: $!). Check /tmp/bud-deploy-success for completion."
+   ```
+3. **Immediately send a message** to the user: "Deploy started in background. Will complete in ~60-90s."
+4. **Do NOT wait** for deploy to finish — the session will die before it completes
+5. **Next session verifies**: `cat /tmp/bud-deploy-success` shows the completion timestamp
+
+**Checking deploy status:**
+```bash
+# Did deploy succeed? (shows timestamp if yes, error if not yet)
+cat /tmp/bud-deploy-success
+
+# What's in the deploy log?
+tail -20 /tmp/bud-deploy.log
+
+# Is the new binary running?
+ps aux | grep bud
+```
+
+**Why this protocol:**
+- deploy.sh takes 60-90s (git pull + go build + launchctl restart)
+- Claude Code sessions time out or get killed before it finishes
+- The session death leaves NO trace in the episode log
+- Next session sees stale state and thinks deploy didn't happen → deploy loop
+
+**Alternative for manual deploy:**
+```bash
+# Quick build + restart without git pull
+~/src/bud2/scripts/build.sh && launchctl kickstart -k gui/$(id -u)/com.bud.daemon
+```
+
 ### Launchd Configuration
 
-The daemon runs via launchd plist at:
+**bud daemon** runs via launchd plist at:
 - `~/Library/LaunchAgents/com.bud.daemon.plist`
 - Executes `/Users/thunder/src/bud2/deploy/run-bud.sh`
 - Runs at startup (`RunAtLoad`)
 - Keeps alive on crash (`KeepAlive`)
 - Logs to `~/Library/Logs/bud.log`
+
+**Engram** also runs via launchd:
+- `~/Library/LaunchAgents/com.bud.engram.plist`
+- Executes `/Users/thunder/src/engram/engram` directly
+- Runs at startup (`RunAtLoad`), keeps alive on crash
+- Logs to `~/Library/Logs/engram.log`
+- To restart after rebuild: `launchctl kickstart -k gui/$(id -u)/com.bud.engram`
+- To rebuild and restart Engram: `cd ~/src/engram && go build . && launchctl kickstart -k gui/$(id -u)/com.bud.engram`
 
 ## MCP Server Changes
 

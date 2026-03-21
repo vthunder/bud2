@@ -88,6 +88,10 @@ type SubagentSession struct {
 	Task      string    // Short task description
 	SpawnedAt time.Time // When the session was created
 
+	// Workflow fields (optional) — set when spawned as part of a multi-step workflow.
+	WorkflowInstanceID string // e.g. "wf_1711062766"
+	WorkflowStep       string // e.g. "strategy"
+
 	// State (protected by mu)
 	mu              sync.Mutex
 	status          SubagentStatus
@@ -264,6 +268,10 @@ type SubagentConfig struct {
 	// MCPServerURL is the HTTP URL for the bud2 MCP server.
 	// Required for the subagent to call signal_done and other bud2 tools.
 	MCPServerURL string
+
+	// Workflow fields — optional, set when this subagent is part of a multi-step workflow.
+	WorkflowInstanceID string // e.g. "wf_1711062766"
+	WorkflowStep       string // e.g. "strategy"
 }
 
 // Spawn creates a new SubagentSession and starts it in a background goroutine.
@@ -276,13 +284,15 @@ func (m *SubagentManager) Spawn(ctx context.Context, cfg SubagentConfig) (*Subag
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	session := &SubagentSession{
-		ID:            tempID,
-		Task:          cfg.Task,
-		SpawnedAt:     time.Now(),
-		status:        SubagentRunning,
-		answerReady:   make(chan string, 1),
-		claudeIDReady: make(chan string, 1),
-		cancel:        taskCancel,
+		ID:                 tempID,
+		Task:               cfg.Task,
+		SpawnedAt:          time.Now(),
+		status:             SubagentRunning,
+		answerReady:        make(chan string, 1),
+		claudeIDReady:      make(chan string, 1),
+		cancel:             taskCancel,
+		WorkflowInstanceID: cfg.WorkflowInstanceID,
+		WorkflowStep:       cfg.WorkflowStep,
 	}
 
 	m.mu.Lock()

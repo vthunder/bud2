@@ -1,0 +1,32 @@
+name: plan-project
+description: Full planning hierarchy from vision to tasks
+steps:
+  - id: vision
+    agent: vision-planner
+    context_template: |
+      Plan this project: {{.input}}
+
+  - id: strategy
+    agent: strategy-planner
+    context_template: |
+      Vision direction: {{index .outputs "vision" | jsonPath "direction.title"}}
+      Description: {{index .outputs "vision" | jsonPath "direction.description"}}
+      Rationale: {{index .outputs "vision" | jsonPath "direction.rationale"}}
+
+      Decompose this into 3-6 month strategic initiatives.
+
+  - id: epics
+    agent: epic-planner
+    context_template: |
+      Vision: {{index .outputs "vision" | jsonPath "direction.title"}}
+      Strategy initiative: {{index .outputs "strategy" | jsonPath "initiative.title"}}
+
+      Decompose into epics (2-6 week chunks of work).
+
+  - id: tasks
+    agent: task-planner
+    context_template: |
+      Epic: {{index .outputs "epics" | jsonPath "epic.title"}}
+      Description: {{index .outputs "epics" | jsonPath "epic.description"}}
+
+      Break this epic into concrete implementable tasks.

@@ -1,0 +1,14 @@
+name: research
+description: Research-first planning
+steps:
+  - id: research
+    agent: researcher
+    context_template: |
+      Research this topic thoroughly: {{.input}}
+
+  - id: strategy
+    agent: strategy-planner
+    context_template: |
+      Research findings: {{index .outputs "research" | jsonPath "summary"}}
+
+      Based on this research, outline a strategic approach.

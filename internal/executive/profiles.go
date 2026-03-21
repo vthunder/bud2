@@ -10,31 +10,55 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Profile defines a named configuration for subagent spawning:
+// Agent defines a named configuration for subagent spawning:
 // a curated set of skills (behavioral guidance) and extra tools to allow.
-type Profile struct {
+type Agent struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
+	Level       string   `yaml:"level"`
 	Skills      []string `yaml:"skills"`  // skill names — folder (<name>/SKILL.md) or flat (<name>.md)
 	Tools       []string `yaml:"tools"`   // additional tools beyond the base set
+	Body        string   // parsed from markdown body after YAML frontmatter (not in YAML)
 }
 
-// LoadProfile reads a profile definition from state/system/profiles/<name>.yaml.
-func LoadProfile(statePath, profileName string) (*Profile, error) {
-	profilePath := filepath.Join(statePath, "system", "profiles", profileName+".yaml")
-	data, err := os.ReadFile(profilePath)
+// LoadAgent reads an agent definition from state/system/agents/<name>.yaml.
+// Supports YAML frontmatter + optional markdown body (like job files).
+func LoadAgent(statePath, agentName string) (*Agent, error) {
+	agentPath := filepath.Join(statePath, "system", "agents", agentName+".yaml")
+	data, err := os.ReadFile(agentPath)
 	if err != nil {
-		return nil, fmt.Errorf("profile %q not found: %w", profileName, err)
+		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	var p Profile
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("parse profile %q: %w", profileName, err)
+	content := string(data)
+	var a Agent
+
+	if strings.HasPrefix(content, "---\n") {
+		rest := content[4:]
+		endIdx := strings.Index(rest, "\n---\n")
+		if endIdx != -1 {
+			frontmatter := rest[:endIdx]
+			if err := yaml.Unmarshal([]byte(frontmatter), &a); err != nil {
+				return nil, fmt.Errorf("parse agent %q frontmatter: %w", agentName, err)
+			}
+			a.Body = strings.TrimSpace(rest[endIdx+5:])
+		} else {
+			// Malformed frontmatter — parse whole thing as YAML
+			if err := yaml.Unmarshal(data, &a); err != nil {
+				return nil, fmt.Errorf("parse agent %q: %w", agentName, err)
+			}
+		}
+	} else {
+		// No frontmatter — parse entire content as YAML (backward compat)
+		if err := yaml.Unmarshal(data, &a); err != nil {
+			return nil, fmt.Errorf("parse agent %q: %w", agentName, err)
+		}
 	}
-	if p.Name == "" {
-		p.Name = profileName
+
+	if a.Name == "" {
+		a.Name = agentName
 	}
-	return &p, nil
+	return &a, nil
 }
 
 // LoadSkillContent reads a skill from state/system/skills/.
@@ -69,7 +93,7 @@ func LoadSkillContent(statePath, skillName string) (string, error) {
 type JobDef struct {
 	Name        string     `yaml:"name"`
 	Description string     `yaml:"description"`
-	Profile     string     `yaml:"profile"` // default profile to use
+	Profile     string     `yaml:"profile"` // default agent to use (kept as "profile" for backward compat in YAML)
 	Params      []JobParam `yaml:"params"`
 }
 
@@ -243,22 +267,22 @@ func ListJobs(statePath, project string) ([]JobListing, error) {
 	return listings, nil
 }
 
-// ResolveSubagentConfig loads a profile (if non-empty) and returns:
-//   - mergedTools: base tools merged with profile tools, comma-separated
-//   - systemPromptAppend: concatenated skill content to append to system prompt
+// ResolveSubagentConfig loads an agent (if non-empty) and returns:
+//   - mergedTools: base tools merged with agent tools, comma-separated
+//   - systemPromptAppend: agent body + concatenated skill content to append to system prompt
 //
-// If profileName is empty, returns baseTools and empty prompt unchanged.
-func ResolveSubagentConfig(statePath, profileName, baseTools string) (mergedTools, systemPromptAppend string, err error) {
-	if profileName == "" {
+// If agentName is empty, returns baseTools and empty prompt unchanged.
+func ResolveSubagentConfig(statePath, agentName, baseTools string) (mergedTools, systemPromptAppend string, err error) {
+	if agentName == "" {
 		return baseTools, "", nil
 	}
 
-	profile, err := LoadProfile(statePath, profileName)
+	agent, err := LoadAgent(statePath, agentName)
 	if err != nil {
 		return baseTools, "", err
 	}
 
-	// Merge tools: start with base, add profile tools not already present
+	// Merge tools: start with base, add agent tools not already present
 	toolSet := make(map[string]bool)
 	var toolList []string
 	for _, t := range strings.Split(baseTools, ",") {
@@ -268,7 +292,7 @@ func ResolveSubagentConfig(statePath, profileName, baseTools string) (mergedTool
 			toolList = append(toolList, t)
 		}
 	}
-	for _, t := range profile.Tools {
+	for _, t := range agent.Tools {
 		t = strings.TrimSpace(t)
 		if t != "" && !toolSet[t] {
 			toolSet[t] = true
@@ -279,7 +303,7 @@ func ResolveSubagentConfig(statePath, profileName, baseTools string) (mergedTool
 
 	// Load and concatenate skill content
 	var skillParts []string
-	for _, skillName := range profile.Skills {
+	for _, skillName := range agent.Skills {
 		content, skillErr := LoadSkillContent(statePath, skillName)
 		if skillErr != nil {
 			// Non-fatal: log and skip missing skills
@@ -290,7 +314,18 @@ func ResolveSubagentConfig(statePath, profileName, baseTools string) (mergedTool
 			skillParts = append(skillParts, content)
 		}
 	}
-	systemPromptAppend = strings.Join(skillParts, "\n\n---\n\n")
+	skillContent := strings.Join(skillParts, "\n\n---\n\n")
+
+	// Prepend agent body if present
+	if agent.Body != "" {
+		if skillContent != "" {
+			systemPromptAppend = "## Agent Behavioral Guide\n\n" + agent.Body + "\n\n---\n\n" + skillContent
+		} else {
+			systemPromptAppend = "## Agent Behavioral Guide\n\n" + agent.Body
+		}
+	} else {
+		systemPromptAppend = skillContent
+	}
 
 	return mergedTools, systemPromptAppend, nil
 }

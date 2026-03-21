@@ -47,6 +47,7 @@ func RegisterAll(server *mcp.Server, deps *Dependencies) {
 	if deps.SpawnSubagent != nil {
 		registerSubagentTools(server, deps)
 	}
+	registerVMBrowserTools(server, deps)
 }
 
 func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
@@ -1854,17 +1855,25 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("spawn_subagent", mcp.ToolDef{
 		Description: "Spawn a new subagent session to work autonomously on a task. The subagent runs with a restricted tool set (no talk_to_user, no AskUserQuestion) and reports back via signal_done. Use this to delegate research, analysis, or implementation tasks that can run in the background. Returns a session_id for tracking.",
 		Properties: map[string]mcp.PropDef{
-			"task":        {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
-			"constraints": {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
-			"profile":     {Type: "string", Description: "Optional skill profile to load (e.g. 'researcher', 'coder', 'reviewer'). Expands tool access and injects behavioral guidance from state/system/profiles/. Omit to use the default restricted tool set."},
-			"job":         {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
-			"params":      {Type: "object", Description: "Parameter values for the job template (map of string→string). Required params must be provided."},
+			"task":                 {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
+			"constraints":          {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
+			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'researcher', 'coder', 'reviewer'). Expands tool access and injects behavioral guidance from state/system/agents/. Omit to use the default restricted tool set."},
+			"agent":                {Type: "string", Description: "Alias for profile. If agent is set and profile is not, agent value is used."},
+			"job":                  {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
+			"params":               {Type: "object", Description: "Parameter values for the job template (map of string→string). Required params must be provided."},
+			"workflow_instance_id": {Type: "string", Description: "Optional workflow instance ID (e.g. 'wf_1711062766') when spawning as part of a multi-step workflow."},
+			"workflow_step":        {Type: "string", Description: "Optional workflow step ID (e.g. 'strategy') when spawning as part of a multi-step workflow."},
 		},
 	}, func(ctx any, args map[string]any) (string, error) {
 		task, _ := args["task"].(string)
 		constraints, _ := args["constraints"].(string)
 		profile, _ := args["profile"].(string)
+		if profile == "" {
+			profile, _ = args["agent"].(string)
+		}
 		jobRef, _ := args["job"].(string)
+		workflowInstanceID, _ := args["workflow_instance_id"].(string)
+		workflowStep, _ := args["workflow_step"].(string)
 
 		if jobRef != "" {
 			// Load and render the job template.
@@ -1898,7 +1907,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("task is required (or provide a job)")
 		}
 
-		sessionID, err := deps.SpawnSubagent(task, constraints, profile)
+		sessionID, err := deps.SpawnSubagent(task, constraints, profile, workflowInstanceID, workflowStep)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
 		}
@@ -1976,10 +1985,23 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		if pendingQuestion != "" {
 			out["pending_question"] = pendingQuestion
 		}
-		// Surface staged memory count so executive knows to approve.
+		// Surface staged memories with indices so executive can selectively approve.
 		if deps.PeekSubagentMemories != nil {
 			if n := deps.PeekSubagentMemories(sessionID); n > 0 {
 				out["staged_memories_count"] = n
+			}
+		}
+		if deps.ListSubagentMemories != nil {
+			if mems := deps.ListSubagentMemories(sessionID); len(mems) > 0 {
+				type indexedMemory struct {
+					Index   int    `json:"index"`
+					Content string `json:"content"`
+				}
+				indexed := make([]indexedMemory, len(mems))
+				for i, m := range mems {
+					indexed[i] = indexedMemory{Index: i, Content: m}
+				}
+				out["staged_memories"] = indexed
 			}
 		}
 		// Include recent activity and stuck detection if available.
@@ -2083,9 +2105,10 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	// approve_subagent_memories — flush staged memories to Engram after review
 	if deps.DrainSubagentMemories != nil && deps.AddThought != nil {
 		server.RegisterTool("approve_subagent_memories", mcp.ToolDef{
-			Description: "Approve and flush the staged save_thought memories from a subagent session to Engram. Subagent memory writes are intercepted and held for executive review — call this after a session completes to commit the thoughts you want to keep. Returns the list of approved memories.",
+			Description: "Approve and flush staged save_thought memories from a subagent session to Engram. When approved_ids is provided, only those 0-based indices are flushed; the rest are discarded. When omitted, all memories are flushed. Returns the list of approved memories.",
 			Properties: map[string]mcp.PropDef{
-				"session_id": {Type: "string", Description: "The subagent session ID"},
+				"session_id":   {Type: "string", Description: "The subagent session ID"},
+				"approved_ids": {Type: "array", Description: "Optional list of 0-based indices to approve. When set, only these entries are flushed to Engram; others are discarded. When omitted, all memories are approved."},
 			},
 			Required: []string{"session_id"},
 		}, func(ctx any, args map[string]any) (string, error) {
@@ -2100,19 +2123,47 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			if len(memories) == 0 {
 				return fmt.Sprintf("No staged memories for session %s.", sessionID), nil
 			}
+
+			// If approved_ids is provided, filter to only those indices.
+			var toFlush []string
+			if raw, hasFilter := args["approved_ids"]; hasFilter && raw != nil {
+				approvedSet := make(map[int]bool)
+				if ids, ok := raw.([]any); ok {
+					for _, id := range ids {
+						switch v := id.(type) {
+						case float64:
+							approvedSet[int(v)] = true
+						case int:
+							approvedSet[v] = true
+						}
+					}
+				}
+				for i, content := range memories {
+					if approvedSet[i] {
+						toFlush = append(toFlush, content)
+					}
+				}
+			} else {
+				toFlush = memories
+			}
+
+			if len(toFlush) == 0 {
+				return fmt.Sprintf("No memories approved for session %s (all %d discarded).", sessionID, len(memories)), nil
+			}
+
 			var failed []string
-			for _, content := range memories {
+			for _, content := range toFlush {
 				if flushErr := deps.AddThought(content); flushErr != nil {
 					log.Printf("[approve_subagent_memories] Failed to flush memory: %v", flushErr)
 					failed = append(failed, content)
 				}
 			}
 			if len(failed) > 0 {
-				return "", fmt.Errorf("flushed %d/%d memories; %d failed", len(memories)-len(failed), len(memories), len(failed))
+				return "", fmt.Errorf("flushed %d/%d memories; %d failed", len(toFlush)-len(failed), len(toFlush), len(failed))
 			}
-			log.Printf("[approve_subagent_memories] Flushed %d memories from session %s", len(memories), sessionID)
-			data, _ := json.MarshalIndent(memories, "", "  ")
-			return fmt.Sprintf("Approved and saved %d memory/memories:\n%s", len(memories), string(data)), nil
+			log.Printf("[approve_subagent_memories] Flushed %d memories from session %s", len(toFlush), sessionID)
+			data, _ := json.MarshalIndent(toFlush, "", "  ")
+			return fmt.Sprintf("Approved and saved %d memory/memories:\n%s", len(toFlush), string(data)), nil
 		})
 	}
 }

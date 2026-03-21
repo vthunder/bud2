@@ -55,10 +55,12 @@ Check Things "Ideas" project for items that have been sitting too long:
 - Explore one idea if time permits during idle periods
 - Delete ideas that are no longer relevant
 - Complete explored ideas:
-  - Update the todo's notes with findings
+  - Update the todo's notes with full findings (this is the permanent record — make it useful)
+  - If exploration produced a file, add the file path to the todo's notes
   - Use `save_thought` with "IDEA EXPLORED:" prefix + summary
   - Mark as complete (stays in Ideas project)
-  - Add entry to `notes/ideas-explored.md` index (title → Things ID from the MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`)
+  - Add entry to `notes/ideas-explored.md` index: `title → Things ID` + file path if applicable (format: `→ \`QgT7r8HrJxzVHw6uYJe7Hr\` (File: \`state/notes/my-file.md\`)`)
+  - **The index entry must link to the Things item** — the ID is how you retrieve the full notes later
 - Promote ideas that have become important to proper tasks in Bud area
 
 ### 5. Check Pending Tasks

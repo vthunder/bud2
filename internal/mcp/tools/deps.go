@@ -48,8 +48,9 @@ type Dependencies struct {
 
 	// Subagent management callbacks (optional — injected by executive)
 	// SpawnSubagent starts a new subagent session and returns its ID.
-	// profile is optional — if non-empty, loads the named profile from state/system/profiles/.
-	SpawnSubagent func(task, systemPromptAppend, profile string) (string, error)
+	// profile is optional — if non-empty, loads the named agent from state/system/agents/.
+	// workflowInstanceID and workflowStep are optional workflow tracking fields.
+	SpawnSubagent func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error)
 	// ListSubagents returns a snapshot of active subagent sessions.
 	ListSubagents func() []map[string]any
 	// AnswerSubagent routes an answer to a waiting subagent.
@@ -66,6 +67,12 @@ type Dependencies struct {
 	DrainSubagentMemories func(sessionID string) ([]string, error)
 	// PeekSubagentMemories returns the count of staged memories for a session without draining.
 	PeekSubagentMemories func(sessionID string) int
+	// ListSubagentMemories returns the content of all staged memories for a session without draining.
+	ListSubagentMemories func(sessionID string) []string
 	// ListJobs returns available job templates. If project is empty, returns only global jobs.
 	ListJobs func(project string) ([]any, error)
+
+	// VMControlURL is the base URL for the vm-control-server REST API.
+	// Defaults to http://127.0.0.1:3099 if empty.
+	VMControlURL string
 }

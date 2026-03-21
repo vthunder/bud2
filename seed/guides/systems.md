@@ -12,7 +12,7 @@ Tasks are commitments - things I've promised to do. My tasks are stored in Thing
 - 3 = low priority, do when time permits
 
 **Tools:**
-- Things MCP tools (see system/guides/things-mcp.md for full documentation):
+- Things MCP tools:
   - `things_add_todo` - create a new task in the Bud area
   - `things_get_today` - see tasks scheduled for today
   - `things_get_anytime` - see tasks available anytime
@@ -24,6 +24,15 @@ Tasks are commitments - things I've promised to do. My tasks are stored in Thing
 - Use `when` parameter to schedule: "today", "anytime", "someday", or specific dates
 - Store task metadata (original ID, priority, context) in the notes field
 - Recurring tasks use Things' built-in repeat functionality
+
+**Notes policy — ALWAYS leave notes on Things items:**
+Every task should have notes that include:
+- Why the task exists (context, trigger, what problem it solves)
+- Links to relevant files (e.g. `state/projects/avail/nightshade/ui-first-ux-exploration.md`)
+- Links to relevant beads issues (e.g. `beads#123`)
+- Outcome summary when completing (what was done, what was found)
+
+This makes the logbook useful for future reference — a task title alone is not enough context.
 
 Overdue tasks generate high-intensity impulses that wake me up.
 
@@ -43,6 +52,9 @@ Ideas are stored as todos in a single Things 3 project called "Ideas" in the "Bu
   - Why it's interesting
   - Any initial thoughts or questions
 
+**Notes policy — ALWAYS leave notes on idea todos:**
+At minimum, add notes when creating. Before completing, update notes with full findings. See lifecycle below.
+
 **Tools:**
 - `things_add_todo` - create new idea (use `list_id: "Ry155FXbamXMN2AupG1NvH"`)
 - `things_get_project` - list all ideas (active + completed if in logbook)
@@ -59,7 +71,7 @@ Ideas are stored as todos in a single Things 3 project called "Ideas" in the "Bu
    - **Deferred**: Worth revisiting later, note blockers
 4. **Save thought**: Use `save_thought` with "IDEA EXPLORED:" prefix + summary of exploration and findings
 5. **Complete**: Mark todo as complete (stays in Ideas project, visible when showing completed items)
-6. **Update index**: Add entry to `notes/ideas-explored.md` index mapping idea title → **Things ID** (use the ID returned by Things MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`, NOT the old `idea-` format)
+6. **Update index**: Add entry to `notes/ideas-explored.md` index mapping idea title → **Things ID** (use the ID returned by Things MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`, NOT the old `idea-` format). If exploration produced a file, include the file path in the index entry: `→ \`QgT7r8HrJxzVHw6uYJe7Hr\` (File: \`state/notes/my-exploration.md\`)`
 7. **Track follow-up**: If actionable work created, track task/beads to completion
 
 **Explored ideas index:**
