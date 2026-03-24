@@ -1546,21 +1546,31 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			}
 
 			// Surface attachments so the executive can view images/files via WebFetch
-			// Note: after JSON round-trip the slice type becomes []interface{}
-			if attsRaw, ok := bundle.CurrentFocus.Data["attachments"].([]interface{}); ok && len(attsRaw) > 0 {
-				prompt.WriteString("Attachments:\n")
-				for _, attRaw := range attsRaw {
-					att, ok := attRaw.(map[string]interface{})
-					if !ok {
-						continue
+			// Data["attachments"] may be []map[string]any (in-memory path) or []interface{} (after JSON round-trip)
+			if attsRaw, ok := bundle.CurrentFocus.Data["attachments"]; ok {
+				// Normalize to []map[string]any regardless of origin
+				var atts []map[string]any
+				switch v := attsRaw.(type) {
+				case []map[string]any:
+					atts = v
+				case []interface{}:
+					for _, item := range v {
+						if m, ok := item.(map[string]interface{}); ok {
+							atts = append(atts, m)
+						}
 					}
-					url, _ := att["url"].(string)
-					filename, _ := att["filename"].(string)
-					ct, _ := att["content_type"].(string)
-					if ct == "" {
-						ct = "unknown"
+				}
+				if len(atts) > 0 {
+					prompt.WriteString("Attachments:\n")
+					for _, att := range atts {
+						url, _ := att["url"].(string)
+						filename, _ := att["filename"].(string)
+						ct, _ := att["content_type"].(string)
+						if ct == "" {
+							ct = "unknown"
+						}
+						prompt.WriteString(fmt.Sprintf("  - %s (%s): %s\n", filename, ct, url))
 					}
-					prompt.WriteString(fmt.Sprintf("  - %s (%s): %s\n", filename, ct, url))
 				}
 			}
 		}
