@@ -101,20 +101,20 @@ launchctl kickstart -k gui/501/com.bud.daemon
 
 **Why this matters**: Changes to the daemon code only take effect after restart. The running daemon won't see code changes until it's restarted.
 
-### Using trigger_redeploy MCP Tool
+### Using trigger_bud_redeploy MCP Tool
 
-The `trigger_redeploy` MCP tool kicks off a full deploy (git pull + build + restart).
+The `trigger_bud_redeploy` MCP tool kicks off a full deploy (git pull + build + restart).
 
 **MANDATORY RULE: Always announce before deploying.**
 
-Before calling `trigger_redeploy`, I MUST call `talk_to_user` with:
+Before calling `trigger_bud_redeploy`, I MUST call `talk_to_user` with:
 1. What I'm deploying
 2. Why (the specific reason/change)
 
 Example:
 > "Deploying now: adding `idx_trace_sources_episode` index to fix the 400ms `get_unconsolidated` query bottleneck."
 
-**Never call `trigger_redeploy` silently.** The restart will cause session death, and the next session won't know what happened. The announcement is the only durable record visible to the user.
+**Never call `trigger_bud_redeploy` silently.** The restart will cause session death, and the next session won't know what happened. The announcement is the only durable record visible to the user.
 
 This applies even during autonomous wakes — announce first, then deploy.
 
@@ -136,7 +136,7 @@ When redeploying with subagents potentially running, follow this checklist to en
    talk_to_user("Deploying now: [reason]. N subagent(s) will be restarted after startup.")
    ```
 
-4. **Call trigger_redeploy** — after the announcement, proceed with the deploy.
+4. **Call trigger_bud_redeploy** — after the announcement, proceed with the deploy.
 
 After the new session starts, a startup impulse will automatically trigger the `startup` job, which reads the restart notes and re-spawns any interrupted subagents.
 

@@ -740,8 +740,8 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		return "Memory reset complete. Session will end.", nil
 	})
 
-	// trigger_redeploy - allows bud to request redeployment
-	server.RegisterTool("trigger_redeploy", mcp.ToolDef{
+	// trigger_bud_redeploy - allows bud to request redeployment
+	server.RegisterTool("trigger_bud_redeploy", mcp.ToolDef{
 		Description: "Trigger a redeployment of the bud service. Use this after code changes have been pushed.",
 		Properties: map[string]mcp.PropDef{
 			"reason": {Type: "string", Description: "Reason for redeployment (optional)"},

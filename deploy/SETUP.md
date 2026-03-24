@@ -94,7 +94,7 @@ alias deploy-bud='ssh mini "~/bud2/deploy/deploy.sh"'
 
 Bud can request a redeploy using the MCP tool:
 ```
-trigger_redeploy(reason="Updated code ready")
+trigger_bud_redeploy(reason="Updated code ready")
 ```
 
 This runs `deploy.sh` in the background, which pulls latest code, rebuilds, and restarts the service.

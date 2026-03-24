@@ -29,7 +29,7 @@ subagents:
 
    If no subagents are running, write the file with an empty `subagents: []` list and a note explaining no subagents were running.
 
-4. **Compose an announcement message** for the executive to send to the user before calling `trigger_redeploy`.
+4. **Compose an announcement message** for the executive to send to the user before calling `trigger_bud_redeploy`.
 
 ## Report
 
@@ -42,4 +42,4 @@ When done, report:
   >
   > (Or: "Deploying now: [reason]. No subagents are currently running.")
 
-**IMPORTANT**: Do NOT call `trigger_redeploy` — that is the executive's responsibility after reading this report.
+**IMPORTANT**: Do NOT call `trigger_bud_redeploy` — that is the executive's responsibility after reading this report.
