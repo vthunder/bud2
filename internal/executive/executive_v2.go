@@ -86,7 +86,10 @@ type ExecutiveV2Config struct {
 	StartTyping         func(channelID string)
 	StopTyping          func(channelID string)
 	SendMessageFallback func(channelID, message string) error
-	OnExecWake          func(focusID, context string)
+	// OnExecWake is called when the executive starts processing a focus item.
+	// existingClaudeSessionID is non-empty when resuming an existing Claude session
+	// (same session as the previous wake); empty when starting a fresh session.
+	OnExecWake func(focusID, context, existingClaudeSessionID string)
 	OnExecDone          func(focusID, summary string, durationSec float64, usage *SessionUsage)
 	OnMemoryEval        func(eval string) // Called when Claude outputs memory self-evaluation
 
@@ -735,11 +738,6 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		}()
 	}
 
-	// Log executive wake
-	if e.config.OnExecWake != nil {
-		e.config.OnExecWake(item.ID, truncate(item.Content, 100))
-	}
-
 	// Decide whether to resume the existing Claude session or start fresh.
 	// Resume when: a prior Claude session ID exists AND context hasn't hit the limit.
 	// Start fresh when: no session ID yet, explicit reset, or context limit reached.
@@ -749,7 +747,8 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	// ResolveMemoryEval can resolve them.
 	claudeSessionID := e.session.ClaudeSessionID()
 	shouldReset := e.session.ShouldReset()
-	if claudeSessionID != "" && !shouldReset {
+	resuming := claudeSessionID != "" && !shouldReset
+	if resuming {
 		// Continue existing session: preserve seen memories, buffer sync, and session ID.
 		// buildPrompt will skip static context (core identity, conversation buffer)
 		// that's already in the Claude session history.
@@ -763,6 +762,16 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 			log.Printf("[executive-v2] Starting new Claude session (no prior session ID)")
 		}
 		e.session.PrepareNewSession()
+	}
+
+	// Log executive wake after resume decision so callers know if this is a new
+	// or continuing Claude session (existingClaudeSessionID empty = new session).
+	if e.config.OnExecWake != nil {
+		existing := ""
+		if resuming {
+			existing = claudeSessionID
+		}
+		e.config.OnExecWake(item.ID, truncate(item.Content, 100), existing)
 	}
 
 	// Build context bundle
@@ -858,6 +867,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.signalDoneCancel = nil
 		e.backgroundMu.Unlock()
 	}()
+
+	// Point the session log at a per-session file so the tmux window can tail it.
+	// Only set on new sessions — resuming sessions keep the existing log path so
+	// all wakes in the same Claude session append to the same file.
+	if e.config.WorkDir != "" && !resuming {
+		logPath := filepath.Join(e.config.WorkDir, "logs", "agents", "exec-"+item.ID+".log")
+		e.session.SetSessionLog(logPath)
+	}
 
 	var sendErr error
 	func() {

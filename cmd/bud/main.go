@@ -544,9 +544,14 @@ func main() {
 				log.Printf("[fallback] ERROR: discordEffector not yet initialized")
 				return fmt.Errorf("effector not initialized")
 			},
-			OnExecWake: func(focusID, context string) {
+			OnExecWake: func(focusID, context, existingClaudeSessionID string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
-				go tmuxwindow.OpenExecWindow(focusID)
+				// Only open a new tmux window when starting a fresh Claude session.
+				// On resume, the existing window is already tailing the same log file.
+				if existingClaudeSessionID == "" {
+					logPath := filepath.Join(statePath, "logs", "agents", "exec-"+focusID+".log")
+					go tmuxwindow.OpenExecWindow(focusID, logPath)
+				}
 			},
 			OnExecDone: func(focusID, summary string, durationSec float64, usage *executive.SessionUsage) {
 				extra := map[string]any{}

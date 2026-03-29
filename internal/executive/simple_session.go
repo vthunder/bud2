@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,10 @@ type SimpleSession struct {
 	// isResuming is set by PrepareForResume to tell buildPrompt to skip static context
 	// (core identity, conversation buffer) that's already in the Claude session history.
 	isResuming bool
+
+	// sessionLogPath is the file where conversation events are streamed for observability.
+	// Set via SetSessionLog before each SendPrompt call.
+	sessionLogPath string
 
 	// Callbacks
 	onToolCall func(name string, args map[string]any) (string, error)
@@ -282,6 +287,39 @@ func (s *SimpleSession) IsResuming() bool {
 	return s.isResuming
 }
 
+// SetSessionLog sets the file path where conversation events are streamed.
+// Call this before SendPrompt; the file is created (or appended to) when SendPrompt runs.
+func (s *SimpleSession) SetSessionLog(path string) {
+	s.sessionLogPath = path
+}
+
+// openSessionLog opens (or creates) the session log file for appending.
+// Returns nil if sessionLogPath is empty.
+func (s *SimpleSession) openSessionLog() *os.File {
+	if s.sessionLogPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.sessionLogPath), 0755); err != nil {
+		log.Printf("[simple-session] cannot create log dir: %v", err)
+		return nil
+	}
+	f, err := os.OpenFile(s.sessionLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[simple-session] cannot open session log %s: %v", s.sessionLogPath, err)
+		return nil
+	}
+	return f
+}
+
+// writeLog appends a timestamped line to the session log file (if open).
+func writeLog(f *os.File, format string, args ...any) {
+	if f == nil {
+		return
+	}
+	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+	f.WriteString(line)
+}
+
 // OnToolCall sets the callback for tool calls (informational — actual execution
 // happens inside the Claude subprocess via MCP).
 func (s *SimpleSession) OnToolCall(fn func(name string, args map[string]any) (string, error)) {
@@ -312,6 +350,15 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	defer s.mu.Unlock()
 
 	s.currentPromptHasText = false
+
+	// Open session log for this prompt (append if resuming).
+	logFile := s.openSessionLog()
+	if logFile != nil {
+		defer logFile.Close()
+		writeLog(logFile, "=== PROMPT (%d chars) ===", len(prompt))
+		// Write full prompt with a header/footer so it's easy to scroll past.
+		fmt.Fprintf(logFile, "%s\n=== END PROMPT ===\n\n", prompt)
+	}
 
 	opts := []claudecode.Option{
 		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
@@ -391,16 +438,20 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 				case *claudecode.AssistantMessage:
 					for _, block := range m.Content {
 						switch b := block.(type) {
+						case *claudecode.ThinkingBlock:
+							writeLog(logFile, "THINKING (%d chars)\n%s\n", len(b.Thinking), b.Thinking)
 						case *claudecode.TextBlock:
 							if !s.currentPromptHasText {
 								s.currentPromptHasText = true
 							}
 							logging.Debug("simple-session", "Text block (%d chars)", len(b.Text))
+							writeLog(logFile, "TEXT (%d chars)\n%s\n", len(b.Text), b.Text)
 							if s.onOutput != nil {
 								s.onOutput(b.Text)
 							}
 						case *claudecode.ToolUseBlock:
 							logging.Debug("simple-session", "Tool call: %s", b.Name)
+							writeLog(logFile, "TOOL: %s  %s", b.Name, summarizeInput(b.Input))
 							if s.onToolCall != nil {
 								s.onToolCall(b.Name, b.Input)
 							}
@@ -411,6 +462,11 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 					s.lastUsage = parseUsageFromResult(m)
 					log.Printf("[simple-session] Claude session ID: %s (turns=%d duration=%dms)",
 						m.SessionID, m.NumTurns, m.DurationMs)
+					writeLog(logFile, "DONE  turns=%d  duration=%dms  in=%d  out=%d  cache_read=%d",
+						m.NumTurns, m.DurationMs,
+						intFromUsage(safeUsage(m), "input_tokens"),
+						intFromUsage(safeUsage(m), "output_tokens"),
+						intFromUsage(safeUsage(m), "cache_read_input_tokens"))
 					break receiveLoop
 				}
 			case <-timeoutCtx.Done():
@@ -535,4 +591,36 @@ func truncatePrompt(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// summarizeInput returns a short representation of a tool's input map.
+func summarizeInput(input map[string]any) string {
+	for _, key := range []string{"command", "file_path", "pattern", "message", "content", "task"} {
+		if v, ok := input[key].(string); ok && v != "" {
+			v = strings.ReplaceAll(v, "\n", " ")
+			if len(v) > 120 {
+				v = v[:120] + "..."
+			}
+			return fmt.Sprintf("%s=%q", key, v)
+		}
+	}
+	// Fallback: first string value
+	for k, v := range input {
+		if s, ok := v.(string); ok && s != "" {
+			s = strings.ReplaceAll(s, "\n", " ")
+			if len(s) > 120 {
+				s = s[:120] + "..."
+			}
+			return fmt.Sprintf("%s=%q", k, s)
+		}
+	}
+	return ""
+}
+
+// safeUsage extracts the usage map from a ResultMessage, returning nil if absent.
+func safeUsage(m *claudecode.ResultMessage) map[string]any {
+	if m.Usage == nil {
+		return nil
+	}
+	return *m.Usage
 }

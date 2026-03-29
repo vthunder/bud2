@@ -16,9 +16,15 @@ const session = "bud"
 
 const budLogPath = "~/Library/Logs/bud.log"
 
-// OpenExecWindow opens a tmux window showing the bud daemon log for an executive wake.
-func OpenExecWindow(focusID string) {
-	openWindow("exec", focusID, "tail -f "+budLogPath)
+// OpenExecWindow opens a tmux window showing the executive session event log.
+// logPath is the per-wake session log file; if empty, falls back to tailing bud.log.
+// Uses tail -F (uppercase) so the window waits for the file to appear if not yet created.
+func OpenExecWindow(focusID, logPath string) {
+	if logPath == "" {
+		openWindow("exec", focusID, "tail -f "+budLogPath)
+		return
+	}
+	openWindow("exec", focusID, "tail -F "+logPath)
 }
 
 // OpenSubagentWindow opens a tmux window showing bud log lines for the given subagent session.
