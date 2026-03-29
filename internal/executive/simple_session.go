@@ -417,66 +417,44 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 				}
 			}
 		}()
-		msgCh := client.ReceiveMessages(timeoutCtx)
-	receiveLoop:
-		for {
-			select {
-			case msg, ok := <-msgCh:
-				if !ok {
-					break receiveLoop
-				}
-				msgCount++
-				switch m := msg.(type) {
-				case *claudecode.StreamEvent:
+		cb := receiveLoopCallbacks{
+				LogPrefix: "simple-session",
+				OnMsg:     func() { msgCount++ },
+				OnStreamEvent: func(sessionID string) {
 					// Capture session ID from the first streaming event — this arrives
 					// within milliseconds and ensures claudeSessionID is set before
 					// signal_done can cancel the context (which skips ResultMessage).
-					if m.SessionID != "" && s.claudeSessionID == "" {
-						s.claudeSessionID = m.SessionID
-						logging.Debug("simple-session", "Captured Claude session ID early: %s", m.SessionID)
+					if s.claudeSessionID == "" {
+						s.claudeSessionID = sessionID
+						logging.Debug("simple-session", "Captured Claude session ID early: %s", sessionID)
 					}
-				case *claudecode.AssistantMessage:
-					for _, block := range m.Content {
-						switch b := block.(type) {
-						case *claudecode.ThinkingBlock:
-							writeLog(logFile, "THINKING (%d chars)\n%s\n", len(b.Thinking), b.Thinking)
-						case *claudecode.TextBlock:
-							if !s.currentPromptHasText {
-								s.currentPromptHasText = true
-							}
-							logging.Debug("simple-session", "Text block (%d chars)", len(b.Text))
-							writeLog(logFile, "TEXT (%d chars)\n%s\n", len(b.Text), b.Text)
-							if s.onOutput != nil {
-								s.onOutput(b.Text)
-							}
-						case *claudecode.ToolUseBlock:
-							logging.Debug("simple-session", "Tool call: %s", b.Name)
-							writeLog(logFile, "TOOL: %s  %s", b.Name, summarizeInput(b.Input))
-							if s.onToolCall != nil {
-								s.onToolCall(b.Name, b.Input)
-							}
-						}
+				},
+				OnText: func(text string) {
+					if !s.currentPromptHasText {
+						s.currentPromptHasText = true
 					}
-				case *claudecode.ResultMessage:
+					logging.Debug("simple-session", "Text block (%d chars)", len(text))
+					if s.onOutput != nil {
+						s.onOutput(text)
+					}
+				},
+				OnTool: func(name string, input map[string]any) {
+					logging.Debug("simple-session", "Tool call: %s", name)
+					if s.onToolCall != nil {
+						s.onToolCall(name, input)
+					}
+				},
+				OnResult: func(m *claudecode.ResultMessage) {
 					s.claudeSessionID = m.SessionID
 					s.lastUsage = parseUsageFromResult(m)
 					log.Printf("[simple-session] Claude session ID: %s (turns=%d duration=%dms)",
 						m.SessionID, m.NumTurns, m.DurationMs)
-					writeLog(logFile, "DONE  turns=%d  duration=%dms  in=%d  out=%d  cache_read=%d",
-						m.NumTurns, m.DurationMs,
-						intFromUsage(safeUsage(m), "input_tokens"),
-						intFromUsage(safeUsage(m), "output_tokens"),
-						intFromUsage(safeUsage(m), "cache_read_input_tokens"))
-					break receiveLoop
-				}
-			case <-timeoutCtx.Done():
-				log.Printf("[simple-session] Context cancelled, exiting receive loop (msgs_so_far=%d)", msgCount)
-				break receiveLoop
+				},
 			}
-		}
-		close(heartbeatDone)
-		return nil
-	}, opts...)
+			receiveLoop(timeoutCtx, client, logFile, cb) //nolint:errcheck
+			close(heartbeatDone)
+			return nil
+		}, opts...)
 
 	if err != nil {
 		if ctx.Err() != nil {
@@ -591,30 +569,6 @@ func truncatePrompt(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// summarizeInput returns a short representation of a tool's input map.
-func summarizeInput(input map[string]any) string {
-	for _, key := range []string{"command", "file_path", "pattern", "message", "content", "task"} {
-		if v, ok := input[key].(string); ok && v != "" {
-			v = strings.ReplaceAll(v, "\n", " ")
-			if len(v) > 120 {
-				v = v[:120] + "..."
-			}
-			return fmt.Sprintf("%s=%q", key, v)
-		}
-	}
-	// Fallback: first string value
-	for k, v := range input {
-		if s, ok := v.(string); ok && s != "" {
-			s = strings.ReplaceAll(s, "\n", " ")
-			if len(s) > 120 {
-				s = s[:120] + "..."
-			}
-			return fmt.Sprintf("%s=%q", k, s)
-		}
-	}
-	return ""
 }
 
 // safeUsage extracts the usage map from a ResultMessage, returning nil if absent.

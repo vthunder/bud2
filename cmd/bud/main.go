@@ -41,7 +41,7 @@ import (
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/state"
-	tmuxwindow "github.com/vthunder/bud2/internal/tmux"
+	tmuxwindow "github.com/vthunder/bud2/internal/zellij"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -408,9 +408,9 @@ func main() {
 				return "", fmt.Errorf("executive not yet initialized")
 			}
 			spawnFn, _, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
-			id, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
-			if err == nil {
-				go tmuxwindow.OpenSubagentWindow(id)
+			id, logPath, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
+			if err == nil && logPath != "" {
+				go tmuxwindow.OpenSubagentWindow(id, logPath)
 			}
 			return id, err
 		},
@@ -638,6 +638,9 @@ func main() {
 			// Memory reset requested - generate new session ID so old context is not loaded
 			log.Printf("[main] Signal: reset_session - generating new session ID")
 			exec.ResetSession()
+			// Also terminate the current subprocess cleanly (same as signal_done).
+			// Without this, the session runs until the 30-minute timeout after a reset.
+			exec.SignalDone()
 		}
 	}
 

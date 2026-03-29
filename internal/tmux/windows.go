@@ -27,14 +27,11 @@ func OpenExecWindow(focusID, logPath string) {
 	openWindow("exec", focusID, "tail -F "+logPath)
 }
 
-// OpenSubagentWindow opens a tmux window showing bud log lines for the given subagent session.
-func OpenSubagentWindow(sessionID string) {
-	shortID := sessionID
-	if len(shortID) > 8 {
-		shortID = shortID[:8]
-	}
-	cmd := fmt.Sprintf("tail -f %s | grep --line-buffered 'subagent-%s'", budLogPath, shortID)
-	openWindow("sub", sessionID, cmd)
+// OpenSubagentWindow opens a tmux window tailing the subagent session log file.
+// logPath is the per-session log file; uses tail -F so the window waits for the
+// file to appear if it hasn't been created yet.
+func OpenSubagentWindow(sessionID, logPath string) {
+	openWindow("sub", sessionID, "tail -F "+logPath)
 }
 
 func openWindow(windowType, id, command string) {

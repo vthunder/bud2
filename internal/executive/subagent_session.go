@@ -15,6 +15,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +28,10 @@ import (
 type SubagentEventKind string
 
 const (
-	SubagentEventToolCall SubagentEventKind = "tool_call"
-	SubagentEventText     SubagentEventKind = "text"
-	SubagentEventError    SubagentEventKind = "error"
+	SubagentEventToolCall  SubagentEventKind = "tool_call"
+	SubagentEventText      SubagentEventKind = "text"
+	SubagentEventThinking  SubagentEventKind = "thinking"
+	SubagentEventError     SubagentEventKind = "error"
 )
 
 // SubagentEvent records a discrete activity from a subagent session.
@@ -113,6 +116,10 @@ type SubagentSession struct {
 	// stopped is set true by Stop() before cancelling, so runSession can
 	// distinguish an explicit stop from an unexpected context cancellation.
 	stopped bool
+
+	// LogPath is the file path where this session's log is written.
+	// Set once the log file is opened in runSession; empty if no log file.
+	LogPath string
 
 	// events is a capped log of recent subagent activity (tool calls, text).
 	events      []SubagentEvent
@@ -488,67 +495,77 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 
 	prompt := fmt.Sprintf("## Task\n%s\n\nBegin work on this task. When you are done, finish your response.", cfg.Task)
 
+	// Open a session log file (same format as executive session logs).
+	var logFile *os.File
+	if cfg.WorkDir != "" {
+		logDir := filepath.Join(cfg.WorkDir, "logs", "agents")
+		if err := os.MkdirAll(logDir, 0755); err == nil {
+			logPath := filepath.Join(logDir, "subagent-"+session.ID[:8]+".log")
+			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+				logFile = f
+				session.LogPath = logPath
+				defer logFile.Close()
+			} else {
+				log.Printf("[subagent-%s] cannot open log file: %v", session.ID[:8], err)
+			}
+		}
+	}
+
 	log.Printf("[subagent-%s] Starting session (acceptEdits mode)", session.ID[:8])
+	writeLog(logFile, "=== PROMPT (%d chars) ===", len(prompt))
+	if logFile != nil {
+		fmt.Fprintf(logFile, "%s\n=== END PROMPT ===\n\n", prompt)
+	}
 	var result strings.Builder
 	err := claudecode.WithClient(ctx, func(client claudecode.Client) error {
-		log.Printf("[subagent-%s] Client connected, sending query", session.ID[:8])
 		if err := client.Query(ctx, prompt); err != nil {
 			log.Printf("[subagent-%s] Query error: %v", session.ID[:8], err)
 			return err
 		}
-		msgCount := 0
-		msgCh := client.ReceiveMessages(ctx)
-	receiveLoop:
-		for {
-			select {
-			case msg, ok := <-msgCh:
-				if !ok {
-					break receiveLoop
+		cb := receiveLoopCallbacks{
+			LogPrefix: fmt.Sprintf("subagent-%s", session.ID[:8]),
+			OnStreamEvent: func(sessionID string) {
+				// Capture Claude session ID from the first StreamEvent and
+				// signal Spawn() so it can re-key the session.
+				// The channel is buffered(1); subsequent StreamEvents hit default.
+				select {
+				case session.claudeIDReady <- sessionID:
+				default:
 				}
-				msgCount++
-				switch typedMsg := msg.(type) {
-				case *claudecode.StreamEvent:
-					// Capture Claude session ID from the first StreamEvent and
-					// signal Spawn() so it can re-key the session.
-					// The channel is buffered(1); subsequent StreamEvents hit default.
-					if typedMsg.SessionID != "" {
-						select {
-						case session.claudeIDReady <- typedMsg.SessionID:
-						default:
-						}
-					}
-				case *claudecode.AssistantMessage:
-					for _, b := range typedMsg.Content {
-						switch block := b.(type) {
-						case *claudecode.TextBlock:
-							result.WriteString(block.Text)
-							log.Printf("[subagent-%s] text output (%d chars)", session.ID[:8], len(block.Text))
-							session.appendEvent(SubagentEvent{
-								Kind:    SubagentEventText,
-								At:      time.Now(),
-								Summary: truncate(block.Text, 120),
-							})
-						case *claudecode.ToolUseBlock:
-							log.Printf("[subagent-%s] calling tool: %s", session.ID[:8], block.Name)
-							session.appendEvent(SubagentEvent{
-								Kind:     SubagentEventToolCall,
-								At:       time.Now(),
-								ToolName: block.Name,
-								Summary:  summarizeToolInput(block.Name, block.Input),
-							})
-						}
-					}
-				case *claudecode.ResultMessage:
-					log.Printf("[subagent-%s] Claude session complete (turns=%d duration=%dms)",
-						session.ID[:8], typedMsg.NumTurns, typedMsg.DurationMs)
-					break receiveLoop
-				}
-			case <-ctx.Done():
-				log.Printf("[subagent-%s] Context cancelled, exiting receive loop (msgs_so_far=%d)", session.ID[:8], msgCount)
-				break receiveLoop
-			}
+			},
+			OnThinking: func(text string) {
+				log.Printf("[subagent-%s] thinking: %s", session.ID[:8], truncate(text, 300))
+				session.appendEvent(SubagentEvent{
+					Kind:    SubagentEventThinking,
+					At:      time.Now(),
+					Summary: truncate(text, 120),
+				})
+			},
+			OnText: func(text string) {
+				result.WriteString(text)
+				log.Printf("[subagent-%s] text: %s", session.ID[:8], truncate(text, 300))
+				session.appendEvent(SubagentEvent{
+					Kind:    SubagentEventText,
+					At:      time.Now(),
+					Summary: truncate(text, 120),
+				})
+			},
+			OnTool: func(name string, input map[string]any) {
+				summary := summarizeToolInput(name, input)
+				log.Printf("[subagent-%s] calling tool: %s %s", session.ID[:8], name, summary)
+				session.appendEvent(SubagentEvent{
+					Kind:     SubagentEventToolCall,
+					At:       time.Now(),
+					ToolName: name,
+					Summary:  summary,
+				})
+			},
+			OnResult: func(m *claudecode.ResultMessage) {
+				log.Printf("[subagent-%s] Claude session complete (turns=%d duration=%dms)",
+					session.ID[:8], m.NumTurns, m.DurationMs)
+			},
 		}
-		log.Printf("[subagent-%s] ReceiveMessages loop exited (received %d messages)", session.ID[:8], msgCount)
+		receiveLoop(ctx, client, logFile, cb) //nolint:errcheck
 		return nil
 	}, opts...)
 
@@ -590,31 +607,6 @@ func extractAskUserQuestionText(input map[string]any) string {
 	}
 	q, _ := first["question"].(string)
 	return q
-}
-
-// summarizeToolInput returns a short human-readable summary of a tool call's input.
-// It extracts the most relevant field for common tools, falling back to the first
-// string-valued field for unknown tools.
-func summarizeToolInput(toolName string, input map[string]interface{}) string {
-	keyByTool := map[string]string{
-		"Read":  "file_path",
-		"Write": "file_path",
-		"Edit":  "file_path",
-		"Bash":  "command",
-		"Glob":  "pattern",
-		"Grep":  "pattern",
-	}
-	if key, ok := keyByTool[toolName]; ok {
-		if v, ok := input[key].(string); ok && v != "" {
-			return truncate(v, 80)
-		}
-	}
-	for _, v := range input {
-		if s, ok := v.(string); ok && s != "" {
-			return truncate(s, 80)
-		}
-	}
-	return ""
 }
 
 // buildSubagentSystemPrompt constructs the system prompt for a subagent session.

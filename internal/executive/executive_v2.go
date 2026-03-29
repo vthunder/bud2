@@ -174,7 +174,7 @@ func (e *ExecutiveV2) SetTypingCallbacks(start, stop func(channelID string)) {
 // SubagentCallbacks returns the SubagentManager operation callbacks for injection
 // into the MCP tools Dependencies struct. Call this after NewExecutiveV2.
 func (e *ExecutiveV2) SubagentCallbacks() (
-	spawnFn func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error),
+	spawnFn func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (id, logPath string, err error),
 	listFn func() []map[string]any,
 	answerFn func(sessionID, answer string) error,
 	statusFn func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error),
@@ -188,7 +188,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 	// standard file tools + search_memory only. No talk_to_user, signal_done, etc.
 	const subagentBaseTools = "Read,Write,Edit,Glob,Grep,Bash,mcp__bud2__search_memory"
 
-	spawnFn = func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error) {
+	spawnFn = func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (id, logPath string, err error) {
 		allowedTools := subagentBaseTools
 		promptAppend := systemPromptAppend
 
@@ -214,13 +214,14 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 			SystemPromptAppend: promptAppend,
 			MCPServerURL:       e.config.MCPServerURL,
 			AllowedTools:       allowedTools,
+			WorkDir:            e.config.WorkDir,
 			WorkflowInstanceID: workflowInstanceID,
 			WorkflowStep:       workflowStep,
 		})
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return s.ID, nil
+		return s.ID, s.LogPath, nil
 	}
 
 	listFn = func() []map[string]any {
