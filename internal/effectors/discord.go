@@ -2,7 +2,10 @@ package effectors
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -286,6 +289,8 @@ func (e *DiscordEffector) executeAction(action *types.Action) error {
 		return e.sendMessage(action)
 	case "add_reaction":
 		return e.addReaction(action)
+	case "send_file":
+		return e.sendFile(action)
 	default:
 		return fmt.Errorf("unknown action type: %s", action.Type)
 	}
@@ -442,6 +447,54 @@ func (e *DiscordEffector) addReaction(action *types.Action) error {
 		e.onAction("add_reaction", channelID, emoji, source)
 	}
 	return err
+}
+
+func (e *DiscordEffector) sendFile(action *types.Action) error {
+	channelID, ok := action.Payload["channel_id"].(string)
+	if !ok {
+		return fmt.Errorf("missing channel_id")
+	}
+
+	filePath, ok := action.Payload["file_path"].(string)
+	if !ok {
+		return fmt.Errorf("missing file_path")
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file %q: %w", filePath, err)
+	}
+	defer f.Close()
+
+	name := filepath.Base(filePath)
+	message, _ := action.Payload["message"].(string)
+
+	var ms *discordgo.MessageSend
+	if message != "" {
+		ms = &discordgo.MessageSend{
+			Content: message,
+			Files: []*discordgo.File{
+				{Name: name, Reader: f},
+			},
+		}
+	} else {
+		ms = &discordgo.MessageSend{
+			Files: []*discordgo.File{
+				{Name: name, Reader: io.Reader(f)},
+			},
+		}
+	}
+
+	_, err = e.getSession().ChannelMessageSendComplex(channelID, ms)
+	if err != nil {
+		return fmt.Errorf("failed to send file: %w", err)
+	}
+
+	if e.onAction != nil {
+		source, _ := action.Payload["source"].(string)
+		e.onAction("send_file", channelID, name, source)
+	}
+	return nil
 }
 
 // StartTyping starts showing the typing indicator in a channel.

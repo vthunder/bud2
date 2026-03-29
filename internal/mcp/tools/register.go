@@ -143,6 +143,46 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		return fmt.Sprintf("Reaction %s added to message", emoji), nil
 	})
 
+	// send_image - send a file or image to Discord
+	server.RegisterTool("send_image", mcp.ToolDef{
+		Description: "Send an image or file to Discord. Use this to share generated diagrams, screenshots, or other files with the user.",
+		Properties: map[string]mcp.PropDef{
+			"file_path":  {Type: "string", Description: "Absolute path to the local file to send"},
+			"message":    {Type: "string", Description: "Optional caption text to send with the file"},
+			"channel_id": {Type: "string", Description: "The Discord channel ID to send to. Optional - if not provided, uses the default channel."},
+		},
+		Required: []string{"file_path"},
+	}, func(ctx any, args map[string]any) (string, error) {
+		filePath, ok := args["file_path"].(string)
+		if !ok || filePath == "" {
+			return "", fmt.Errorf("file_path is required")
+		}
+
+		channelID, _ := args["channel_id"].(string)
+		if channelID == "" {
+			channelID = deps.DefaultChannel
+		}
+		if channelID == "" {
+			return "", fmt.Errorf("channel_id required (none provided and DISCORD_CHANNEL_ID not set)")
+		}
+
+		message, _ := args["message"].(string)
+
+		if deps.OnMCPToolCall != nil {
+			deps.OnMCPToolCall("send_image")
+		}
+
+		if deps.SendFile == nil {
+			return "", fmt.Errorf("SendFile callback not configured")
+		}
+
+		if err := deps.SendFile(channelID, filePath, message); err != nil {
+			return "", fmt.Errorf("failed to send file: %w", err)
+		}
+
+		return fmt.Sprintf("File sent to Discord: %s", filePath), nil
+	})
+
 	// signal_done
 	server.RegisterTool("signal_done", mcp.ToolDef{
 		Description: "Signal that you have finished processing and are ready for new prompts. IMPORTANT: Always call this when you have completed responding to a message or finishing a task. This helps track thinking time and enables autonomous work scheduling.",

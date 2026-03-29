@@ -41,6 +41,7 @@ import (
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/state"
+	tmuxwindow "github.com/vthunder/bud2/internal/tmux"
 	"github.com/vthunder/bud2/internal/types"
 )
 
@@ -359,6 +360,7 @@ func main() {
 	mcpServer := mcp.NewServer()
 	var mcpSendMessage func(channelID, message string) error          // Will be wired to Discord effector
 	var mcpAddReaction func(channelID, messageID, emoji string) error // Will be wired to Discord effector
+	var mcpSendFile func(channelID, filePath, message string) error   // Will be wired to Discord effector
 
 	// Declare variable for executive (will be initialized after MCP deps are set up)
 	var exec *executive.ExecutiveV2
@@ -389,6 +391,12 @@ func main() {
 			}
 			return fmt.Errorf("Discord effector not yet initialized")
 		},
+		SendFile: func(channelID, filePath, message string) error {
+			if mcpSendFile != nil {
+				return mcpSendFile(channelID, filePath, message)
+			}
+			return fmt.Errorf("Discord effector not yet initialized")
+		},
 		AddThought: nil, // Will be set after processInboxMessage is defined
 		OnMCPToolCall: func(toolName string) {
 			if exec != nil {
@@ -400,7 +408,11 @@ func main() {
 				return "", fmt.Errorf("executive not yet initialized")
 			}
 			spawnFn, _, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
-			return spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
+			id, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
+			if err == nil {
+				go tmuxwindow.OpenSubagentWindow(id)
+			}
+			return id, err
 		},
 		ListSubagents: func() []map[string]any {
 			if exec == nil {
@@ -534,6 +546,7 @@ func main() {
 			},
 			OnExecWake: func(focusID, context string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
+				go tmuxwindow.OpenExecWindow(focusID)
 			},
 			OnExecDone: func(focusID, summary string, durationSec float64, usage *executive.SessionUsage) {
 				extra := map[string]any{}
@@ -556,6 +569,9 @@ func main() {
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
 	}
+
+	// Close tmux windows older than 24h every 2 hours.
+	tmuxwindow.StartCleanupLoop(2*time.Hour, 24*time.Hour)
 
 	// Wire reflex engine to attention system for proactive mode
 	reflexEngine.SetAttention(exec.GetAttention())
@@ -1057,6 +1073,24 @@ func main() {
 					"channel_id": channelID,
 					"message_id": messageID,
 					"emoji":      emoji,
+				},
+				Timestamp: time.Now(),
+			}
+			discordEffector.Submit(action)
+			return nil
+		}
+
+		// Wire MCP send_image to effector directly (bypasses outbox file)
+		mcpSendFile = func(channelID, filePath, message string) error {
+			log.Printf("[mcp] Sending file %s", filePath)
+			action := &types.Action{
+				ID:       fmt.Sprintf("mcp-file-%d", time.Now().UnixNano()),
+				Type:     "send_file",
+				Effector: "discord",
+				Payload: map[string]any{
+					"channel_id": channelID,
+					"file_path":  filePath,
+					"message":    message,
 				},
 				Timestamp: time.Now(),
 			}

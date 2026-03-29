@@ -38,6 +38,8 @@ type Dependencies struct {
 	SendMessage func(channelID, message string) error
 	// If set, discord_react will use this to add reactions
 	AddReaction func(channelID, messageID, emoji string) error
+	// If set, send_image will use this to send files
+	SendFile func(channelID, filePath, message string) error
 	// If set, save_thought will use this instead of writing to file
 	AddThought func(content string) error
 	// If set, signal_done will use this to send completion signals
