@@ -591,10 +591,7 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 	}
 	session.mu.Unlock()
 
-	select {
-	case m.DoneNotify <- session:
-	default:
-	}
+	m.DoneNotify <- session
 }
 
 // extractAskUserQuestionText extracts the question from AskUserQuestion tool input.

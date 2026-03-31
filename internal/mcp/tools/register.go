@@ -1982,7 +1982,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			mcpURL = deps.MCPBaseURL + "/mcp/" + sessionToken
 		}
 
-		sessionID, err := deps.SpawnSubagent(task, constraints, profile, workflowInstanceID, workflowStep, mcpURL)
+		sessionID, logPath, err := deps.SpawnSubagent(task, constraints, profile, workflowInstanceID, workflowStep, mcpURL)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
 		}
@@ -1991,11 +1991,15 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			deps.RegisterSession(sessionToken, sessionID, domain)
 		}
 
-		msg := fmt.Sprintf("Async subagent started. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID)
+		logNote := ""
+		if logPath != "" {
+			logNote = fmt.Sprintf(" Log: %s", logPath)
+		}
+		msg := fmt.Sprintf("Async subagent started. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID, logNote)
 		if jobRef != "" {
-			msg = fmt.Sprintf("Async subagent started from job %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID)
+			msg = fmt.Sprintf("Async subagent started from job %q. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID, logNote)
 		} else if profile != "" {
-			msg = fmt.Sprintf("Async subagent started with profile %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID)
+			msg = fmt.Sprintf("Async subagent started with profile %q. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID, logNote)
 		}
 		log.Printf("Spawned subagent %s (job=%q profile=%q): %s", sessionID, jobRef, profile, truncate(task, 60))
 		return msg, nil

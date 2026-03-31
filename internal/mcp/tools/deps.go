@@ -71,7 +71,7 @@ type Dependencies struct {
 	// profile is optional — if non-empty, loads the named agent from state/system/agents/.
 	// workflowInstanceID and workflowStep are optional workflow tracking fields.
 	// mcpURL overrides the MCP server URL for this subagent (used for domain routing).
-	SpawnSubagent func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (string, error)
+	SpawnSubagent func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (id string, logPath string, err error)
 	// ListSubagents returns a snapshot of active subagent sessions.
 	ListSubagents func() []map[string]any
 	// AnswerSubagent routes an answer to a waiting subagent.

@@ -442,16 +442,16 @@ func main() {
 				exec.GetMCPToolCallback()(toolName)
 			}
 		},
-		SpawnSubagent: func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (string, error) {
+		SpawnSubagent: func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (string, string, error) {
 			if exec == nil {
-				return "", fmt.Errorf("executive not yet initialized")
+				return "", "", fmt.Errorf("executive not yet initialized")
 			}
 			spawnFn, _, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
 			id, logPath, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL)
 			if err == nil && logPath != "" {
 				go tmuxwindow.OpenSubagentWindow(id, logPath)
 			}
-			return id, err
+			return id, logPath, err
 		},
 		ListSubagents: func() []map[string]any {
 			if exec == nil {
