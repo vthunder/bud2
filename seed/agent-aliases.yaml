@@ -1,0 +1,18 @@
+# Agent namespace alias registry.
+#
+# agents: legacy path-based aliases (kept for backward compat during transition).
+#   New agents live in seed/plugins/<namespace>/agents/ and are resolved
+#   automatically by namespace:name syntax — no alias entry needed.
+#
+# skills: maps alias skill name to resolved skill name under state/system/skills/.
+#   Used so agent files that reference "issue-operations" are transparently
+#   routed to "things-operations" without touching agent files.
+#
+# On startup, ValidateAliasTargets() checks that all alias targets resolve.
+# Missing targets are logged as errors — they do NOT silently pass.
+
+agents: {}
+
+skills:
+  issue-operations: things-operations
+  gk-conventions: gk-conventions

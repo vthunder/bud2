@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/focus"
@@ -49,6 +50,11 @@ type ExecutiveV2 struct {
 
 	// Core identity (loaded from state/core.md)
 	coreIdentity string
+
+	// Programmatic agent definitions loaded from state/system/plugins/
+	// Passed to every Claude session via WithAgents so the built-in Agent
+	// tool can resolve "namespace:name" style references.
+	agentDefs map[string]claudecode.AgentDefinition
 
 	// Config
 	config ExecutiveV2Config
@@ -164,6 +170,15 @@ func NewExecutiveV2(
 		exec.coreIdentity = string(coreContent)
 	}
 
+	// Load programmatic agent definitions from state/system/plugins/
+	agentDefs, defsErr := LoadAllAgents(statePath)
+	if defsErr != nil {
+		log.Printf("[executive-v2] Warning: failed to load agent definitions: %v", defsErr)
+	} else {
+		exec.agentDefs = agentDefs
+		log.Printf("[executive-v2] Loaded %d agent definitions from plugins", len(agentDefs))
+	}
+
 	return exec
 }
 
@@ -223,6 +238,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 			MCPServerURL:       resolvedMCPURL,
 			AllowedTools:       allowedTools,
 			WorkDir:            e.config.WorkDir,
+			AgentDefs:          e.agentDefs,
 			WorkflowInstanceID: workflowInstanceID,
 			WorkflowStep:       workflowStep,
 		})
@@ -856,6 +872,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		Model:        e.config.Model,
 		WorkDir:      e.config.WorkDir,
 		MCPServerURL: e.config.MCPServerURL,
+		AgentDefs:    e.agentDefs,
 	}
 
 	startTime := time.Now()

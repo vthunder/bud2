@@ -276,6 +276,10 @@ type SubagentConfig struct {
 	// Required for the subagent to call signal_done and other bud2 tools.
 	MCPServerURL string
 
+	// AgentDefs registers programmatic agent definitions so the built-in Agent tool
+	// can resolve "namespace:name" style subagent references without file management.
+	AgentDefs map[string]claudecode.AgentDefinition
+
 	// Workflow fields — optional, set when this subagent is part of a multi-step workflow.
 	WorkflowInstanceID string // e.g. "wf_1711062766"
 	WorkflowStep       string // e.g. "strategy"
@@ -491,6 +495,9 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 	if cfg.AllowedTools != "" {
 		tools := strings.Split(cfg.AllowedTools, ",")
 		opts = append(opts, claudecode.WithAllowedTools(tools...))
+	}
+	if len(cfg.AgentDefs) > 0 {
+		opts = append(opts, claudecode.WithAgents(cfg.AgentDefs))
 	}
 
 	prompt := fmt.Sprintf("## Task\n%s\n\nBegin work on this task. When you are done, finish your response.", cfg.Task)

@@ -472,6 +472,9 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	if cfg.WorkDir != "" {
 		baseOpts = append(baseOpts, claudecode.WithCwd(cfg.WorkDir))
 	}
+	if len(cfg.AgentDefs) > 0 {
+		baseOpts = append(baseOpts, claudecode.WithAgents(cfg.AgentDefs))
+	}
 
 	// Resume existing Claude session when available, otherwise let the SDK
 	// create a new session (no --session-id equivalent in SDK).

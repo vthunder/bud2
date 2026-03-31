@@ -32,7 +32,7 @@ Context persists only if saved. Use save_thought to preserve observations and re
 ## Delegation Discipline
 
 Multi-step work belongs in subagents, not in the executive session:
-- Any task requiring >3 sequential actions → delegate via spawn_subagent (coder, researcher, or reviewer agent)
+- Any task requiring >3 sequential actions → delegate via Agent_spawn_async (coder, researcher, or reviewer agent)
 - Planning a significant piece of work (multi-week consequence, multiple viable approaches, first task in a new project) → invoke the `made` skill first
 - When woken for a subagent-done focus item → invoke the `handle-subagent-complete` skill before doing anything else
 - The executive orchestrates and decides; it does not implement

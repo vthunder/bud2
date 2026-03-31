@@ -1911,13 +1911,14 @@ func registerGitHubTools(server *mcp.Server, deps *Dependencies) {
 }
 
 func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
-	// spawn_subagent — start a new subagent session
-	server.RegisterTool("spawn_subagent", mcp.ToolDef{
-		Description: "Spawn a new subagent session to work autonomously on a task. The subagent runs with a restricted tool set (no talk_to_user, no AskUserQuestion) and reports back via signal_done. Use this to delegate research, analysis, or implementation tasks that can run in the background. Returns a session_id for tracking.",
+	// Agent_spawn_async — start a new subagent session (async, isolated)
+	// Distinguished from the built-in Agent tool (sync, in-context).
+	server.RegisterTool("Agent_spawn_async", mcp.ToolDef{
+		Description: "Spawn a new subagent session to work autonomously on a task. Unlike the built-in Agent tool (which runs sync in-context), Agent_spawn_async runs in an isolated background process and reports back via signal_done. Use this to delegate research, analysis, or implementation tasks that can run in the background. Returns a session_id for tracking.",
 		Properties: map[string]mcp.PropDef{
 			"task":                 {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
 			"constraints":          {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
-			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'researcher', 'coder', 'reviewer'). Expands tool access and injects behavioral guidance from state/system/agents/. Omit to use the default restricted tool set."},
+			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'bud:researcher', 'bud:coder', 'bud:reviewer'). Expands tool access and injects behavioral guidance from state/system/plugins/. Omit to use the default restricted tool set."},
 			"agent":                {Type: "string", Description: "Alias for profile. If agent is set and profile is not, agent value is used."},
 			"domain":               {Type: "string", Description: `Optional GK domain for this subagent. "/" = root state knowledge graph (default), "/projects/foo" = project-specific graph. The subagent's gk_* tool calls will default to this domain.`},
 			"job":                  {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
@@ -1990,11 +1991,11 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			deps.RegisterSession(sessionToken, sessionID, domain)
 		}
 
-		msg := fmt.Sprintf("Subagent started. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID)
+		msg := fmt.Sprintf("Async subagent started. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID)
 		if jobRef != "" {
-			msg = fmt.Sprintf("Subagent started from job %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID)
+			msg = fmt.Sprintf("Async subagent started from job %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID)
 		} else if profile != "" {
-			msg = fmt.Sprintf("Subagent started with profile %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID)
+			msg = fmt.Sprintf("Async subagent started with profile %q. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID)
 		}
 		log.Printf("Spawned subagent %s (job=%q profile=%q): %s", sessionID, jobRef, profile, truncate(task, 60))
 		return msg, nil
@@ -2016,7 +2017,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	// list_jobs — list available job templates
 	if deps.ListJobs != nil {
 		server.RegisterTool("list_jobs", mcp.ToolDef{
-			Description: "List available job templates. Without project, returns only global jobs. With project, returns global + project jobs combined. Use job refs with spawn_subagent's job param.",
+			Description: "List available job templates. Without project, returns only global jobs. With project, returns global + project jobs combined. Use job refs with Agent_spawn_async's job param.",
 			Properties: map[string]mcp.PropDef{
 				"project": {Type: "string", Description: "Optional project name (e.g. 'sandmill') to include project-specific jobs alongside global ones."},
 			},
@@ -2035,7 +2036,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("get_subagent_status", mcp.ToolDef{
 		Description: "Get the current status, result, pending question, and recent activity for a specific subagent session. Includes the last 5 tool calls/text events and a 'stuck' flag if the subagent has been silent for >2 minutes while running. When status is 'completed' and staged_memories_count > 0, call approve_subagent_memories to flush them to Engram.",
 		Properties: map[string]mcp.PropDef{
-			"session_id": {Type: "string", Description: "The subagent session ID returned by spawn_subagent"},
+			"session_id": {Type: "string", Description: "The subagent session ID returned by Agent_spawn_async"},
 		},
 		Required: []string{"session_id"},
 	}, func(ctx any, args map[string]any) (string, error) {
@@ -2111,7 +2112,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		server.RegisterTool("get_subagent_log", mcp.ToolDef{
 			Description: "Get the activity log for a subagent session: tool calls (name + input summary) and text snippets, in chronological order. Use this to inspect what a subagent has been doing, diagnose stuck sessions, or verify progress.",
 			Properties: map[string]mcp.PropDef{
-				"session_id": {Type: "string", Description: "The subagent session ID returned by spawn_subagent"},
+				"session_id": {Type: "string", Description: "The subagent session ID returned by Agent_spawn_async"},
 				"last_n":     {Type: "number", Description: "Number of most recent events to return (default: 20, max: 50)"},
 			},
 			Required: []string{"session_id"},

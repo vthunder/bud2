@@ -44,13 +44,43 @@ Staged memories (from the agent's `save_thought` calls) are buffered until expli
 
 Default: approve memories about bugs found, decisions made, or surprising findings. Reject memories about routine progress or transient state.
 
-## Step 4 — Act on next.action
+## Step 3.5 — UP/DOWN/STAY Planner Routing (Planning Agents Only)
 
-**`done`**: The task is complete. Signal done if no further work is needed.
+Check the focus item metadata for the completing agent's profile name. If it is one of the autopilot planning agents, check `next.action` for routing signals **before** proceeding to Step 4.
 
-**`spawn_followup`**: Spawn a new subagent using `next.prompt` as the task. Use the same agent type unless the prompt suggests otherwise.
+**This check must be explicit.** If `next.action` is absent or not one of UP/DOWN/STAY, skip this section entirely and fall through to Step 4 unchanged. Non-planning agents are never affected.
 
-**`ask_user`**: Call `talk_to_user` with `next.prompt` to surface the question. Then `signal_done`.
+### Planner cascade hierarchy
+
+```
+autopilot-vision:planner   → UP →  autopilot-strategy:planner
+autopilot-strategy:planner → UP →  autopilot-epic:planner
+autopilot-epic:planner     → UP →  autopilot-task:planner
+autopilot-task:planner     → UP →  (done — tasks created in Things)
+```
+
+### Signal handling
+
+**`UP`**: The planner completed its level and wants to advance. Spawn the next-level planner:
+1. Extract `direction` from the agent output JSON.
+2. Build context: include `direction.title`, `direction.description`, `direction.rationale`, and the project path from the current task.
+3. `Agent_spawn_async(task=<context>, agent="autopilot-<next-level>:planner")`.
+4. Do NOT call `signal_done` — the cascade is still in progress.
+
+**`DOWN`**: The planner needs a narrower scope before advancing. Re-spawn the same-level planner:
+1. Extract `next.reason` for the narrowing constraint.
+2. Build context: same inputs as the original spawn, plus `next.reason` appended as a "Narrowing constraint: ..." note.
+3. `Agent_spawn_async(task=<context>, agent="autopilot-<same-level>:planner")`.
+4. Do NOT call `signal_done`.
+
+**`STAY`**: The planner is pausing — direction selected but not cascading yet. Store the direction and wait for the next impulse:
+1. Extract `direction` from the agent output JSON.
+2. Call `save_thought` with the direction content and tags `["autopilot", "<level>", "direction", "stay"]`.
+3. Call `signal_done`. The cascade will resume when triggered by the user or an impulse.
+
+### If next.action is absent or not UP/DOWN/STAY
+
+Fall through to Step 4 below. Do not treat `"done"` as an implicit UP signal — explicit routing only.
 
 ## Step 5 — Advance Workflow (if applicable)
 
@@ -65,7 +95,7 @@ Check the focus item metadata for `workflow_instance_id`. If present:
    - `next.action == "done"` or `"continue"` or absent: advance to the next step in sequence
    - No next step: workflow complete — archive the instance file, `talk_to_user` with a summary of all step outputs
 6. Render next step's `context_template` using accumulated outputs.
-7. `spawn_subagent` with rendered context, agent = next step's agent, `workflow_instance_id`, `workflow_step` = next step ID.
+7. `Agent_spawn_async` with rendered context, agent = next step's agent, `workflow_instance_id`, `workflow_step` = next step ID.
 8. Update `workflow_step` in the instance JSON file.
 
 ## Step 6 — Post Observations to Engram (if significant)

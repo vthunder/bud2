@@ -2,12 +2,12 @@ name: plan-sprint
 description: Lightweight planning for a known epic
 steps:
   - id: epics
-    agent: epic-planner
+    agent: "autopilot-epic:planner"
     context_template: |
       Plan this epic: {{.input}}
 
   - id: tasks
-    agent: task-planner
+    agent: "autopilot-task:planner"
     context_template: |
       Epic: {{index .outputs "epics" | jsonPath "epic.title"}}
       Description: {{index .outputs "epics" | jsonPath "epic.description"}}

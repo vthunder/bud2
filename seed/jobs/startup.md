@@ -14,7 +14,7 @@ Your task is to check for interrupted subagents from the previous session and re
 
 3. **If the file exists**:
    a. Read the file and parse the list of subagents to restart.
-   b. For each subagent entry, call `spawn_subagent` with the saved `task`, `profile`, and `constraints` fields.
+   b. For each subagent entry, call `Agent_spawn_async` with the saved `task`, `profile`, and `constraints` fields.
    c. After all subagents have been spawned, rename the file to `~/src/bud2/state/system/subagent-restart-notes.md.done` (append `.done` suffix) so it won't be processed again on the next startup.
 
 ## Report

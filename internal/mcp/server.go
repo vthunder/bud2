@@ -85,7 +85,7 @@ func NewServer() *Server {
 }
 
 // RegisterSession maps a session token to an agent ID and default domain.
-// Called by spawn_subagent before starting a subagent so the GK domain can
+// Called by Agent_spawn_async before starting a subagent so the GK domain can
 // be injected automatically for all gk_* tool calls from that subagent.
 func (s *Server) RegisterSession(token, agentID, domain string) {
 	s.sessionsMu.Lock()

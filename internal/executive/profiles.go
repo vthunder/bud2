@@ -16,20 +16,91 @@ type Agent struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Level       string   `yaml:"level"`
+	Model       string   `yaml:"model"`   // optional: sonnet/opus/haiku (maps to AgentModel enum)
 	Skills      []string `yaml:"skills"`  // skill names — folder (<name>/SKILL.md) or flat (<name>.md)
 	Tools       []string `yaml:"tools"`   // additional tools beyond the base set
 	Body        string   // parsed from markdown body after YAML frontmatter (not in YAML)
 }
 
-// LoadAgent reads an agent definition from state/system/agents/<name>.yaml.
-// Supports YAML frontmatter + optional markdown body (like job files).
-func LoadAgent(statePath, agentName string) (*Agent, error) {
-	agentPath := filepath.Join(statePath, "system", "agents", agentName+".yaml")
-	data, err := os.ReadFile(agentPath)
-	if err != nil {
-		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
-	}
+// AgentAliases holds the namespace alias registry loaded from agent-aliases.yaml.
+// Agents: maps alias (e.g. "autopilot-vision:explorer") → resolved file path (e.g. "autopilot-vision/explorer").
+// Skills: maps alias (e.g. "issue-operations") → resolved skill name (e.g. "things-operations").
+type AgentAliases struct {
+	Agents map[string]string `yaml:"agents"`
+	Skills map[string]string `yaml:"skills"`
+}
 
+// LoadAgentAliases reads the alias table from state/system/agent-aliases.yaml.
+// Returns empty aliases (not an error) if the file doesn't exist.
+func LoadAgentAliases(statePath string) (*AgentAliases, error) {
+	aliasPath := filepath.Join(statePath, "system", "agent-aliases.yaml")
+	data, err := os.ReadFile(aliasPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &AgentAliases{Agents: make(map[string]string), Skills: make(map[string]string)}, nil
+		}
+		return nil, fmt.Errorf("read agent-aliases.yaml: %w", err)
+	}
+	var aliases AgentAliases
+	if err := yaml.Unmarshal(data, &aliases); err != nil {
+		return nil, fmt.Errorf("parse agent-aliases.yaml: %w", err)
+	}
+	if aliases.Agents == nil {
+		aliases.Agents = make(map[string]string)
+	}
+	if aliases.Skills == nil {
+		aliases.Skills = make(map[string]string)
+	}
+	return &aliases, nil
+}
+
+// ValidateAliasTargets checks that every alias target in agent-aliases.yaml resolves to
+// a registered agent file. Logs an error for each broken alias. Returns false if any alias
+// is broken, true if all resolve.
+func ValidateAliasTargets(statePath string) bool {
+	aliases, err := LoadAgentAliases(statePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-aliases] ERROR: failed to load alias table: %v\n", err)
+		return false
+	}
+	ok := true
+	for alias, target := range aliases.Agents {
+		if _, err := loadAgentByPath(statePath, target); err != nil {
+			fmt.Fprintf(os.Stderr, "[agent-aliases] ERROR: alias %q → %q: target not found: %v\n", alias, target, err)
+			ok = false
+		}
+	}
+	return ok
+}
+
+// loadAgentByPath loads an agent from a resolved path (no alias lookup, no subdir inference).
+// Tries <path>.yaml then <path>.md under state/system/agents/.
+func loadAgentByPath(statePath, agentPath string) ([]byte, error) {
+	base := filepath.Join(statePath, "system", "agents", agentPath)
+	for _, ext := range []string{".yaml", ".md"} {
+		data, err := os.ReadFile(base + ext)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("not found (tried .yaml and .md)")
+}
+
+// loadAgentFromPlugin loads an agent from the plugin directory structure.
+// Looks in state/system/plugins/<namespace>/agents/<name>.yaml or .md.
+func loadAgentFromPlugin(statePath, namespace, name string) ([]byte, error) {
+	base := filepath.Join(statePath, "system", "plugins", namespace, "agents", name)
+	for _, ext := range []string{".yaml", ".md"} {
+		data, err := os.ReadFile(base + ext)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("not found in plugin %s (tried .yaml and .md)", namespace)
+}
+
+// parseAgentData parses YAML frontmatter + markdown body from raw agent file content.
+func parseAgentData(data []byte, agentName string) (*Agent, error) {
 	content := string(data)
 	var a Agent
 
@@ -59,6 +130,41 @@ func LoadAgent(statePath, agentName string) (*Agent, error) {
 		a.Name = agentName
 	}
 	return &a, nil
+}
+
+// LoadAgent reads an agent definition. Resolution order:
+//  1. Plugin directory: state/system/plugins/<namespace>/agents/<name> for "namespace:name" style
+//  2. Alias table: state/system/agent-aliases.yaml (backward compat for legacy names)
+//  3. Legacy agents directory: state/system/agents/<path>
+//
+// Supports both .yaml and .md extensions (.yaml preferred).
+func LoadAgent(statePath, agentName string) (*Agent, error) {
+	// 1. Try plugin-based resolution for "namespace:name" style
+	if strings.Contains(agentName, ":") {
+		parts := strings.SplitN(agentName, ":", 2)
+		namespace, name := parts[0], parts[1]
+		if data, err := loadAgentFromPlugin(statePath, namespace, name); err == nil {
+			return parseAgentData(data, agentName)
+		}
+	}
+
+	// 2. Resolve via alias table (legacy compat)
+	aliases, err := LoadAgentAliases(statePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agent-aliases] warning: %v\n", err)
+		aliases = &AgentAliases{Agents: make(map[string]string), Skills: make(map[string]string)}
+	}
+	resolved := agentName
+	if target, ok := aliases.Agents[agentName]; ok {
+		resolved = target
+	}
+
+	// 3. Load from legacy agents directory
+	data, err := loadAgentByPath(statePath, resolved)
+	if err != nil {
+		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
+	}
+	return parseAgentData(data, agentName)
 }
 
 // LoadSkillContent reads a skill from state/system/skills/.
@@ -294,6 +400,11 @@ func ResolveSubagentConfig(statePath, agentName, baseTools string) (mergedTools,
 	}
 	for _, t := range agent.Tools {
 		t = strings.TrimSpace(t)
+		// Normalize autopilot-style Agent(...) declarations to plain "Agent".
+		// e.g. "Agent(autopilot-vision:explorer, autopilot-vision:researcher)" → "Agent"
+		if strings.HasPrefix(t, "Agent(") {
+			t = "Agent"
+		}
 		if t != "" && !toolSet[t] {
 			toolSet[t] = true
 			toolList = append(toolList, t)
@@ -301,9 +412,19 @@ func ResolveSubagentConfig(statePath, agentName, baseTools string) (mergedTools,
 	}
 	mergedTools = strings.Join(toolList, ",")
 
-	// Load and concatenate skill content
+	// Load agent aliases for skill resolution
+	aliases, aliasErr := LoadAgentAliases(statePath)
+	if aliasErr != nil {
+		aliases = &AgentAliases{Agents: make(map[string]string), Skills: make(map[string]string)}
+	}
+
+	// Load and concatenate skill content (with alias resolution)
 	var skillParts []string
 	for _, skillName := range agent.Skills {
+		// Resolve skill alias if present
+		if target, ok := aliases.Skills[skillName]; ok {
+			skillName = target
+		}
 		content, skillErr := LoadSkillContent(statePath, skillName)
 		if skillErr != nil {
 			// Non-fatal: log and skip missing skills

@@ -7,7 +7,7 @@ Jobs are parameterized prompt templates for subagent tasks you run repeatedly. U
 | | Jobs | Skills | Profiles |
 |---|---|---|---|
 | **What** | Parameterized task templates | In-session prompt guides | Subagent capability configs |
-| **Who uses** | Executive (spawn_subagent) | Current session | Subagent runtime |
+| **Who uses** | Executive (Agent_spawn_async) | Current session | Subagent runtime |
 | **Params** | Yes, typed and validated | No | No |
 | **Reuse** | High — same task, different inputs | Medium | High |
 
@@ -37,12 +37,12 @@ Each result includes the job's `name`, `description`, `params`, and source.
 
 ## Invoking a Job
 
-Pass `job` and `params` to `spawn_subagent`:
+Pass `job` and `params` to `Agent_spawn_async`:
 
 ```
-spawn_subagent(job="disk-cleanup", params={"disk_name": "Mac OS 8.0 HD"})
-spawn_subagent(job="git-commit", params={"path": "~/src/sandmill", "message": "Fix COOP headers"})
-spawn_subagent(job="project/sandmill/observe", params={})
+Agent_spawn_async(job="disk-cleanup", params={"disk_name": "Mac OS 8.0 HD"})
+Agent_spawn_async(job="git-commit", params={"path": "~/src/sandmill", "message": "Fix COOP headers"})
+Agent_spawn_async(job="project/sandmill/observe", params={})
 ```
 
 Required params must be provided. Optional params use their default value if omitted. The executor will error if a required param is missing.

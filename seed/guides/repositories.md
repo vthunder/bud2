@@ -124,7 +124,7 @@ When redeploying with subagents potentially running, follow this checklist to en
 
 1. **Run the redeploy-bud job** to save subagent state:
    ```
-   spawn_subagent(job="redeploy-bud")
+   Agent_spawn_async(job="redeploy-bud")
    ```
 
 2. **Read the job output** — it will include:

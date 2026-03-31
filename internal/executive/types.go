@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
 // ClaudeConfig holds configuration for Claude sessions
@@ -26,6 +28,11 @@ type ClaudeConfig struct {
 	// CustomSystemPrompt for custom mode (ignored in bud mode)
 	// If set in custom mode, replaces the entire system prompt
 	CustomSystemPrompt string
+
+	// AgentDefs registers programmatic agent definitions with the SDK's built-in Agent tool.
+	// When set, the SDK can resolve "namespace:name" style agent references (e.g.
+	// "autopilot-vision:explorer") without ~/.claude/agents/ file management.
+	AgentDefs map[string]claudecode.AgentDefinition
 }
 
 // SessionUsage holds token usage metrics from a Claude session

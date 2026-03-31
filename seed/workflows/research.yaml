@@ -7,7 +7,7 @@ steps:
       Research this topic thoroughly: {{.input}}
 
   - id: strategy
-    agent: strategy-planner
+    agent: "autopilot-strategy:planner"
     context_template: |
       Research findings: {{index .outputs "research" | jsonPath "summary"}}
 
