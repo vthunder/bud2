@@ -53,6 +53,7 @@ func NewActionRegistry() *ActionRegistry {
 	r.Register("log", ActionFunc(actionLog))
 	r.Register("shell", ActionFunc(actionShell))
 	r.Register("gate", ActionFunc(actionGate))
+	r.Register("escalate", ActionFunc(actionEscalate))
 
 	return r
 }
@@ -271,6 +272,13 @@ func actionGate(ctx context.Context, params map[string]any, vars map[string]any)
 	}
 
 	return "gate passed", nil
+}
+
+func actionEscalate(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+	if msg := resolveVar(params, vars, "message", ""); msg != "" {
+		vars["_escalate_message"] = msg
+	}
+	return nil, ErrEscalate
 }
 
 // Helper functions

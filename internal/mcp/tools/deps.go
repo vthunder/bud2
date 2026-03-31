@@ -48,11 +48,30 @@ type Dependencies struct {
 	// Used to detect user responses (talk_to_user, discord_react) for validation
 	OnMCPToolCall func(toolName string)
 
+	// GK knowledge graph tools (optional — injected when GK_PATH is configured).
+	// GKCallTool proxies a tool call to the GK process for the given domain.
+	// domain is a path like "/" or "/projects/foo"; toolName is the raw GK tool name
+	// (without the gk_ prefix); args are forwarded as-is to the GK process.
+	GKCallTool func(domain, toolName string, args map[string]any) (string, error)
+
+	// ReadResource reads an MCP resource by URI, routing to the appropriate provider for the given domain.
+	// uri is a resource URI like "gk://guides/extraction".
+	ReadResource func(domain, uri string) (string, error)
+
+	// RegisterSession registers a session token with an agent ID and default domain
+	// so the MCP HTTP handler can inject the domain into gk_* tool calls.
+	RegisterSession func(token, agentID, domain string)
+
+	// MCPBaseURL is the base URL of the bud2 MCP HTTP server (e.g. "http://127.0.0.1:8066").
+	// Used to construct per-subagent tokenized URLs.
+	MCPBaseURL string
+
 	// Subagent management callbacks (optional — injected by executive)
 	// SpawnSubagent starts a new subagent session and returns its ID.
 	// profile is optional — if non-empty, loads the named agent from state/system/agents/.
 	// workflowInstanceID and workflowStep are optional workflow tracking fields.
-	SpawnSubagent func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error)
+	// mcpURL overrides the MCP server URL for this subagent (used for domain routing).
+	SpawnSubagent func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (string, error)
 	// ListSubagents returns a snapshot of active subagent sessions.
 	ListSubagents func() []map[string]any
 	// AnswerSubagent routes an answer to a waiting subagent.

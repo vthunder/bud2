@@ -237,6 +237,64 @@ func (c *ProxyClient) CallTool(name string, args map[string]any) (string, error)
 	return callResult.Content[0].Text, nil
 }
 
+// ListResources lists all resources available from the external server.
+func (c *ProxyClient) ListResources() ([]ResourceInfo, error) {
+	result, err := c.sendRequest("resources/list", nil)
+	if err != nil {
+		return nil, fmt.Errorf("resources/list: %w", err)
+	}
+
+	var listResult struct {
+		Resources []struct {
+			URI         string `json:"uri"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			MimeType    string `json:"mimeType"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(result, &listResult); err != nil {
+		return nil, fmt.Errorf("parse resources list: %w", err)
+	}
+
+	infos := make([]ResourceInfo, 0, len(listResult.Resources))
+	for _, r := range listResult.Resources {
+		infos = append(infos, ResourceInfo{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MimeType:    r.MimeType,
+		})
+	}
+	return infos, nil
+}
+
+// ReadResource reads an MCP resource by URI from the external server.
+// Returns the text content of the first content item in the response.
+func (c *ProxyClient) ReadResource(uri string) (string, error) {
+	result, err := c.sendRequest("resources/read", map[string]any{
+		"uri": uri,
+	})
+	if err != nil {
+		return "", fmt.Errorf("resources/read %s: %w", uri, err)
+	}
+
+	var readResult struct {
+		Contents []struct {
+			URI      string `json:"uri"`
+			MimeType string `json:"mimeType"`
+			Text     string `json:"text"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(result, &readResult); err != nil {
+		return "", fmt.Errorf("parse resource result: %w", err)
+	}
+
+	if len(readResult.Contents) == 0 {
+		return "", fmt.Errorf("resource %s: no contents returned", uri)
+	}
+	return readResult.Contents[0].Text, nil
+}
+
 // Close stops the external server process
 func (c *ProxyClient) Close() {
 	c.mu.Lock()

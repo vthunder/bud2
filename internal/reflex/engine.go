@@ -434,12 +434,20 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 			}
 			// Check if this is an escalate signal
 			if errors.Is(err, ErrEscalate) {
+				msg, _ := vars["_escalate_message"].(string)
+				varsCopy := make(map[string]any, len(vars))
+				for k, v := range vars {
+					varsCopy[k] = v
+				}
 				return &ReflexResult{
-					ReflexName: reflex.Name,
-					Success:    false,
-					Escalate:   true,
-					Output:     vars,
-					Duration:   time.Since(start),
+					ReflexName:      reflex.Name,
+					Success:         false,
+					Escalate:        true,
+					EscalateMessage: msg,
+					EscalateStep:    i,
+					EscalateVars:    varsCopy,
+					Output:          vars,
+					Duration:        time.Since(start),
 				}, nil
 			}
 			return &ReflexResult{
@@ -1268,6 +1276,7 @@ func (e *Engine) createGTDThingsActions() {
 
 			result, err := e.toolCaller.Call("things_add_todo", map[string]any{
 				"title": item,
+				"list":  "Bud",
 			})
 			if err != nil {
 				return nil, fmt.Errorf("things_add_todo failed: %w", err)

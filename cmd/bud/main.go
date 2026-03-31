@@ -362,6 +362,25 @@ func main() {
 	var mcpAddReaction func(channelID, messageID, emoji string) error // Will be wired to Discord effector
 	var mcpSendFile func(channelID, filePath, message string) error   // Will be wired to Discord effector
 
+	// Initialize GK process pool if GK_PATH is configured.
+	// GK_PATH should point to the gk project directory (e.g. ~/src/gk).
+	var gkPool *mcp.GKPool
+	if gkPath := os.Getenv("GK_PATH"); gkPath != "" {
+		gkPool = mcp.NewGKPool(gkPath, statePath)
+		defer gkPool.Close()
+		log.Printf("[main] GK pool initialized (path=%s)", gkPath)
+		// Register GK as the MCP resource provider so resources/list and resources/read
+		// are transparently proxied through the HTTP MCP server with session-domain routing.
+		mcpServer.RegisterResourceProvider(
+			func(domain string) ([]mcp.ResourceInfo, error) {
+				return gkPool.ListResources(domain)
+			},
+			func(domain, uri string) (string, error) {
+				return gkPool.ReadResource(domain, uri)
+			},
+		)
+	}
+
 	// Declare variable for executive (will be initialized after MCP deps are set up)
 	var exec *executive.ExecutiveV2
 
@@ -379,6 +398,22 @@ func main() {
 		CalendarClient: calendarClient,
 		GitHubClient:   githubClient,
 		VMControlURL:   os.Getenv("VM_CONTROL_URL"), // defaults to http://127.0.0.1:3099 in vm_browser.go
+		GKCallTool: func() func(domain, toolName string, args map[string]any) (string, error) {
+			if gkPool == nil {
+				return nil
+			}
+			return func(domain, toolName string, args map[string]any) (string, error) {
+				return gkPool.CallTool(domain, toolName, args)
+			}
+		}(),
+		ReadResource: func() func(domain, uri string) (string, error) {
+			if gkPool == nil {
+				return nil
+			}
+			return func(domain, uri string) (string, error) {
+				return gkPool.ReadResource(domain, uri)
+			}
+		}(),
 		SendMessage: func(channelID, message string) error {
 			if mcpSendMessage != nil {
 				return mcpSendMessage(channelID, message)
@@ -397,18 +432,22 @@ func main() {
 			}
 			return fmt.Errorf("Discord effector not yet initialized")
 		},
+		MCPBaseURL: fmt.Sprintf("http://127.0.0.1:%s", mcpHTTPPort),
+		RegisterSession: func(token, agentID, domain string) {
+			mcpServer.RegisterSession(token, agentID, domain)
+		},
 		AddThought: nil, // Will be set after processInboxMessage is defined
 		OnMCPToolCall: func(toolName string) {
 			if exec != nil {
 				exec.GetMCPToolCallback()(toolName)
 			}
 		},
-		SpawnSubagent: func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (string, error) {
+		SpawnSubagent: func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (string, error) {
 			if exec == nil {
 				return "", fmt.Errorf("executive not yet initialized")
 			}
 			spawnFn, _, _, _, _, _, _, _, _ := exec.SubagentCallbacks()
-			id, logPath, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep)
+			id, logPath, err := spawnFn(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL)
 			if err == nil && logPath != "" {
 				go tmuxwindow.OpenSubagentWindow(id, logPath)
 			}
@@ -546,12 +585,6 @@ func main() {
 			},
 			OnExecWake: func(focusID, context, existingClaudeSessionID string) {
 				activityLog.LogExecWake("Executive processing", focusID, context)
-				// Only open a new tmux window when starting a fresh Claude session.
-				// On resume, the existing window is already tailing the same log file.
-				if existingClaudeSessionID == "" {
-					logPath := filepath.Join(statePath, "logs", "agents", "exec-"+focusID+".log")
-					go tmuxwindow.OpenExecWindow(focusID, logPath)
-				}
 			},
 			OnExecDone: func(focusID, summary string, durationSec float64, usage *executive.SessionUsage) {
 				extra := map[string]any{}
@@ -574,6 +607,10 @@ func main() {
 	if err := exec.Start(); err != nil {
 		log.Fatalf("Failed to start executive: %v", err)
 	}
+
+	// Open the single persistent executive log pane exactly once at startup.
+	// All wakes append to the same file; context clears do not open a new pane.
+	go tmuxwindow.EnsureExecWindow(filepath.Join(statePath, "logs", "exec", "executive.log"))
 
 	// Close tmux windows older than 24h every 2 hours.
 	tmuxwindow.StartCleanupLoop(2*time.Hour, 24*time.Hour)
@@ -758,6 +795,26 @@ func main() {
 			defer cancel()
 			handled, results = reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
 		}()
+
+		// If a reflex escalated, forward its accumulated context into percept.Data
+		// so the executive receives pre-fetched vars rather than starting blind.
+		for _, r := range results {
+			if r.Escalate {
+				if percept.Data == nil {
+					percept.Data = make(map[string]any)
+				}
+				percept.Data["_reflex_escalated"] = true
+				percept.Data["_reflex_name"] = r.ReflexName
+				percept.Data["_reflex_step"] = r.EscalateStep
+				if r.EscalateMessage != "" {
+					percept.Data["_escalate_message"] = r.EscalateMessage
+				}
+				if len(r.EscalateVars) > 0 {
+					percept.Data["_escalate_vars"] = r.EscalateVars
+				}
+				break
+			}
+		}
 
 		if handled && len(results) > 0 {
 			result := results[0]

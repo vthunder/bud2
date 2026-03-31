@@ -119,8 +119,10 @@ func NewExecutiveV2(
 	statePath string,
 	cfg ExecutiveV2Config,
 ) *ExecutiveV2 {
+	sess := NewSimpleSession(statePath)
+	sess.LoadSessionFromDisk()
 	exec := &ExecutiveV2{
-		session:        NewSimpleSession(statePath),
+		session:        sess,
 		attention:      focus.New(),
 		queue:          focus.NewQueue(statePath, 100),
 		memory:         memory,
@@ -174,7 +176,7 @@ func (e *ExecutiveV2) SetTypingCallbacks(start, stop func(channelID string)) {
 // SubagentCallbacks returns the SubagentManager operation callbacks for injection
 // into the MCP tools Dependencies struct. Call this after NewExecutiveV2.
 func (e *ExecutiveV2) SubagentCallbacks() (
-	spawnFn func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (id, logPath string, err error),
+	spawnFn func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (id, logPath string, err error),
 	listFn func() []map[string]any,
 	answerFn func(sessionID, answer string) error,
 	statusFn func(sessionID string) (status, result, claudeSessionID, pendingQuestion string, err error),
@@ -188,7 +190,7 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 	// standard file tools + search_memory only. No talk_to_user, signal_done, etc.
 	const subagentBaseTools = "Read,Write,Edit,Glob,Grep,Bash,mcp__bud2__search_memory"
 
-	spawnFn = func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep string) (id, logPath string, err error) {
+	spawnFn = func(task, systemPromptAppend, profile, workflowInstanceID, workflowStep, mcpURL string) (id, logPath string, err error) {
 		allowedTools := subagentBaseTools
 		promptAppend := systemPromptAppend
 
@@ -209,10 +211,16 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 			}
 		}
 
+		// Use provided mcpURL (tokenized for domain routing) or fall back to base URL.
+		resolvedMCPURL := mcpURL
+		if resolvedMCPURL == "" {
+			resolvedMCPURL = e.config.MCPServerURL
+		}
+
 		s, err := e.subagents.Spawn(context.Background(), SubagentConfig{
 			Task:               task,
 			SystemPromptAppend: promptAppend,
-			MCPServerURL:       e.config.MCPServerURL,
+			MCPServerURL:       resolvedMCPURL,
 			AllowedTools:       allowedTools,
 			WorkDir:            e.config.WorkDir,
 			WorkflowInstanceID: workflowInstanceID,
@@ -588,6 +596,9 @@ func (e *ExecutiveV2) ProcessNextP1(ctx context.Context) (bool, error) {
 // Bypasses the attention system so it can run concurrently with ProcessNextP1.
 // Returns true if an item was processed, false if no background items are queued.
 func (e *ExecutiveV2) ProcessNextBackground(ctx context.Context) (bool, error) {
+	if e.p1Active.Load() {
+		return false, nil
+	}
 	item := e.queue.PopHighestMinPriority(focus.P2DueTask)
 	if item == nil {
 		return false, nil
@@ -749,6 +760,14 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	claudeSessionID := e.session.ClaudeSessionID()
 	shouldReset := e.session.ShouldReset()
 	resuming := claudeSessionID != "" && !shouldReset
+
+	// Single persistent log file: all wakes append to logs/exec/executive.log.
+	// Set this before PrepareXxx so WriteSessionLogEntry writes to the right path.
+	if e.config.WorkDir != "" {
+		execLogPath := filepath.Join(e.config.WorkDir, "logs", "exec", "executive.log")
+		e.session.SetSessionLog(execLogPath)
+	}
+
 	if resuming {
 		// Continue existing session: preserve seen memories, buffer sync, and session ID.
 		// buildPrompt will skip static context (core identity, conversation buffer)
@@ -759,11 +778,16 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		// Fresh session: full context injection, new Claude session.
 		if shouldReset {
 			log.Printf("[executive-v2] Context limit reached, starting fresh session")
+			e.session.WriteSessionLogEntry("=== CONTEXT CLEARED (token limit) ===")
 		} else {
 			log.Printf("[executive-v2] Starting new Claude session (no prior session ID)")
 		}
 		e.session.PrepareNewSession()
+		e.session.SaveSessionToDisk() // persist cleared state immediately
 	}
+
+	// Write wake header to the persistent log so each wake is clearly delimited.
+	e.session.WriteSessionLogEntry("=== WAKE [%s] focus=%s ===", time.Now().UTC().Format(time.RFC3339), item.ID)
 
 	// Log executive wake after resume decision so callers know if this is a new
 	// or continuing Claude session (existingClaudeSessionID empty = new session).
@@ -869,13 +893,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 		e.backgroundMu.Unlock()
 	}()
 
-	// Point the session log at a per-session file so the tmux window can tail it.
-	// Only set on new sessions — resuming sessions keep the existing log path so
-	// all wakes in the same Claude session append to the same file.
-	if e.config.WorkDir != "" && !resuming {
-		logPath := filepath.Join(e.config.WorkDir, "logs", "agents", "exec-"+item.ID+".log")
-		e.session.SetSessionLog(logPath)
-	}
+	// Log path is already set to logs/exec/executive.log above.
 
 	var sendErr error
 	func() {
@@ -901,6 +919,9 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	}
 
 	duration := time.Since(startTime).Seconds()
+
+	// Persist the Claude session ID so the next wake (even after Bud restart) can resume.
+	e.session.SaveSessionToDisk()
 
 	e.notifyDebug(DebugEvent{
 		Type:     DebugEventSessionEnd,
@@ -1542,6 +1563,33 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			prompt.WriteString(fmt.Sprintf("Source: %s\n", bundle.CurrentFocus.Source))
 		}
 		prompt.WriteString(fmt.Sprintf("Content: %s\n", bundle.CurrentFocus.Content))
+
+		// Surface reflex escalation context so the executive knows what the reflex pre-fetched
+		if escalated, _ := bundle.CurrentFocus.Data["_reflex_escalated"].(bool); escalated {
+			reflexName, _ := bundle.CurrentFocus.Data["_reflex_name"].(string)
+			escalateMsg, _ := bundle.CurrentFocus.Data["_escalate_message"].(string)
+			escalateVars, _ := bundle.CurrentFocus.Data["_escalate_vars"].(map[string]any)
+			prompt.WriteString(fmt.Sprintf("Reflex Escalation:\n  Reflex: %s\n", reflexName))
+			if escalateMsg != "" {
+				prompt.WriteString(fmt.Sprintf("  Reason: %s\n", escalateMsg))
+			}
+			if len(escalateVars) > 0 {
+				prompt.WriteString("  Pre-fetched context from reflex pipeline:\n")
+				// Sort keys for deterministic output
+				keys := make([]string, 0, len(escalateVars))
+				for k := range escalateVars {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					// Skip internal vars
+					if strings.HasPrefix(k, "_") {
+						continue
+					}
+					prompt.WriteString(fmt.Sprintf("    %s: %v\n", k, escalateVars[k]))
+				}
+			}
+		}
 
 		// Add metadata section if we have relevant data
 		if len(bundle.CurrentFocus.Data) > 0 {

@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,6 +22,16 @@ import (
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/types"
 )
+
+// generateToken creates a random 16-byte hex token for session identification.
+func generateToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: shouldn't happen, but avoid panic
+		return fmt.Sprintf("tok-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
 
 // RegisterAll registers all MCP tools with the given server and dependencies.
 func RegisterAll(server *mcp.Server, deps *Dependencies) {
@@ -47,6 +59,10 @@ func RegisterAll(server *mcp.Server, deps *Dependencies) {
 	if deps.SpawnSubagent != nil {
 		registerSubagentTools(server, deps)
 	}
+	if deps.GKCallTool != nil {
+		RegisterGKTools(server, deps)
+	}
+	RegisterResourceTools(server, deps)
 	registerVMBrowserTools(server, deps)
 	registerImageGenTools(server, deps)
 }
@@ -1903,6 +1919,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			"constraints":          {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
 			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'researcher', 'coder', 'reviewer'). Expands tool access and injects behavioral guidance from state/system/agents/. Omit to use the default restricted tool set."},
 			"agent":                {Type: "string", Description: "Alias for profile. If agent is set and profile is not, agent value is used."},
+			"domain":               {Type: "string", Description: `Optional GK domain for this subagent. "/" = root state knowledge graph (default), "/projects/foo" = project-specific graph. The subagent's gk_* tool calls will default to this domain.`},
 			"job":                  {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
 			"params":               {Type: "object", Description: "Parameter values for the job template (map of string→string). Required params must be provided."},
 			"workflow_instance_id": {Type: "string", Description: "Optional workflow instance ID (e.g. 'wf_1711062766') when spawning as part of a multi-step workflow."},
@@ -1914,6 +1931,10 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		profile, _ := args["profile"].(string)
 		if profile == "" {
 			profile, _ = args["agent"].(string)
+		}
+		domain, _ := args["domain"].(string)
+		if domain == "" {
+			domain = "/"
 		}
 		jobRef, _ := args["job"].(string)
 		workflowInstanceID, _ := args["workflow_instance_id"].(string)
@@ -1951,9 +1972,22 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			return "", fmt.Errorf("task is required (or provide a job)")
 		}
 
-		sessionID, err := deps.SpawnSubagent(task, constraints, profile, workflowInstanceID, workflowStep)
+		// Generate a session token and build a tokenized MCP URL so the subagent's
+		// gk_* calls are automatically routed to the right domain.
+		var mcpURL, sessionToken string
+		if deps.RegisterSession != nil && deps.MCPBaseURL != "" {
+			sessionToken = generateToken()
+			deps.RegisterSession(sessionToken, "", domain) // agentID filled in after spawn
+			mcpURL = deps.MCPBaseURL + "/mcp/" + sessionToken
+		}
+
+		sessionID, err := deps.SpawnSubagent(task, constraints, profile, workflowInstanceID, workflowStep, mcpURL)
 		if err != nil {
 			return "", fmt.Errorf("failed to spawn subagent: %w", err)
+		}
+		// Update session registration with the real agent ID now that we have it.
+		if deps.RegisterSession != nil && sessionToken != "" {
+			deps.RegisterSession(sessionToken, sessionID, domain)
 		}
 
 		msg := fmt.Sprintf("Subagent started. Session ID: %s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID)

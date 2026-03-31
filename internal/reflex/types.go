@@ -126,7 +126,10 @@ type ReflexResult struct {
 	ReflexName string
 	Success    bool
 	Stopped    bool // true if pipeline stopped early via gate
-	Escalate   bool // true if pipeline wants to escalate to executive
+	Escalate        bool           // true if pipeline wants to escalate to executive
+	EscalateMessage string         // human-readable reason (from explicit escalate action)
+	EscalateStep    int            // which pipeline step triggered escalation
+	EscalateVars    map[string]any // snapshot of accumulated vars at escalation point
 	Output     map[string]any
 	Error      error
 	Duration   time.Duration

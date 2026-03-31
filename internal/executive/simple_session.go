@@ -3,6 +3,7 @@ package executive
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -98,6 +99,98 @@ func (s *SimpleSession) resetPendingPath() string {
 		return ""
 	}
 	return s.statePath + "/reset.pending"
+}
+
+// execSessionPath returns the path to the persistent executive session file.
+func (s *SimpleSession) execSessionPath() string {
+	if s.statePath == "" {
+		return ""
+	}
+	return filepath.Join(s.statePath, "system", "executive-session.json")
+}
+
+// execSessionDiskFormat is the on-disk representation of the executive session.
+type execSessionDiskFormat struct {
+	ClaudeSessionID string    `json:"claude_session_id"`
+	SavedAt         time.Time `json:"saved_at"`
+	CacheReadTokens int       `json:"cache_read_tokens"`
+}
+
+// SaveSessionToDisk writes the current claudeSessionID to disk so it survives
+// Bud restarts. Callers must not hold s.mu when calling this.
+func (s *SimpleSession) SaveSessionToDisk() {
+	path := s.execSessionPath()
+	if path == "" {
+		return
+	}
+	cacheRead := 0
+	if s.lastUsage != nil {
+		cacheRead = s.lastUsage.CacheReadInputTokens
+	}
+	data, err := json.Marshal(execSessionDiskFormat{
+		ClaudeSessionID: s.claudeSessionID,
+		SavedAt:         time.Now().UTC(),
+		CacheReadTokens: cacheRead,
+	})
+	if err != nil {
+		log.Printf("[simple-session] failed to marshal session file: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		log.Printf("[simple-session] failed to save session to disk: %v", err)
+		return
+	}
+	if s.claudeSessionID != "" {
+		log.Printf("[simple-session] Saved Claude session ID to disk: %s", s.claudeSessionID)
+	} else {
+		log.Printf("[simple-session] Cleared Claude session ID from disk")
+	}
+}
+
+// LoadSessionFromDisk reads a previously persisted claudeSessionID from disk.
+// On success, sets s.claudeSessionID so the next wake can resume the session.
+// Must be called before any prompts are sent (i.e. at startup).
+func (s *SimpleSession) LoadSessionFromDisk() {
+	path := s.execSessionPath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		log.Printf("[simple-session] failed to read session file: %v", err)
+		return
+	}
+	var sf execSessionDiskFormat
+	if err := json.Unmarshal(data, &sf); err != nil {
+		log.Printf("[simple-session] failed to parse session file: %v", err)
+		return
+	}
+	if sf.ClaudeSessionID != "" {
+		s.claudeSessionID = sf.ClaudeSessionID
+		log.Printf("[simple-session] Loaded Claude session ID from disk: %s (saved %v ago)",
+			sf.ClaudeSessionID, time.Since(sf.SavedAt).Round(time.Second))
+	}
+}
+
+// WriteSessionLogEntry appends a message to the session log file (if set).
+// Used to write section headers like wake start and context-clear markers.
+func (s *SimpleSession) WriteSessionLogEntry(format string, args ...any) {
+	if s.sessionLogPath == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.sessionLogPath), 0755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(s.sessionLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintln(f, msg)
 }
 
 // isResetPending checks if a memory reset is pending
@@ -360,20 +453,13 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		fmt.Fprintf(logFile, "%s\n=== END PROMPT ===\n\n", prompt)
 	}
 
-	opts := []claudecode.Option{
+	// Build base options (no WithResume) so we can retry without it if needed.
+	baseOpts := []claudecode.Option{
 		claudecode.WithPermissionMode(claudecode.PermissionModeBypassPermissions),
 		claudecode.WithPartialStreaming(), // captures SessionID from first StreamEvent
 	}
-
-	// Resume existing Claude session when available, otherwise let the SDK
-	// create a new session (no --session-id equivalent in SDK).
-	if s.claudeSessionID != "" && s.isResuming {
-		log.Printf("[simple-session] Resuming Claude session %s (bud turn %s)", s.claudeSessionID, s.sessionID)
-		opts = append(opts, claudecode.WithResume(s.claudeSessionID))
-	}
-
 	if cfg.MCPServerURL != "" {
-		opts = append(opts, claudecode.WithMcpServers(map[string]claudecode.McpServerConfig{
+		baseOpts = append(baseOpts, claudecode.WithMcpServers(map[string]claudecode.McpServerConfig{
 			"bud2": &claudecode.McpHTTPServerConfig{
 				Type: claudecode.McpServerTypeHTTP,
 				URL:  cfg.MCPServerURL,
@@ -381,10 +467,18 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 		}))
 	}
 	if cfg.Model != "" {
-		opts = append(opts, claudecode.WithModel(cfg.Model))
+		baseOpts = append(baseOpts, claudecode.WithModel(cfg.Model))
 	}
 	if cfg.WorkDir != "" {
-		opts = append(opts, claudecode.WithCwd(cfg.WorkDir))
+		baseOpts = append(baseOpts, claudecode.WithCwd(cfg.WorkDir))
+	}
+
+	// Resume existing Claude session when available, otherwise let the SDK
+	// create a new session (no --session-id equivalent in SDK).
+	opts := append([]claudecode.Option{}, baseOpts...)
+	if s.claudeSessionID != "" && s.isResuming {
+		log.Printf("[simple-session] Resuming Claude session %s (bud turn %s)", s.claudeSessionID, s.sessionID)
+		opts = append(opts, claudecode.WithResume(s.claudeSessionID))
 	}
 
 	const sessionTimeout = 30 * time.Minute
@@ -393,31 +487,32 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 
 	logging.Debug("simple-session", "SendPrompt: prompt_len=%d resuming=%v", len(prompt), s.isResuming)
 
-	err := claudecode.WithClient(timeoutCtx, func(client claudecode.Client) error {
-		if err := client.Query(timeoutCtx, prompt); err != nil {
-			return err
-		}
-		msgCount := 0
-		heartbeatDone := make(chan struct{})
-		go func() {
-			t := time.NewTicker(60 * time.Second)
-			defer t.Stop()
-			lastCount := 0
-			for {
-				select {
-				case <-t.C:
-					if msgCount == lastCount {
-						log.Printf("[simple-session] WARNING: no new messages for 60s (msgs_so_far=%d)", msgCount)
-					}
-					lastCount = msgCount
-				case <-heartbeatDone:
-					return
-				case <-timeoutCtx.Done():
-					return
-				}
+	sendWithOpts := func(sendOpts []claudecode.Option) error {
+		return claudecode.WithClient(timeoutCtx, func(client claudecode.Client) error {
+			if err := client.Query(timeoutCtx, prompt); err != nil {
+				return err
 			}
-		}()
-		cb := receiveLoopCallbacks{
+			msgCount := 0
+			heartbeatDone := make(chan struct{})
+			go func() {
+				t := time.NewTicker(60 * time.Second)
+				defer t.Stop()
+				lastCount := 0
+				for {
+					select {
+					case <-t.C:
+						if msgCount == lastCount {
+							log.Printf("[simple-session] WARNING: no new messages for 60s (msgs_so_far=%d)", msgCount)
+						}
+						lastCount = msgCount
+					case <-heartbeatDone:
+						return
+					case <-timeoutCtx.Done():
+						return
+					}
+				}
+			}()
+			cb := receiveLoopCallbacks{
 				LogPrefix: "simple-session",
 				OnMsg:     func() { msgCount++ },
 				OnStreamEvent: func(sessionID string) {
@@ -454,7 +549,20 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 			receiveLoop(timeoutCtx, client, logFile, cb) //nolint:errcheck
 			close(heartbeatDone)
 			return nil
-		}, opts...)
+		}, sendOpts...)
+	}
+
+	err := sendWithOpts(opts)
+
+	// Graceful recovery: if --resume pointed at a session that no longer exists,
+	// clear the session ID and retry without it so the wake doesn't fail entirely.
+	if err != nil && s.isResuming && isSessionNotFoundError(err) {
+		log.Printf("[simple-session] WARNING: Claude session %s not found, starting fresh", s.claudeSessionID)
+		s.claudeSessionID = ""
+		s.isResuming = false
+		writeLog(logFile, "WARNING: session not found, retrying without --resume")
+		err = sendWithOpts(baseOpts)
+	}
 
 	if err != nil {
 		if ctx.Err() != nil {
@@ -473,6 +581,20 @@ func (s *SimpleSession) SendPrompt(ctx context.Context, prompt string, cfg Claud
 	}
 
 	return nil
+}
+
+// isSessionNotFoundError returns true if the error indicates the Claude session
+// referenced by --resume no longer exists. Used to trigger graceful recovery.
+func isSessionNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "session not found") ||
+		strings.Contains(msg, "no conversation found") ||
+		strings.Contains(msg, "invalid session") ||
+		strings.Contains(msg, "session does not exist") ||
+		strings.Contains(msg, "conversation not found")
 }
 
 // parseUsageFromResult extracts SessionUsage from a ResultMessage.

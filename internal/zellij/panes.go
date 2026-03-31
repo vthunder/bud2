@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -36,9 +37,20 @@ const (
 	tabName       = "Bud Sessions"
 )
 
+// execWindowOnce ensures EnsureExecWindow only opens one pane per process lifetime.
+var execWindowOnce sync.Once
+
+// EnsureExecWindow opens the persistent executive log pane exactly once per
+// process lifetime. Subsequent calls are no-ops. logPath should point to the
+// single persistent executive log (logs/exec/executive.log).
+func EnsureExecWindow(logPath string) {
+	execWindowOnce.Do(func() {
+		openPane("bud-exec", "tail -n +1 -F "+logPath)
+	})
+}
+
 // OpenExecWindow opens a zellij pane tailing the executive session event log.
-// logPath is the per-wake session log file. Uses tail -F so the pane waits
-// for the file to appear if not yet created.
+// Deprecated: use EnsureExecWindow for the single persistent log pane.
 func OpenExecWindow(focusID, logPath string) {
 	shortID := focusID
 	if len(shortID) > 6 {

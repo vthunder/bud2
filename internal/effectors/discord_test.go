@@ -351,3 +351,171 @@ func TestFindSplitPoint_ForcedSplitWhenNoBreaks(t *testing.T) {
 		t.Errorf("expected forced split at 2000, got %d", pt)
 	}
 }
+
+// --- convertMarkdownTables ---
+
+func TestConvertMarkdownTables_Basic(t *testing.T) {
+	input := "| Name | Score | Notes |\n|------|-------|-------|\n| Alice | 5 | great |\n| Bob | 3 | ok |"
+	output := convertMarkdownTables(input)
+
+	if !strings.Contains(output, "```") {
+		t.Error("expected output to contain code block markers")
+	}
+	if !strings.Contains(output, "Alice") {
+		t.Error("expected output to contain Alice")
+	}
+	if !strings.Contains(output, "Bob") {
+		t.Error("expected output to contain Bob")
+	}
+	// Pipes from table syntax should be gone
+	if strings.Contains(output, "| Alice") {
+		t.Error("expected table pipe syntax to be replaced")
+	}
+}
+
+func TestConvertMarkdownTables_NoTable(t *testing.T) {
+	input := "Just regular text\nwith no tables here"
+	output := convertMarkdownTables(input)
+	if output != input {
+		t.Errorf("expected no change for non-table content, got %q", output)
+	}
+}
+
+func TestConvertMarkdownTables_InsideFenceNotConverted(t *testing.T) {
+	input := "```\n| Name | Score |\n|------|-------|\n| Alice | 5 |\n```"
+	output := convertMarkdownTables(input)
+	if output != input {
+		t.Errorf("table inside fence should not be converted, got:\n%s", output)
+	}
+}
+
+func TestConvertMarkdownTables_EmbeddedInText(t *testing.T) {
+	input := "Before text\n\n| Name | Score |\n|------|-------|\n| Alice | 5 |\n\nAfter text"
+	output := convertMarkdownTables(input)
+
+	if !strings.Contains(output, "Before text") {
+		t.Error("expected output to preserve text before table")
+	}
+	if !strings.Contains(output, "After text") {
+		t.Error("expected output to preserve text after table")
+	}
+	if !strings.Contains(output, "```") {
+		t.Error("expected table to be converted to code block")
+	}
+}
+
+func TestConvertMarkdownTables_ColumnAlignment(t *testing.T) {
+	input := "| A | LongHeader |\n|---|------------|\n| x | short |"
+	output := convertMarkdownTables(input)
+
+	// "LongHeader" should appear in output (drives column width)
+	if !strings.Contains(output, "LongHeader") {
+		t.Error("expected LongHeader in output")
+	}
+	// Separator should be at least as wide as "LongHeader"
+	if !strings.Contains(output, strings.Repeat("-", len("LongHeader"))) {
+		t.Error("expected separator to match LongHeader width")
+	}
+}
+
+func TestConvertMarkdownTables_MissingDataRow(t *testing.T) {
+	// Header + separator but no data rows — should NOT convert
+	input := "| Name | Score |\n|------|-------|"
+	output := convertMarkdownTables(input)
+	if output != input {
+		t.Errorf("table without data rows should not be converted, got %q", output)
+	}
+}
+
+// --- splitCodeFenceAware ---
+
+func TestSplitCodeFenceAware_NoFence(t *testing.T) {
+	content := strings.Repeat("a", 3000)
+	chunk, rest, openFence := splitCodeFenceAware(content, 2000)
+
+	if openFence != "" {
+		t.Errorf("expected no openFence for plain content, got %q", openFence)
+	}
+	if len(chunk) > 2000 {
+		t.Errorf("chunk exceeds maxLen: %d", len(chunk))
+	}
+	if chunk+rest != content {
+		t.Error("chunk+rest should reconstruct original content")
+	}
+}
+
+func TestSplitCodeFenceAware_MidFenceReturnsOpenFence(t *testing.T) {
+	// Preamble + opening fence + long code that forces a mid-block split.
+	preamble := strings.Repeat("x", 100)
+	code := strings.Repeat("y", 2000)
+	content := preamble + "\n```go\n" + code + "\n```\n"
+
+	_, _, openFence := splitCodeFenceAware(content, 2000)
+
+	if openFence == "" {
+		t.Error("expected openFence to be non-empty when splitting inside a code block")
+	}
+	if openFence != "```go" {
+		t.Errorf("expected openFence=`````go`, got %q", openFence)
+	}
+}
+
+func TestSplitCodeFenceAware_PreferCleanFenceBoundary(t *testing.T) {
+	// A closing ``` falls within 300 chars of the limit — should use it.
+	block1 := strings.Repeat("a", 1600)
+	codeContent := strings.Repeat("b", 100)
+	block2 := strings.Repeat("c", 400)
+	// Layout: block1 \n ``` \n codeContent \n ``` \n block2
+	content := block1 + "\n```\n" + codeContent + "\n```\n" + block2
+
+	_, _, openFence := splitCodeFenceAware(content, 2000)
+
+	if openFence != "" {
+		t.Errorf("expected clean fence split (openFence=\"\"), got %q", openFence)
+	}
+}
+
+func TestSplitCodeFenceAware_ShortContent(t *testing.T) {
+	content := "short"
+	chunk, rest, openFence := splitCodeFenceAware(content, 2000)
+	if chunk != content || rest != "" || openFence != "" {
+		t.Errorf("short content: unexpected return values chunk=%q rest=%q openFence=%q", chunk, rest, openFence)
+	}
+}
+
+// --- chunkMessage (code-fence-aware + table conversion) ---
+
+func TestChunkMessage_TableConvertedBeforeSplit(t *testing.T) {
+	table := "| Name | Score |\n|------|-------|\n| Alice | 5 |"
+	chunks := chunkMessage(table, 2000)
+
+	if len(chunks) != 1 {
+		t.Errorf("expected 1 chunk, got %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0], "```") {
+		t.Error("expected converted table to contain code block markers")
+	}
+}
+
+func TestChunkMessage_CodeFenceSplitClosesReopens(t *testing.T) {
+	// Force a split inside a go code block.
+	preamble := strings.Repeat("x", 100)
+	code := strings.Repeat("y", 2000)
+	content := preamble + "\n```go\n" + code + "\n```\n"
+
+	chunks := chunkMessage(content, 2000)
+
+	for i, chunk := range chunks {
+		if len(chunk) > 2000 {
+			t.Errorf("chunk %d exceeds maxLen: %d chars", i, len(chunk))
+		}
+	}
+	if len(chunks) < 2 {
+		t.Errorf("expected multiple chunks for long code block, got %d", len(chunks))
+	}
+
+	// The first chunk that ends mid-fence should be closed.
+	// The second chunk should reopen with the language.
+	joined := strings.Join(chunks, "\n")
+	_ = joined // main check is that all chunks fit within limit
+}

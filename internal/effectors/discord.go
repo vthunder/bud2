@@ -382,8 +382,11 @@ func (e *DiscordEffector) sendInteractionFollowup(interaction *PendingInteractio
 }
 
 // chunkMessage splits a message into chunks that fit within maxLen.
-// It tries to split on paragraph boundaries, then line boundaries, then word boundaries.
+// It first converts markdown tables to code blocks, then splits with awareness
+// of code fence boundaries to avoid breaking them mid-block.
 func chunkMessage(content string, maxLen int) []string {
+	content = convertMarkdownTables(content)
+
 	if len(content) <= maxLen {
 		return []string{content}
 	}
@@ -397,12 +400,94 @@ func chunkMessage(content string, maxLen int) []string {
 			break
 		}
 
-		splitAt := findSplitPoint(remaining, maxLen)
-		chunks = append(chunks, strings.TrimRight(remaining[:splitAt], " \n"))
-		remaining = strings.TrimLeft(remaining[splitAt:], " \n")
+		chunk, rest, openFence := splitCodeFenceAware(remaining, maxLen)
+
+		if openFence != "" {
+			// Split fell mid-fence: close the block before the cut, reopen it after.
+			chunk = chunk + "\n```"
+			rest = openFence + "\n" + rest
+		}
+
+		chunks = append(chunks, strings.TrimRight(chunk, " \n"))
+		remaining = strings.TrimLeft(rest, " \n")
 	}
 
 	return chunks
+}
+
+// splitCodeFenceAware finds the best split point within maxLen, preferring
+// clean code fence boundaries. Returns the chunk to send, the remaining
+// content, and an openFence string. When openFence is non-empty the split fell
+// inside a code block; the caller should append ` ``` ` to chunk and prepend
+// openFence (e.g. "```go") to rest.
+func splitCodeFenceAware(content string, maxLen int) (chunk, rest, openFence string) {
+	if len(content) <= maxLen {
+		return content, "", ""
+	}
+
+	inFence := false
+	currentLang := ""
+	lastCleanFenceEnd := -1 // byte pos after last closing-fence line within preferred range
+
+	fenceRangeStart := maxLen - 300
+	if fenceRangeStart < 0 {
+		fenceRangeStart = 0
+	}
+
+	pos := 0
+	for pos < maxLen {
+		newlineOff := strings.IndexByte(content[pos:], '\n')
+		var lineEnd, afterLine int
+		if newlineOff < 0 {
+			lineEnd = len(content)
+			afterLine = len(content)
+		} else {
+			lineEnd = pos + newlineOff
+			afterLine = lineEnd + 1
+		}
+
+		line := content[pos:lineEnd]
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "```") {
+			lang := strings.TrimPrefix(trimmed, "```")
+			if inFence {
+				// Closing fence — record as a clean split boundary if in range.
+				inFence = false
+				currentLang = ""
+				if afterLine <= maxLen && afterLine >= fenceRangeStart {
+					lastCleanFenceEnd = afterLine
+				}
+			} else {
+				// Opening fence.
+				inFence = true
+				currentLang = lang
+			}
+		}
+
+		if afterLine >= maxLen {
+			break
+		}
+		pos = afterLine
+	}
+
+	// Prefer a clean fence boundary (split right after a closing ```).
+	if lastCleanFenceEnd > 0 {
+		return content[:lastCleanFenceEnd], content[lastCleanFenceEnd:], ""
+	}
+
+	// Fall back to content-aware split.
+	if inFence {
+		// Reserve 4 bytes for the "\n```" we'll append to close the fence.
+		adjustedMax := maxLen - 4
+		if adjustedMax < 1 {
+			adjustedMax = 1
+		}
+		splitAt := findSplitPoint(content, adjustedMax)
+		return content[:splitAt], content[splitAt:], "```" + currentLang
+	}
+	splitAt := findSplitPoint(content, maxLen)
+	return content[:splitAt], content[splitAt:], ""
 }
 
 // findSplitPoint finds the best place to split content within maxLen.
@@ -423,6 +508,142 @@ func findSplitPoint(content string, maxLen int) int {
 		return idx + 1
 	}
 	return maxLen
+}
+
+// isTableHeaderRow reports whether a line looks like a markdown table header.
+func isTableHeaderRow(line string) bool {
+	t := strings.TrimSpace(line)
+	return len(t) > 1 && strings.HasPrefix(t, "|") && strings.HasSuffix(t, "|")
+}
+
+// isTableSeparatorRow reports whether a line looks like a markdown table separator.
+func isTableSeparatorRow(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "|") && strings.Contains(t, "---")
+}
+
+// isTableDataRow reports whether a line looks like a markdown table data row.
+func isTableDataRow(line string) bool {
+	t := strings.TrimSpace(line)
+	return len(t) > 1 && strings.HasPrefix(t, "|")
+}
+
+// parseTableCells splits a markdown table row into trimmed cell strings.
+func parseTableCells(line string) []string {
+	t := strings.TrimSpace(line)
+	t = strings.TrimPrefix(t, "|")
+	t = strings.TrimSuffix(t, "|")
+	parts := strings.Split(t, "|")
+	cells := make([]string, len(parts))
+	for i, p := range parts {
+		cells[i] = strings.TrimSpace(p)
+	}
+	return cells
+}
+
+// convertTable converts a slice of markdown table lines to a ``` code block
+// with fixed-width aligned columns.
+func convertTable(tableLines []string) []string {
+	if len(tableLines) < 3 {
+		return tableLines
+	}
+
+	headers := parseTableCells(tableLines[0])
+	// tableLines[1] is the separator row — skip it.
+	numCols := len(headers)
+
+	var dataRows [][]string
+	for _, line := range tableLines[2:] {
+		dataRows = append(dataRows, parseTableCells(line))
+	}
+
+	// Compute per-column width.
+	widths := make([]int, numCols)
+	for i, h := range headers {
+		widths[i] = len(h)
+	}
+	for _, row := range dataRows {
+		for i := 0; i < numCols && i < len(row); i++ {
+			if len(row[i]) > widths[i] {
+				widths[i] = len(row[i])
+			}
+		}
+	}
+
+	out := []string{"```"}
+	out = append(out, fmtTableRow(headers, widths))
+	out = append(out, fmtTableSep(widths))
+	for _, row := range dataRows {
+		out = append(out, fmtTableRow(row, widths))
+	}
+	out = append(out, "```")
+	return out
+}
+
+func fmtTableRow(cells []string, widths []int) string {
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		var cell string
+		if i < len(cells) {
+			cell = cells[i]
+		}
+		parts[i] = cell + strings.Repeat(" ", w-len(cell))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func fmtTableSep(widths []int) string {
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		if w < 1 {
+			w = 1
+		}
+		parts[i] = strings.Repeat("-", w)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// convertMarkdownTables replaces markdown table blocks with fixed-width text
+// inside ``` code blocks. Tables inside existing code fences are left unchanged.
+func convertMarkdownTables(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
+	inFence := false
+	i := 0
+
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		// Track code fence state — skip table conversion inside fences.
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			result = append(result, line)
+			i++
+			continue
+		}
+
+		// Look for table: header + separator + ≥1 data row, outside any fence.
+		if !inFence && isTableHeaderRow(line) && i+1 < len(lines) && isTableSeparatorRow(lines[i+1]) {
+			tableLines := []string{line, lines[i+1]}
+			j := i + 2
+			for j < len(lines) && isTableDataRow(lines[j]) {
+				tableLines = append(tableLines, lines[j])
+				j++
+			}
+
+			if j > i+2 { // at least one data row found
+				result = append(result, convertTable(tableLines)...)
+				i = j
+				continue
+			}
+		}
+
+		result = append(result, line)
+		i++
+	}
+
+	return strings.Join(result, "\n")
 }
 
 func (e *DiscordEffector) addReaction(action *types.Action) error {
