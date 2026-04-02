@@ -802,7 +802,7 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 
 	// trigger_bud_redeploy - allows bud to request redeployment
 	server.RegisterTool("trigger_bud_redeploy", mcp.ToolDef{
-		Description: "Trigger a redeployment of the BUD AI agent service ONLY. NOT for sandmill.org or any other project. Use deploy_sandmill for sandmill.org deployments.",
+		Description: "Trigger a redeployment of the BUD AI agent service ONLY. NOT for sandmill.org or any other project. For other projects, use Bash with the project's own deploy script.",
 		Properties: map[string]mcp.PropDef{
 			"reason": {Type: "string", Description: "Reason for redeployment (optional)"},
 		},
