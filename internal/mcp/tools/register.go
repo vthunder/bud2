@@ -832,33 +832,6 @@ func registerStateTools(server *mcp.Server, deps *Dependencies) {
 		return "Redeploy started. Service will restart momentarily.", nil
 	})
 
-	// deploy_sandmill - deploy sandmill.org via Dokku git push
-	server.RegisterTool("deploy_sandmill", mcp.ToolDef{
-		Description: "Deploy sandmill.org to production via Dokku. Use this after pushing commits to the sandmill repo. Runs scripts/deploy.sh from the sandmill directory.",
-		Properties: map[string]mcp.PropDef{
-			"commit": {Type: "string", Description: "Commit hash or description being deployed (for logging)"},
-		},
-	}, func(ctx any, args map[string]any) (string, error) {
-		commit, _ := args["commit"].(string)
-		if commit == "" {
-			commit = "latest"
-		}
-
-		deployScript := "/Users/thunder/src/sandmill/scripts/deploy.sh"
-		if _, err := os.Stat(deployScript); os.IsNotExist(err) {
-			return "", fmt.Errorf("sandmill deploy script not found: %s", deployScript)
-		}
-
-		cmd := exec.Command("bash", deployScript)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("sandmill deploy failed: %w\n%s", err, string(out))
-		}
-
-		log.Printf("Sandmill deployed: %s", commit)
-		return fmt.Sprintf("Sandmill deployed (%s). Output:\n%s", commit, string(out)), nil
-	})
-
 	// state_percepts - manage percepts
 	server.RegisterTool("state_percepts", mcp.ToolDef{
 		Description: "Manage percepts (short-term memory). Actions: list, count, clear.",
