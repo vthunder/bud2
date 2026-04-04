@@ -4,6 +4,12 @@ description: Software development tasks with full file access
 level: execution
 skills: []
 tools:
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - Bash
   - mcp__bud2__save_thought
 ---
 

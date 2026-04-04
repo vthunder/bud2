@@ -5,6 +5,9 @@ level: execution
 skills:
   - code-review
 tools:
+  - Read
+  - Glob
+  - Grep
   - mcp__bud2__save_thought
 ---
 

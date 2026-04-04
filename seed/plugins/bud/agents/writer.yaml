@@ -4,6 +4,11 @@ description: Documentation and guide writing tasks with file read/write access
 level: execution
 skills: []
 tools:
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
   - mcp__bud2__save_thought
 ---
 
