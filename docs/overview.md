@@ -1,12 +1,12 @@
 ---
-generated_at: 2026-04-05T20:37:07Z
-commit: 327ac74a
+generated_at: 2026-04-05T21:55:00Z
+commit: f18e5087
 repomix: available
 ---
 
 # bud2 — Overview
 
-> Generated: 2026-04-05 | Commit: 327ac74a
+> Generated: 2026-04-05 | Commit: f18e5087
 
 ## Purpose
 
@@ -31,10 +31,11 @@ For items that pass through reflexes, `ExecutiveV2` (`internal/executive/executi
 | `internal/mcp/` | MCP HTTP server and all tool registrations (GK, calendar, GitHub, VM, etc.) |
 | `internal/memory/` | Short-term working memory — percept pool, threads, traces, inbox |
 | `internal/engram/` | HTTP client to the Engram memory service (long-term graph memory) |
+| `internal/types/` | Shared type definitions — most-imported package (centrality 28) |
+| `internal/integrations/` | External integration helpers (cross-cutting, centrality 16) |
 | `internal/budget/` | Token/thinking-time budget tracking across sessions |
 | `internal/gtd/` | Local GTD task store (JSON-backed; Things 3 integration via things-mcp MCP server) |
 | `internal/eval/` | Memory quality evaluation (judge.go) for self-rating retrieved memories |
-| `internal/reflex/actions.go` | Action registry — what reflexes can do (reply, gtd_add, invoke_reflex, etc.) |
 | `seed/` | Configuration seeds — guides, plugins, reflexes, wakeup instructions, agent defs |
 | `things-mcp/` | Embedded TypeScript MCP server for Things 3 integration (git submodule) |
 
@@ -46,9 +47,9 @@ For items that pass through reflexes, `ExecutiveV2` (`internal/executive/executi
 - `internal/focus/types.go` — `PendingItem`, `FocusState`, priority levels (`P0`–`P2`)
 - `internal/mcp/tools/register.go` — all MCP tool definitions; largest file, entry point for any tool work
 - `internal/reflex/engine.go` — YAML reflex loading, evaluation, and action dispatch
+- `internal/types/` — shared types imported by nearly every package
 - `seed/core.md` → `state/system/core.md` — Claude's identity and standing instructions (seeded on first run)
 - `seed/wakeup.md` — injected into autonomous wake prompts
-- `DESIGN.md` — v1 conceptual architecture (subsumption inspiration); see `docs/architecture/v2-memory-architecture.md` for current design
 - `docs/architecture/message-flow.md` — sequence diagram of the full request path
 
 ## Conventions
