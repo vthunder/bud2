@@ -8,7 +8,7 @@ Topics span modules — signals are the max across constituent modules.
 | 1 | Session Lifecycle & Context Assembly | 1.00 | `internal/executive`, `internal/types`, `internal/memory` | centrality 28, no doc, 112 commits/90d, 53 fix-commits (foundational). Source: `executive-text-capture.md` | generated |
 | 2 | MCP Tool Dispatch & Registration | 0.99 | `internal/mcp`, `internal/types` | centrality 28, complexity max (63.85), 68 commits/90d (foundational) | generated |
 | 3 | Subagent Orchestration | 0.98 | `internal/executive`, `internal/types`, `internal/effectors` | centrality 28, no doc, 112 commits/90d, 53 fix-commits | generated |
-| 4 | Reflex Evaluation Pipeline | 0.84 | `internal/reflex`, `internal/senses`, `internal/types` | centrality 28, no doc, 22 commits/90d, 8 fix-commits (foundational) | missing |
+| 4 | Reflex Evaluation Pipeline | 0.84 | `internal/reflex`, `internal/senses`, `internal/types` | centrality 28, no doc, 22 commits/90d, 8 fix-commits (foundational) | generated |
 | 5 | Attention & Salience Computation | 0.77 | `internal/focus`, `internal/types` | centrality 28, no doc, 16 commits/90d (foundational) | missing |
 | 6 | Wake Scheduling & Autonomous Sessions | 0.74 | `internal/executive`, `internal/focus`, `internal/budget` | no doc, 112 commits/90d, 53 fix-commits, high complexity | missing |
 | 7 | Token Budget & Session Caps | 0.74 | `internal/budget`, `internal/executive` | no doc, 112 commits/90d (inherited), 53 fix-commits, high complexity | missing |
@@ -20,7 +20,7 @@ Topics span modules — signals are the max across constituent modules.
 
 ## Recommended next
 
-Run `dev:arch-doc "Reflex Evaluation Pipeline"` on `bud2` — ranks 1–3 are now generated; Reflex Evaluation Pipeline is the next highest-priority undocumented topic (rank 4, score 0.84).
+Run `dev:arch-doc "Attention & Salience Computation"` on `bud2` — ranks 1–4 are now generated; Attention & Salience Computation is the next highest-priority undocumented topic (rank 5, score 0.77).
 
 ---
 _Generated: 2026-04-06T00:08:00Z | Commit: 34809241_
