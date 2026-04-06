@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -146,6 +147,35 @@ func (q *Queue) PopHighestMaxPriority(maxPriority Priority) *PendingItem {
 	item := q.items[bestIdx]
 	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
 	return item
+}
+
+// PopAllMaxPriority removes and returns all items with priority <= maxPriority,
+// sorted by priority ascending (most urgent first), then salience descending.
+// Returns nil if no qualifying items exist.
+func (q *Queue) PopAllMaxPriority(maxPriority Priority) []*PendingItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var result []*PendingItem
+	var remaining []*PendingItem
+
+	for _, item := range q.items {
+		if item.Priority <= maxPriority {
+			result = append(result, item)
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	q.items = remaining
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		return result[i].Salience > result[j].Salience
+	})
+
+	return result
 }
 
 // PopHighestMinPriority removes and returns the highest priority item

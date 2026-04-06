@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -583,24 +584,24 @@ func (e *ExecutiveV2) ProcessNext(ctx context.Context) (bool, error) {
 	defer e.attention.Complete()
 
 	// Process the item
-	if err := e.processItem(ctx, item); err != nil {
+	if err := e.processItem(ctx, []*focus.PendingItem{item}); err != nil {
 		return true, err
 	}
 
 	return true, nil
 }
 
-// ProcessNextP1 processes the next P0/P1 item (user input, critical alerts).
+// ProcessNextP1 processes all queued P0/P1 items (user input, critical alerts) as a batch.
 // Bypasses the attention system so it can run concurrently with ProcessNextBackground.
-// Returns true if an item was processed, false if no P0/P1 items are queued.
+// Returns true if any items were processed, false if no P0/P1 items are queued.
 func (e *ExecutiveV2) ProcessNextP1(ctx context.Context) (bool, error) {
-	item := e.queue.PopHighestMaxPriority(focus.P1UserInput)
-	if item == nil {
+	items := e.queue.PopAllMaxPriority(focus.P1UserInput)
+	if len(items) == 0 {
 		return false, nil
 	}
 	e.p1Active.Store(true)
 	defer e.p1Active.Store(false)
-	if err := e.processItem(ctx, item); err != nil {
+	if err := e.processItem(ctx, items); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -631,7 +632,7 @@ func (e *ExecutiveV2) ProcessNextBackground(ctx context.Context) (bool, error) {
 		e.backgroundMu.Unlock()
 	}()
 
-	if err := e.processItem(bgCtx, item); err != nil {
+	if err := e.processItem(bgCtx, []*focus.PendingItem{item}); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -725,11 +726,13 @@ func (e *ExecutiveV2) SignalDone() {
 func (e *ExecutiveV2) ProcessItem(ctx context.Context, item *focus.PendingItem) error {
 	e.attention.Focus(item)
 	defer e.attention.Complete()
-	return e.processItem(ctx, item)
+	return e.processItem(ctx, []*focus.PendingItem{item})
 }
 
-// processItem handles a single focus item
-func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) error {
+// processItem handles one or more focus items as a single batch.
+// items[0] is the primary item and drives channel, typing indicator, and session decisions.
+func (e *ExecutiveV2) processItem(ctx context.Context, items []*focus.PendingItem) error {
+	item := items[0] // primary item drives channel, typing indicator, session decisions
 	// L1: Overall executive processing
 	defer profiling.Get().Start(item.ID, "executive.total")()
 
@@ -817,7 +820,7 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	var bundle *focus.ContextBundle
 	func() {
 		defer profiling.Get().Start(item.ID, "executive.context_build")()
-		bundle = e.buildContext(item)
+		bundle = e.buildContext(items)
 	}()
 
 	// Collect memory IDs to mark as seen after prompt is sent
@@ -999,7 +1002,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 	// User messages (priority P1) MUST produce a response (talk_to_user or emoji reaction)
 	// Check both OnToolCall (for non-MCP tools) and mcpToolCalled (for MCP tools)
 	mcpResponseSent := e.mcpToolCalled["talk_to_user"] || e.mcpToolCalled["discord_react"]
-	isUserMessage := item.Priority == focus.P1UserInput || item.Source == "discord" || item.Source == "inbox"
+	isUserMessage := false
+	for _, it := range items {
+		if it.Priority == focus.P1UserInput || it.Source == "discord" || it.Source == "inbox" {
+			isUserMessage = true
+			break
+		}
+	}
 	if isUserMessage && !userGotResponse && !mcpResponseSent {
 		log.Printf("[executive] ERROR: User message completed without response")
 		logging.Debug("executive", "Item: %s, Content: %s", item.ID, truncate(item.Content, 50))
@@ -1027,11 +1036,13 @@ func (e *ExecutiveV2) processItem(ctx context.Context, item *focus.PendingItem) 
 }
 
 // buildContext assembles the context bundle for the current focus
-func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle {
+func (e *ExecutiveV2) buildContext(items []*focus.PendingItem) *focus.ContextBundle {
+	item := items[0]
 	bundle := &focus.ContextBundle{
-		CurrentFocus: item,
-		Suspended:    e.attention.GetState().Suspended,
-		Metadata:     make(map[string]string),
+		CurrentFocus:    item,
+		AdditionalFocus: items[1:],
+		Suspended:       e.attention.GetState().Suspended,
+		Metadata:        make(map[string]string),
 	}
 
 	// Get core identity from cached file content
@@ -1043,7 +1054,11 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 		var hasAuth bool
 		func() {
 			defer profiling.Get().Start(item.ID, "context.conversation_load")()
-			content, hasAuth = e.buildRecentConversation(item.ChannelID, item.ID)
+			excludeIDs := make([]string, len(items))
+			for i, it := range items {
+				excludeIDs[i] = it.ID
+			}
+			content, hasAuth = e.buildRecentConversation(item.ChannelID, excludeIDs)
 		}()
 		if content != "" {
 			bundle.BufferContent = content
@@ -1208,9 +1223,9 @@ func (e *ExecutiveV2) buildContext(item *focus.PendingItem) *focus.ContextBundle
 //   nothing is lost between consolidation cycles)
 //
 // Returns the formatted content and whether authorization patterns were detected.
-func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (string, bool) {
+func (e *ExecutiveV2) buildRecentConversation(channelID string, excludeIDs []string) (string, bool) {
 	// Fetch up to 100 episodes for variable buffer (min 30, max 100 for unconsolidated)
-	stopGetEpisodes := profiling.Get().Start(excludeID, "context.conversation_load.get_episodes")
+	stopGetEpisodes := profiling.Get().Start(excludeIDs[0], "context.conversation_load.get_episodes")
 	episodes, err := e.memory.GetRecentEpisodes(channelID, 100)
 	stopGetEpisodes()
 	if err != nil {
@@ -1224,7 +1239,7 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 
 	// Fetch unconsolidated episode IDs for the extended buffer (episodes 31-100).
 	// Errors are non-fatal: we just won't extend beyond the base 30.
-	stopGetUnconsolidated := profiling.Get().Start(excludeID, "context.conversation_load.get_unconsolidated")
+	stopGetUnconsolidated := profiling.Get().Start(excludeIDs[0], "context.conversation_load.get_unconsolidated")
 	unconsolidated, _ := e.memory.GetUnconsolidatedEpisodeIDs(channelID)
 	stopGetUnconsolidated()
 
@@ -1234,9 +1249,9 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 	for i, ep := range episodes {
 		allIDs[i] = ep.ID
 	}
-	stopGetSummaries := profiling.Get().Start(excludeID, "context.conversation_load.get_summaries")
+	stopGetSummaries := profiling.Get().Start(excludeIDs[0], "context.conversation_load.get_summaries")
 	c32Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 32) // ~32 word summaries
-	c8Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 8) // ~8 word summaries
+	c8Map, _ := e.memory.GetEpisodeSummariesBatch(allIDs, 8)   // ~8 word summaries
 	stopGetSummaries()
 
 	// lookupSummary returns (content, tokens, compressionLevel) for an episode.
@@ -1283,8 +1298,8 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			ep := episodes[episodeIdx]
 			episodeIdx++
 
-			// Skip the current focus item
-			if ep.ID == excludeID {
+			// Skip the current focus item(s)
+			if slices.Contains(excludeIDs, ep.ID) {
 				i-- // Don't count this toward tier limit
 				continue
 			}
@@ -1337,7 +1352,7 @@ func (e *ExecutiveV2) buildRecentConversation(channelID, excludeID string) (stri
 			ep := episodes[episodeIdx]
 			episodeIdx++
 
-			if ep.ID == excludeID {
+			if slices.Contains(excludeIDs, ep.ID) {
 				continue
 			}
 
@@ -1656,6 +1671,30 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			}
 		}
 		prompt.WriteString("\n")
+
+		// Render additional batched messages (co-equal P1 items in the same batch)
+		for _, af := range bundle.AdditionalFocus {
+			prompt.WriteString("## Additional Message\n")
+			prompt.WriteString(fmt.Sprintf("Content: %s\n", af.Content))
+			if len(af.Data) > 0 {
+				var metadata []string
+				if msgID, ok := af.Data["message_id"].(string); ok && msgID != "" {
+					metadata = append(metadata, fmt.Sprintf("  message_id: %s", msgID))
+				}
+				if chanID := af.ChannelID; chanID != "" {
+					metadata = append(metadata, fmt.Sprintf("  channel_id: %s", chanID))
+				}
+				if !af.Timestamp.IsZero() {
+					metadata = append(metadata, fmt.Sprintf("  timestamp: %s", af.Timestamp.Format(time.RFC3339)))
+				}
+				if len(metadata) > 0 {
+					prompt.WriteString("Metadata:\n")
+					prompt.WriteString(strings.Join(metadata, "\n"))
+					prompt.WriteString("\n")
+				}
+			}
+			prompt.WriteString("\n")
+		}
 
 		// For autonomous wake impulses, inject the wakeup checklist
 		// so Claude has concrete instructions instead of a vague "do background work"

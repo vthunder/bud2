@@ -57,6 +57,7 @@ type FocusState struct {
 // ContextBundle represents assembled context for the executive
 type ContextBundle struct {
 	CurrentFocus       *PendingItem
+	AdditionalFocus    []*PendingItem    // Additional messages in the same batch (batched P1 handling)
 	Suspended          []*PendingItem
 	BufferContent      string            // Conversation buffer for current scope
 	HasAuthorizations  bool              // True if buffer contains historical authorizations
