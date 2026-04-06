@@ -2,7 +2,6 @@
 name: writer
 description: Documentation and guide writing tasks with file read/write access
 level: execution
-skills: []
 tools:
   - Read
   - Write

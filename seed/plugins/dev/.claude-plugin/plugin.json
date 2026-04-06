@@ -1,8 +1,0 @@
-{
-  "name": "dev",
-  "description": "Development skills — code review, product requirements, PRD conversion, and web research",
-  "author": {
-    "name": "Bud"
-  },
-  "skills": "./skills/"
-}

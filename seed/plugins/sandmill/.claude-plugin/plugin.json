@@ -1,8 +1,0 @@
-{
-  "name": "sandmill",
-  "description": "Sandmill content skills — blog pipeline, voice interview, and VM emulator control",
-  "author": {
-    "name": "Bud"
-  },
-  "skills": "./skills/"
-}
