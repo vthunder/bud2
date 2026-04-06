@@ -1388,19 +1388,6 @@ func main() {
 					return
 
 				case <-timer.C:
-					// Skip wake during quiet hours (23:00–07:00 local time) to avoid
-					// wasting resources while the user is sleeping.
-					tz := userTimezone
-					if tz == nil {
-						tz = time.UTC
-					}
-					now := time.Now().In(tz)
-					hour := now.Hour()
-					if hour >= 23 || hour < 7 {
-						log.Printf("[autonomous] Quiet hours (%02d:00 %s) — skipping wake", hour, tz)
-						continue
-					}
-
 					// Idle gate: skip if user was active too recently or a P1 session is running.
 					lastInput := activityLog.LastUserInputTime()
 					if !lastInput.IsZero() && time.Since(lastInput) < autonomousIdleRequired {
