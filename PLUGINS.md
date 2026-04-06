@@ -36,3 +36,31 @@ Clone the repo containing the plugin, then add it to your Bud startup config:
 ```
 
 Bud will load all plugin directories found under the specified path.
+
+## Plugin Manifest (`plugins.yaml`)
+
+Instead of passing `--plugin-dir` flags, you can declare plugins in a manifest file at `state/system/plugins.yaml`. Bud reads this at startup and clones/updates each plugin automatically.
+
+**Location:** `~/src/bud2/state/system/plugins.yaml`
+
+**Format:**
+
+```yaml
+# Format: owner/repo[:path][@ref]
+#   owner/repo         — clone from GitHub, use repo root as plugin dir
+#   owner/repo:path    — use subdirectory within repo (for monorepos)
+#   owner/repo@ref     — pin to branch, tag, or commit
+plugins:
+  - vthunder/useful-plugins
+  - stuartparmenter/autopilot:plugins
+```
+
+**Field syntax:**
+
+| Syntax | Meaning |
+|---|---|
+| `owner/repo` | Clone `github.com/owner/repo`, load plugin from repo root |
+| `owner/repo:path` | Load plugin from `path/` subdirectory (monorepo style) |
+| `owner/repo@ref` | Pin to a branch, tag, or commit SHA |
+
+These can be combined: `owner/repo:plugins@v1.2.0`
