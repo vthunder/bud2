@@ -445,7 +445,14 @@ func (m *SubagentManager) runSession(ctx context.Context, session *SubagentSessi
 
 		if toolName != "AskUserQuestion" {
 			log.Printf("[subagent-%s] tool: %s", session.ID[:8], toolName)
-			return claudecode.NewPermissionResultAllow(), nil
+			// Return the original input as UpdatedInput to satisfy the CLI's Zod schema,
+			// which requires updatedInput to be present (as a record) in Allow responses.
+			// Without this, the CLI fails validation with "updatedInput expected record,
+			// received undefined", causing all MCP tool calls to fail in AcceptEdits mode.
+			return claudecode.PermissionResultAllow{
+				Behavior:     "allow",
+				UpdatedInput: input,
+			}, nil
 		}
 
 		question := extractAskUserQuestionText(input)
