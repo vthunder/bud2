@@ -380,6 +380,42 @@ func TestBuildPrompt_CurrentFocusAttachments(t *testing.T) {
 	}
 }
 
+// TestBuildPrompt_BatchedMessages verifies that multiple messages render under
+// ## Messages with inline [id] prefixes.
+func TestBuildPrompt_BatchedMessages(t *testing.T) {
+	exec := newTestExecutive(t)
+	bundle := &focus.ContextBundle{
+		CurrentFocus: &focus.PendingItem{
+			Type:    "message",
+			Source:  "inbox",
+			Content: "first message",
+			Data:    map[string]any{"message_id": "id-aaa"},
+		},
+		AdditionalFocus: []*focus.PendingItem{
+			{
+				Type:    "message",
+				Source:  "inbox",
+				Content: "second message",
+				Data:    map[string]any{"message_id": "id-bbb"},
+			},
+		},
+	}
+	out := exec.buildPrompt(bundle)
+
+	if !strings.Contains(out, "## Messages") {
+		t.Errorf("expected ## Messages header for batched messages, got:\n%s", out)
+	}
+	if strings.Contains(out, "## Message\n") {
+		t.Errorf("expected no single ## Message header in batched case, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[id-aaa] first message") {
+		t.Errorf("expected inline ID for first message, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[id-bbb] second message") {
+		t.Errorf("expected inline ID for second message, got:\n%s", out)
+	}
+}
+
 // TestBuildPrompt_WakeFocus verifies that wake-type focus items inject the
 // WakeupInstructions and WakeSessionContext into the prompt.
 func TestBuildPrompt_WakeFocus(t *testing.T) {

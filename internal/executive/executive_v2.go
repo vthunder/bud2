@@ -1504,6 +1504,39 @@ func focusSectionHeader(item *focus.PendingItem) string {
 	}
 }
 
+// writeFocusAttachments renders any attachments from a focus item into the prompt.
+// Data["attachments"] may be []map[string]any (in-memory) or []interface{} (after JSON round-trip).
+func writeFocusAttachments(prompt *strings.Builder, item *focus.PendingItem) {
+	attsRaw, ok := item.Data["attachments"]
+	if !ok {
+		return
+	}
+	var atts []map[string]any
+	switch v := attsRaw.(type) {
+	case []map[string]any:
+		atts = v
+	case []interface{}:
+		for _, a := range v {
+			if m, ok := a.(map[string]interface{}); ok {
+				atts = append(atts, m)
+			}
+		}
+	}
+	if len(atts) == 0 {
+		return
+	}
+	prompt.WriteString("Attachments:\n")
+	for _, att := range atts {
+		url, _ := att["url"].(string)
+		filename, _ := att["filename"].(string)
+		ct, _ := att["content_type"].(string)
+		if ct == "" {
+			ct = "unknown"
+		}
+		prompt.WriteString(fmt.Sprintf("  - %s (%s): %s\n", filename, ct, url))
+	}
+}
+
 // buildPrompt constructs the prompt from a context bundle
 func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 	var prompt strings.Builder
@@ -1608,80 +1641,55 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 
 	// Current focus item
 	if bundle.CurrentFocus != nil {
-		prompt.WriteString(focusSectionHeader(bundle.CurrentFocus))
-		prompt.WriteString("\n")
-		prompt.WriteString(bundle.CurrentFocus.Content)
-		prompt.WriteString("\n")
-
-		// Surface reflex escalation context so the executive knows what the reflex pre-fetched
-		if escalated, _ := bundle.CurrentFocus.Data["_reflex_escalated"].(bool); escalated {
-			reflexName, _ := bundle.CurrentFocus.Data["_reflex_name"].(string)
-			escalateMsg, _ := bundle.CurrentFocus.Data["_escalate_message"].(string)
-			escalateVars, _ := bundle.CurrentFocus.Data["_escalate_vars"].(map[string]any)
-			prompt.WriteString(fmt.Sprintf("Reflex Escalation:\n  Reflex: %s\n", reflexName))
-			if escalateMsg != "" {
-				prompt.WriteString(fmt.Sprintf("  Reason: %s\n", escalateMsg))
-			}
-			if len(escalateVars) > 0 {
-				prompt.WriteString("  Pre-fetched context from reflex pipeline:\n")
-				// Sort keys for deterministic output
-				keys := make([]string, 0, len(escalateVars))
-				for k := range escalateVars {
-					keys = append(keys, k)
+		if len(bundle.AdditionalFocus) > 0 {
+			// Batched messages: render all under ## Messages with inline IDs
+			prompt.WriteString("## Messages\n")
+			all := append([]*focus.PendingItem{bundle.CurrentFocus}, bundle.AdditionalFocus...)
+			for _, msg := range all {
+				msgID, _ := msg.Data["message_id"].(string)
+				if msgID != "" {
+					prompt.WriteString(fmt.Sprintf("[%s] %s\n\n", msgID, msg.Content))
+				} else {
+					prompt.WriteString(msg.Content + "\n\n")
 				}
-				sort.Strings(keys)
-				for _, k := range keys {
-					// Skip internal vars
-					if strings.HasPrefix(k, "_") {
-						continue
-					}
-					prompt.WriteString(fmt.Sprintf("    %s: %v\n", k, escalateVars[k]))
-				}
+				writeFocusAttachments(&prompt, msg)
 			}
-		}
-
-		// Add message ID if present
-		if msgID, ok := bundle.CurrentFocus.Data["message_id"].(string); ok && msgID != "" {
-			prompt.WriteString(fmt.Sprintf("id: %s\n", msgID))
-		}
-		// Surface attachments so the executive can view images/files via WebFetch
-		// Data["attachments"] may be []map[string]any (in-memory path) or []interface{} (after JSON round-trip)
-		if attsRaw, ok := bundle.CurrentFocus.Data["attachments"]; ok {
-			// Normalize to []map[string]any regardless of origin
-			var atts []map[string]any
-			switch v := attsRaw.(type) {
-			case []map[string]any:
-				atts = v
-			case []interface{}:
-				for _, item := range v {
-					if m, ok := item.(map[string]interface{}); ok {
-						atts = append(atts, m)
-					}
-				}
-			}
-			if len(atts) > 0 {
-				prompt.WriteString("Attachments:\n")
-				for _, att := range atts {
-					url, _ := att["url"].(string)
-					filename, _ := att["filename"].(string)
-					ct, _ := att["content_type"].(string)
-					if ct == "" {
-						ct = "unknown"
-					}
-					prompt.WriteString(fmt.Sprintf("  - %s (%s): %s\n", filename, ct, url))
-				}
-			}
-		}
-		prompt.WriteString("\n")
-
-		// Render additional batched messages (co-equal P1 items in the same batch)
-		for _, af := range bundle.AdditionalFocus {
-			prompt.WriteString("## Additional Message\n")
-			prompt.WriteString(af.Content)
+		} else {
+			// Single focus item
+			prompt.WriteString(focusSectionHeader(bundle.CurrentFocus))
 			prompt.WriteString("\n")
-			if msgID, ok := af.Data["message_id"].(string); ok && msgID != "" {
+			prompt.WriteString(bundle.CurrentFocus.Content)
+			prompt.WriteString("\n")
+
+			// Surface reflex escalation context so the executive knows what the reflex pre-fetched
+			if escalated, _ := bundle.CurrentFocus.Data["_reflex_escalated"].(bool); escalated {
+				reflexName, _ := bundle.CurrentFocus.Data["_reflex_name"].(string)
+				escalateMsg, _ := bundle.CurrentFocus.Data["_escalate_message"].(string)
+				escalateVars, _ := bundle.CurrentFocus.Data["_escalate_vars"].(map[string]any)
+				prompt.WriteString(fmt.Sprintf("Reflex Escalation:\n  Reflex: %s\n", reflexName))
+				if escalateMsg != "" {
+					prompt.WriteString(fmt.Sprintf("  Reason: %s\n", escalateMsg))
+				}
+				if len(escalateVars) > 0 {
+					prompt.WriteString("  Pre-fetched context from reflex pipeline:\n")
+					keys := make([]string, 0, len(escalateVars))
+					for k := range escalateVars {
+						keys = append(keys, k)
+					}
+					sort.Strings(keys)
+					for _, k := range keys {
+						if strings.HasPrefix(k, "_") {
+							continue
+						}
+						prompt.WriteString(fmt.Sprintf("    %s: %v\n", k, escalateVars[k]))
+					}
+				}
+			}
+
+			if msgID, ok := bundle.CurrentFocus.Data["message_id"].(string); ok && msgID != "" {
 				prompt.WriteString(fmt.Sprintf("id: %s\n", msgID))
 			}
+			writeFocusAttachments(&prompt, bundle.CurrentFocus)
 			prompt.WriteString("\n")
 		}
 
