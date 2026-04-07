@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	osExec "os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -1445,31 +1444,11 @@ func main() {
 
 	// Activation decay is handled automatically by Engram.
 
-	// Periodic state sync: commit and push state/ to bud2-state repo every hour.
-	// This replaces the old impulse:task recurring mechanism removed in the Things 3 migration.
-	stateSyncPath := statePath // capture for goroutine
-	go func() {
-		syncTicker := time.NewTicker(1 * time.Hour)
-		defer syncTicker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-syncTicker.C:
-				cmd := osExec.Command("bash", "-c",
-					`git add -A && git diff --cached --quiet || git commit -m "auto sync $(date +%Y-%m-%d-%H%M)" && git push`,
-				)
-				cmd.Dir = stateSyncPath
-				if out, err := cmd.CombinedOutput(); err != nil {
-					log.Printf("[state-sync] Error: %v — %s", err, strings.TrimSpace(string(out)))
-				} else {
-					log.Printf("[state-sync] State synced to git")
-				}
-			}
-		}
-	}()
-	log.Printf("[main] State sync scheduled (every 1h)")
+	// Periodic state sync: DISABLED — causes pathological git processes when large files
+	// (memory.db, wasm blobs, etc.) are tracked. Re-enable after gitignore cleanup.
+	// See: state-sync goroutine was running git add -A && git push every hour.
+	_ = statePath // suppress unused warning
+	log.Printf("[main] State sync disabled (git bloat prevention)")
 
 	// Outbox is append-only, no periodic save needed
 
