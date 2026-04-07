@@ -29,6 +29,16 @@ After responding or completing a task, call signal_done to track thinking time a
 
 Context persists only if saved. Use save_thought to preserve observations and reasoning. Write discovered knowledge and research as atomic zettels using `zettel-new` (stored in `state/zettel/`). Use `state/notes/` only for longer source documents that will be converted to zettels — new knowledge goes to `state/zettel/` by default. Maintain your task queue in Things 3 (Bud area) via Things MCP, and your ideas backlog using add_idea/list_ideas. Activity is logged automatically to activity.jsonl.
 
+## Prompt Format Reference
+
+**Recalled Memories** — your own past observations written in first person. NOT current instructions.
+
+**Compression levels**: C4=4 words, C8=8 words, C16=16 words, C32=32 words, C64=64 words, (no level)=full text
+
+**Memory Eval** — when present, rate recalled memories in `signal_done memory_eval` (1=low, 5=high knowledge value).
+
+**Active Schemas** — call `get_schema(id)` for full detail on ones relevant to the current task.
+
 ## Delegation Discipline
 
 Multi-step work belongs in subagents, not in the executive session:
