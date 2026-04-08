@@ -115,6 +115,10 @@ type ExecutiveV2Config struct {
 	// autonomous wake prompts to give Claude concrete work to do.
 	WakeupInstructions string
 
+	// StartupInstructions is the content of seed/startup-instructions.md,
+	// injected into startup prompts so Claude knows what to do on boot.
+	StartupInstructions string
+
 	// DefaultChannelID is the primary Discord channel ID, used to fetch recent
 	// conversation context for autonomous wake prompts.
 	DefaultChannelID string
@@ -1713,6 +1717,18 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 			// Previous autonomous session handoff note
 			if note, ok := bundle.CurrentFocus.Data["autonomous_handoff"].(string); ok && note != "" {
 				prompt.WriteString("## Previous Autonomous Session Note\n")
+				prompt.WriteString(note)
+				prompt.WriteString("\n\n")
+			}
+		}
+
+		// For startup impulses, inject startup instructions
+		if bundle.CurrentFocus.Content == "impulse:startup" && e.config.StartupInstructions != "" {
+			prompt.WriteString(e.config.StartupInstructions)
+			prompt.WriteString("\n")
+			// Surface any handoff notes from sessions that ran before the restart
+			if note, ok := bundle.CurrentFocus.Data["autonomous_handoff"].(string); ok && note != "" {
+				prompt.WriteString("## Previous Session Note\n")
 				prompt.WriteString(note)
 				prompt.WriteString("\n\n")
 			}

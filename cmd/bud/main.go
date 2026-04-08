@@ -296,6 +296,15 @@ func main() {
 		log.Printf("[main] No wakeup.md found (autonomous wakes will use default prompt)")
 	}
 
+	// Load startup instructions for post-deploy startup prompts
+	startupInstructions := ""
+	if data, err := os.ReadFile("seed/startup-instructions.md"); err == nil {
+		startupInstructions = string(data)
+		log.Printf("[main] Loaded startup instructions (%d bytes)", len(data))
+	} else {
+		log.Printf("[main] No startup-instructions.md found (startup will use bare prompt)")
+	}
+
 	// Initialize GTD store (always using JSON store - Things integration via MCP)
 	gtdStore := gtd.NewGTDStore(statePath)
 
@@ -578,6 +587,7 @@ func main() {
 			BotAuthor:                  "Bud", // Kept for compatibility, but no longer used
 			SessionTracker:             sessionTracker,
 			WakeupInstructions:         wakeupInstructions,
+			StartupInstructions:        startupInstructions,
 			DefaultChannelID:           discordChannel,
 			MaxAutonomousSessionDuration: autonomousSessionCap,
 			SendMessageFallback: func(channelID, message string) error {
@@ -1266,9 +1276,14 @@ func main() {
 		}
 	}
 
-	// Inject startup impulse so the executive checks for interrupted subagents
+	// Inject startup impulse so the executive runs startup housekeeping.
+	// Attach any handoff notes left by the pre-restart session.
 	go func() {
 		time.Sleep(3 * time.Second) // Let executive initialize
+		extra := map[string]any{}
+		if note := readAutonomousHandoff(statePath); note != "" {
+			extra["autonomous_handoff"] = note
+		}
 		processInboxMessage(&memory.InboxMessage{
 			ID:        "startup-" + time.Now().Format("20060102T150405"),
 			Type:      "impulse",
@@ -1277,6 +1292,7 @@ func main() {
 			Priority:  3, // P3ActiveWork
 			Timestamp: time.Now(),
 			Status:    "pending",
+			Extra:     extra,
 		})
 	}()
 
