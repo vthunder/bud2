@@ -1575,12 +1575,20 @@ func writeMCPConfig(statePath, httpPort string) error {
 	return nil
 }
 
-// readAutonomousHandoff reads the handoff note left by the previous autonomous
-// session (written by signal_done). Returns empty string if none exists.
+// readAutonomousHandoff reads all handoff notes left by previous autonomous
+// sessions (written by signal_done) and truncates the file so the next wake
+// starts clean. Returns empty string if none exist.
 func readAutonomousHandoff(statePath string) string {
-	data, err := os.ReadFile(filepath.Join(statePath, "system", "autonomous-handoff.md"))
+	path := filepath.Join(statePath, "system", "autonomous-handoff.md")
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		return ""
 	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	_ = f.Truncate(0) // consume notes; next wake starts fresh
 	return string(data)
 }

@@ -216,12 +216,19 @@ func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
 		summary, _ := args["summary"].(string)
 		memoryEval, _ := args["memory_eval"].(map[string]any)
 
-		// Write handoff note for the next autonomous session
+		// Write handoff note for the next autonomous session.
+		// O_APPEND so concurrent signal_done calls don't overwrite each other.
 		if note, ok := args["handoff_note"].(string); ok && note != "" {
 			notePath := filepath.Join(deps.SystemPath, "autonomous-handoff.md")
-			content := fmt.Sprintf("# Autonomous Session Note\n\n%s\n\nRecorded: %s\n", note, time.Now().Format(time.RFC3339))
-			if err := os.WriteFile(notePath, []byte(content), 0644); err != nil {
-				log.Printf("[signal_done] Failed to write handoff note: %v", err)
+			entry := fmt.Sprintf("---\n%s\n\nRecorded: %s\n", note, time.Now().Format(time.RFC3339))
+			f, err := os.OpenFile(notePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				if _, werr := f.WriteString(entry); werr != nil {
+					log.Printf("[signal_done] Failed to write handoff note: %v", werr)
+				}
+				f.Close()
+			} else {
+				log.Printf("[signal_done] Failed to open handoff note: %v", err)
 			}
 		}
 
