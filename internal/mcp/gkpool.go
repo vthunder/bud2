@@ -41,7 +41,7 @@ func NewGKPool(gkPath, stateDir string) *GKPool {
 // "/projects/foo" → <stateDir>/projects/foo/gk.db
 func (p *GKPool) DomainToDBPath(domain string) string {
 	if domain == "" || domain == "/" {
-		return filepath.Join(p.stateDir, "gk.db")
+		return filepath.Join(p.stateDir, "system", "gk.db")
 	}
 	// Clean the path to prevent traversal attacks
 	cleaned := filepath.Clean(domain)

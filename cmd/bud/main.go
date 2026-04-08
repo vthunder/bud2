@@ -1286,7 +1286,7 @@ func main() {
 		calendarSense = senses.NewCalendarSense(senses.CalendarConfig{
 			Client:    calendarClient,
 			Timezone:  userTimezone,
-			StatePath: filepath.Join(statePath, "calendar_state.json"),
+			StatePath: filepath.Join(statePath, "system", "calendar_state.json"),
 		}, processInboxMessage)
 
 		// Load persisted state (prevents duplicate notifications across restarts)
