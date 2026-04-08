@@ -27,11 +27,15 @@ How to decide where to save information so it's actually findable later.
 **Writing something that must stay coherent as a whole (multi-step guide, blog draft, active plan)?**
 → Named file in `state/notes/` or `state/projects/<project>/`. Notes are for documents, not atoms.
 
+**Have an action item or task to track?**
+→ `gtd_add` → Things. Not for knowledge — for work that needs doing.
+
 ## Retrieval
 
 - **Find a concept or insight:** `zettel-search <topic>`
 - **Find project-specific notes:** `zettel-search #<project>`
 - **Find long-form docs:** read directly from `state/notes/` or `state/projects/<project>/`
+- **Find tasks or GTD items:** `gtd_list` / `gtd_projects`
 - **Older ambient context:** `search-memory` (Engram — probabilistic, not guaranteed)
 
 ## What NOT to Do
