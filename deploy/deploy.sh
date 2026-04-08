@@ -22,6 +22,9 @@ git pull origin main >> "$LOG_FILE" 2>&1
 echo "Building bud..."
 go build -tags "fts5" -o bin/bud ./cmd/bud >> "$LOG_FILE" 2>&1
 
+# Codesign with self-signed cert so macOS TCC permissions persist across restarts
+codesign --sign "bud-dev" --force --deep bin/bud >> "$LOG_FILE" 2>&1
+
 echo "$(date): Build complete" >> "$LOG_FILE"
 
 # Restart unless --no-restart flag
