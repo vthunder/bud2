@@ -22,13 +22,10 @@ How to decide where to save information so it's actually findable later.
 → `zettel-new` — creates an atomic note in `state/zettels/`. Run `zettel-search` first to avoid duplicates. This is the **default for new knowledge**.
 
 **Learning something specific to a project (gotcha, decision, design context)?**
-→ `state/projects/<project>/notes.md` is the entry point and scratchpad for any project. For atomic findings worth linking to other ideas, use `zettel-new` with the project name as a tag (e.g. `#sandmill`). Search `zettel-search #sandmill` to find all cards for that project.
-
-**Discovering a general process, workflow, or convention that applies across projects?**
-→ Update the relevant guide in `state/system/guides/`. If none fits, ask the owner whether a new guide is warranted.
+→ `zettel-new` with the project name as a tag (e.g. `#sandmill`). Search `zettel-search #sandmill` to find all cards for that project. For long-form coherent docs (design, API plan), use a named file in `state/projects/<project>/` (e.g. `design.md`).
 
 **Writing something that must stay coherent as a whole (multi-step guide, blog draft, active plan)?**
-→ `state/notes/` or `state/projects/<project>/`. Notes are for documents, not atoms.
+→ Named file in `state/notes/` or `state/projects/<project>/`. Notes are for documents, not atoms.
 
 ## What NOT to Do
 
