@@ -5,7 +5,7 @@ Topics span modules — signals are the max across constituent modules.
 
 | Rank | Topic | Score | Key Modules | Signals | Status |
 |------|-------|-------|-------------|---------|--------|
-| 1 | Memory Quality Feedback Loop | 0.87 | `internal/executive`, `internal/engram` | centrality 8 (engram), no doc, 123 commits/90d, 57 fix-commits; RateEngrams() after signal_done is new. (foundational) | missing |
+| 1 | Memory Quality Feedback Loop | 0.87 | `internal/executive`, `internal/engram` | centrality 8 (engram), no doc, 123 commits/90d, 57 fix-commits; RateEngrams() after signal_done is new. (foundational) | generated |
 | 2 | Startup Lifecycle & Context Injection | 0.85 | `cmd/bud`, `internal/executive`, `seed/startup-instructions.md` | no doc, 108 commits/90d, 49 fix-commits; startup now injects structured instructions, memory retrieval disabled. (foundational) | missing |
 | 3 | Session Lifecycle & Context Assembly | 0.80 | `internal/executive`, `internal/types` | centrality 33 (types), 123 commits/90d, 57 fix-commits; memory limit changed 10→6, startup path added. (foundational). Source: `session-lifecycle-context-assembly.md` | generated |
 | 4 | Subagent Orchestration | 0.80 | `internal/executive`, `internal/types`, `internal/effectors` | centrality 33, 123 commits/90d, 57 fix-commits; startup subagent restart-notes pattern added. (foundational). Source: `subagent-orchestration.md` | generated |
@@ -20,7 +20,7 @@ Topics span modules — signals are the max across constituent modules.
 
 ## Recommended next
 
-Run `dev:arch-doc "Memory Quality Feedback Loop"` on `bud2` — the `RateEngrams()` quality feedback loop added in commit 4444485 is a new architectural mechanism with no existing doc; it closes the loop between session evaluation and long-term memory quality.
+Run `dev:arch-doc "Startup Lifecycle & Context Injection"` on `bud2` — second-ranked missing topic; startup now injects structured instructions and the memory retrieval path differs from regular session startup.
 
 ---
 _Generated: 2026-04-09T01:45:00Z | Commit: e790de89_
