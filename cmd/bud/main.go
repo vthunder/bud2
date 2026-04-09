@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,27 +23,27 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/shirou/gopsutil/v3/process"
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/engram"
-	"github.com/vthunder/bud2/internal/paths"
 	"github.com/vthunder/bud2/internal/budget"
 	"github.com/vthunder/bud2/internal/effectors"
 	"github.com/vthunder/bud2/internal/embedding"
+	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/focus"
-"github.com/vthunder/bud2/internal/gtd"
+	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/mcp"
 	"github.com/vthunder/bud2/internal/mcp/tools"
 	"github.com/vthunder/bud2/internal/memory"
+	"github.com/vthunder/bud2/internal/paths"
 	"github.com/vthunder/bud2/internal/profiling"
 	"github.com/vthunder/bud2/internal/reflex"
 	"github.com/vthunder/bud2/internal/senses"
 	"github.com/vthunder/bud2/internal/state"
-	tmuxwindow "github.com/vthunder/bud2/internal/zellij"
 	"github.com/vthunder/bud2/internal/types"
+	tmuxwindow "github.com/vthunder/bud2/internal/zellij"
 )
 
 const Version = "2026-01-13-v2-focus-cutover"
@@ -145,7 +146,13 @@ func main() {
 	statePath := os.Getenv("STATE_PATH")
 	if statePath == "" {
 		home, _ := os.UserHomeDir()
-		statePath = filepath.Join(home, "Documents", "bud-state")
+		if runtime.GOOS == "darwin" {
+			statePath = filepath.Join(home, "Documents", "bud-state")
+		} else if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+			statePath = filepath.Join(xdg, "bud", "state")
+		} else {
+			statePath = filepath.Join(home, ".local", "share", "bud", "state")
+		}
 	}
 	if abs, err := filepath.Abs(statePath); err == nil {
 		statePath = abs
@@ -581,14 +588,14 @@ func main() {
 		reflexLog,
 		statePath, // Executive will construct paths like state/system/core.md from this
 		executive.ExecutiveV2Config{
-			Model:        claudeModel,
-			WorkDir:      statePath, // Run Claude from state/ to pick up .mcp.json
-			MCPServerURL: fmt.Sprintf("http://127.0.0.1:%s/mcp", mcpHTTPPort),
-			BotAuthor:                  "Bud", // Kept for compatibility, but no longer used
-			SessionTracker:             sessionTracker,
-			WakeupInstructions:         wakeupInstructions,
-			StartupInstructions:        startupInstructions,
-			DefaultChannelID:           discordChannel,
+			Model:                        claudeModel,
+			WorkDir:                      statePath, // Run Claude from state/ to pick up .mcp.json
+			MCPServerURL:                 fmt.Sprintf("http://127.0.0.1:%s/mcp", mcpHTTPPort),
+			BotAuthor:                    "Bud", // Kept for compatibility, but no longer used
+			SessionTracker:               sessionTracker,
+			WakeupInstructions:           wakeupInstructions,
+			StartupInstructions:          startupInstructions,
+			DefaultChannelID:             discordChannel,
 			MaxAutonomousSessionDuration: autonomousSessionCap,
 			SendMessageFallback: func(channelID, message string) error {
 				if fallbackSendMessage != nil {
