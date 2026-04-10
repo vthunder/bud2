@@ -1,0 +1,37 @@
+# bud.yaml — LLM provider and model configuration
+#
+# Copy this file to bud.yaml and adjust to your setup.
+# bud.yaml is gitignored; this example is the reference.
+
+providers:
+  # Claude Code (default) — uses your Claude Code CLI auth, no API key needed
+  claude-code:
+    type: claude-code
+    models:
+      claude-code/claude-sonnet-4-6:
+        context_window: 200000
+      claude-code/claude-opus-4-6:
+        context_window: 200000
+      claude-code/claude-haiku-4-5-20251001:
+        context_window: 150000
+
+  # OpenAI-compatible provider (optional)
+  # opencode-serve:
+  #   type: opencode-serve
+  #   api_key_env: OPENCODE_GO_API_KEY
+  #   models:
+  #     opencode-go/glm-5.1:
+  #       context_window: 150000
+
+# Model assignments
+# executive: the model used for the main Bud session (orchestration, reasoning)
+# agent:     the model used for spawned subagents (coders, researchers, etc.)
+models:
+  executive: claude-code/claude-sonnet-4-6
+  agent: claude-code/claude-sonnet-4-6
+
+# To use Opus for the executive (higher quality, slower):
+#   executive: claude-code/claude-opus-4-6
+
+# To use Haiku for agents (faster, cheaper for background work):
+#   agent: claude-code/claude-haiku-4-5-20251001

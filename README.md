@@ -105,6 +105,27 @@ bud2/
 - **Linux service:** `~/.config/systemd/user/bud.service`
 - **Linux logs:** `~/.local/state/bud/bud.log`
 
+### Model Configuration
+
+Copy `bud.yaml.example` to `bud.yaml` and set your models:
+
+```yaml
+providers:
+  claude-code:
+    type: claude-code
+    models:
+      claude-code/claude-sonnet-4-6:
+        context_window: 200000
+      claude-code/claude-opus-4-6:
+        context_window: 200000
+
+models:
+  executive: claude-code/claude-sonnet-4-6  # main session model
+  agent: claude-code/claude-sonnet-4-6      # subagent model
+```
+
+`bud.yaml` is gitignored. `bud.yaml.example` is the reference. The `claude-code` provider uses your Claude Code CLI auth — no separate API key required. Switch `executive` to `claude-code/claude-opus-4-6` for higher quality reasoning.
+
 ## Development Workflow
 
 1. **Make changes** to Go source in `cmd/` or `internal/`
