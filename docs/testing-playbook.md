@@ -7,12 +7,14 @@ Manual test scenarios for verifying autonomous behavior in Bud.
 - Bud running with Discord connected
 - `AUTONOMOUS_ENABLED=true`
 - `AUTONOMOUS_INTERVAL=5m` (shorter for testing)
-- `DAILY_THINKING_BUDGET=30` (or higher)
+- `DAILY_OUTPUT_TOKEN_BUDGET=1000000` (or higher; default is 1M tokens/day)
 - Access to Discord channel Bud monitors
 
 ---
 
-## 1. Task System
+## 1. Task System (GTD / Things 3)
+
+Tasks are managed through the GTD MCP tools (`gtd_add`, `gtd_list`, `gtd_complete`) backed by Things 3.
 
 ### 1.1 Create a Task via MCP
 
@@ -24,13 +26,13 @@ Manual test scenarios for verifying autonomous behavior in Bud.
 3. Ask: "What tasks do I have?"
 
 **Expected:**
-- Bud calls `add_bud_task` tool
-- Task appears in `list_bud_tasks` output
+- Bud calls `gtd_add` tool
+- Task appears in `gtd_list` output
 - Task has a due time ~2 minutes from now
 
 **Verify:**
 ```bash
-cat state/tasks.json | jq .
+# Check via MCP tool call or Things 3 app
 ```
 
 ### 1.2 Task Becomes Due (Impulse Generation)
@@ -38,7 +40,7 @@ cat state/tasks.json | jq .
 **Setup:** Task created with due time in the past or very soon
 
 **Steps:**
-1. Create overdue task: manually edit `state/tasks.json` to set `due` to past time
+1. Create overdue task via `gtd_add` with a past deadline
 2. Restart Bud or wait for autonomous wake
 3. Observe logs
 
@@ -59,12 +61,14 @@ cat state/tasks.json | jq .
 2. Ask: "Mark the server logs task as done"
 
 **Expected:**
-- Bud calls `complete_bud_task` tool
+- Bud calls `gtd_complete` tool
 - Task no longer appears in pending list
 
 ---
 
-## 2. Ideas System
+## 2. Ideas (GTD)
+
+Ideas are tracked as tasks in a dedicated Things 3 project via the GTD tools.
 
 ### 2.1 Add an Idea
 
@@ -73,15 +77,15 @@ cat state/tasks.json | jq .
 2. Ask: "What ideas do you have saved?"
 
 **Expected:**
-- Bud calls `add_idea` tool
-- Idea appears in list with `explored: false`
+- Bud calls `gtd_add` with the idea project heading
+- Idea appears in `gtd_list` output
 
 ### 2.2 Idea Generates Impulse (Idle Only)
 
 **Setup:** Bud is idle (no recent messages)
 
 **Steps:**
-1. Add several unexplored ideas
+1. Add several ideas via `gtd_add`
 2. Wait for autonomous wake during idle period
 3. Check logs
 
@@ -89,16 +93,15 @@ cat state/tasks.json | jq .
 - Ideas generate low-intensity impulses only during idle
 - Bud might mention wanting to explore an idea
 
-### 2.3 Mark Idea Explored
+### 2.3 Complete an Idea
 
 **Steps:**
 1. Ask Bud to explore the WebSockets idea
-2. After discussion, ask: "Mark that idea as explored"
+2. After discussion, ask: "Mark that idea as done"
 
 **Expected:**
-- Bud calls `explore_idea` with notes
-- Idea marked as `explored: true`
-- No longer generates impulses
+- Bud calls `gtd_complete` for the idea task
+- Idea no longer appears in pending list
 
 ---
 
@@ -111,11 +114,11 @@ cat state/tasks.json | jq .
 
 **Expected:**
 - Bud calls `create_reflex` tool
-- File created at `state/reflexes/ping-pong.yaml`
+- File created in `seed/system/reflexes/` (boot) or `~/Documents/bud-state/system/reflexes/` (runtime)
 
 **Verify:**
 ```bash
-cat state/reflexes/*.yaml
+cat seed/system/reflexes/*.yaml
 ```
 
 ### 3.2 Reflex Pattern Matching
@@ -123,7 +126,7 @@ cat state/reflexes/*.yaml
 **Setup:** Create a URL summarizer reflex manually:
 
 ```yaml
-# state/reflexes/summarize-url.yaml
+# seed/system/reflexes/summarize-url.yaml
 name: summarize-url
 description: React to URLs with eyes emoji
 trigger:
@@ -229,7 +232,7 @@ pipeline:
 
 **Verify:**
 ```bash
-tail -f state/signals.jsonl
+tail -f ~/Documents/bud-state/system/queues/signals.jsonl
 ```
 
 ---
@@ -248,7 +251,7 @@ tail -f state/signals.jsonl
 
 **Verify:**
 ```bash
-tail -20 state/journal.jsonl | jq .
+tail -20 ~/Documents/bud-state/system/journal.jsonl | jq .
 ```
 
 ### 5.2 Journal Entry Types
@@ -305,7 +308,7 @@ tail -20 state/journal.jsonl | jq .
 **Scenario:** Task becomes due, triggers proactive notification
 
 **Steps:**
-1. Create task due in 3 minutes
+1. Create task due in 3 minutes via `gtd_add`
 2. Set `AUTONOMOUS_INTERVAL=1m`
 3. Wait without messaging
 4. Observe
@@ -333,7 +336,7 @@ tail -20 state/journal.jsonl | jq .
 **Scenario:** Bud wakes, checks tasks/ideas, does background work
 
 **Steps:**
-1. Add several tasks (none due) and ideas
+1. Add several tasks (none due) and ideas via `gtd_add`
 2. Set short autonomous interval
 3. Leave Bud idle for several cycles
 4. Check journal
@@ -363,6 +366,6 @@ tail -20 state/journal.jsonl | jq .
 - Look for errors in MCP server logs
 
 ### Tasks/Ideas Not Persisting
-- Check `state/tasks.json` and `state/ideas.json` exist
-- Verify write permissions
+- Verify Things 3 MCP integration is configured
+- Check `~/Documents/bud-state/` for state files
 - Look for JSON parse errors in logs

@@ -114,6 +114,17 @@ Check the focus item metadata for `workflow_instance_id`. If present:
 7. `Agent_spawn_async` with rendered context, agent = next step's agent, `workflow_instance_id`, `workflow_step` = next step ID.
 8. Update `workflow_step` in the instance JSON file.
 
+## Step 5.5 — Follow Up on Discord Promises
+
+Check whether you previously told the user you'd report back on this work. Call `state_percepts` (or `journal_recent`) to retrieve the last ~10 Bud messages on Discord.
+
+Scan them for phrases like:
+- "I'll get back to you", "will report back", "let you know when", "update you when", "once it completes", "will follow up"
+
+If a matching promise exists **and** it plausibly refers to the just-completed subagent (topic, repo, or task name matches), call `talk_to_user` with a brief results summary — don't leave the user hanging.
+
+If no such promise is found, skip this step silently.
+
 ## Step 6 — Post Observations to Engram (if significant)
 
 If the agent produced observations about the codebase, architecture, or external systems that aren't already in Engram, call `save_thought` to persist them.

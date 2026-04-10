@@ -1371,9 +1371,6 @@ func main() {
 		if note := readAutonomousHandoff(statePath); note != "" {
 			extra["autonomous_handoff"] = note
 		}
-		if len(seedDrift) > 0 {
-			extra["seed_drift"] = seedDrift
-		}
 		processInboxMessage(&memory.InboxMessage{
 			ID:        "startup-" + time.Now().Format("20060102T150405"),
 			Type:      "impulse",
@@ -1385,6 +1382,28 @@ func main() {
 			Extra:     extra,
 		})
 	}()
+
+	// If seed files have drifted from the installed state, create a separate
+	// focus item so the executive handles it with full context (not the minimal
+	// startup prompt). The user can decide whether to update their state files.
+	if len(seedDrift) > 0 {
+		go func() {
+			time.Sleep(5 * time.Second) // After startup impulse
+			driftList := strings.Join(seedDrift, "\n- ")
+			extra := map[string]any{
+				"seed_drift": seedDrift,
+			}
+			processInboxMessage(&memory.InboxMessage{
+				ID:        "seed-drift-" + time.Now().Format("20060102T150405"),
+				Type:      "message",
+				Content:   "Seed files have been updated since your state was last initialized. Updated files:\n- " + driftList + "\n\nUse talk_to_user to ask the user whether they want to update these files in their state directory.",
+				Priority:  4, // P4Background
+				Timestamp: time.Now(),
+				Status:    "pending",
+				Extra:     extra,
+			})
+		}()
+	}
 
 	// Start calendar sense (optional, independent of Discord)
 	var calendarSense *senses.CalendarSense

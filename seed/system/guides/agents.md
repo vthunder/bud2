@@ -5,13 +5,19 @@ This guide covers the bud2 agent architecture: how agents are defined, loaded, a
 ## Two Ways to Run Agents
 
 ### `Agent` (sync, in-context)
-The built-in Claude Code `Agent` tool spawns a sub-session that runs synchronously within the current context. The parent session waits for the result before continuing. Use this for targeted sub-tasks that inform the current work:
+The built-in Claude Code `Agent` tool spawns a sub-session that runs synchronously within the current context. The parent session waits for the result before continuing.
 
 ```
 Agent(subagent_type="autopilot-vision:explorer", prompt="Assess this codebase...")
 ```
 
 Sub-agents specified via `subagent_type` are resolved against the registered `AgentDefinition` map loaded from `state/system/plugins/`. No file management needed.
+
+⚠️ **Warning: executive session time limit.** The executive session has a self-imposed time limit. If an in-context agent runs long (many sequential file writes, large migrations, deep research), the parent session may be killed mid-work, leaving partial results. Use `Agent_spawn_async` for any task requiring more than a few sequential actions.
+
+⚠️ **Warning: shared context window.** The in-context agent's output is injected into the executive's context. Long-running agents with large outputs (file contents, search results) can exhaust the context window. Prefer `Agent_spawn_async` for exploratory or multi-step work.
+
+**Use `Agent` for:** quick lookups, single-file reads, targeted sub-tasks where you need the result immediately to decide next steps.
 
 ### `Agent_spawn_async` (async, isolated)
 The `Agent_spawn_async` MCP tool spawns an isolated background Claude Code process. The parent session continues immediately and receives a `session_id` for tracking. The subagent reports back via `signal_done`. Use this to delegate longer-running work:
@@ -21,6 +27,8 @@ Agent_spawn_async(task="...", agent="autopilot-vision:planner")
 ```
 
 Track progress with `list_subagents`, `get_subagent_status`, `get_subagent_log`.
+
+**Use `Agent_spawn_async` for:** any task requiring >3 sequential actions, file migrations, multi-step implementations, anything that might take more than a minute.
 
 ## Plugin Folder Structure
 

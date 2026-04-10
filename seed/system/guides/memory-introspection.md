@@ -8,23 +8,23 @@ Daily procedure to maintain memory quality and identify system improvements.
 2. **Improve the system** - identify root causes so bad data isn't created
 
 ## Where to Find Things
-
-- **This guide**: `state/system/guides/memory-introspection.md`
-- **Health report & insights**: `state/notes/memory-health.md`
-- **Memory database**: `state/system/memory.db`
+Replace <state> with the location of the state dir.
+- **This guide**: `<state>/system/guides/memory-introspection.md`
+- **Health report & insights**: `<state>/notes/memory-health.md`
+- **Memory database**: `<state>/system/memory.db`
 - **Task**: Daily introspection task in Things Bud area (recurring daily)
 
 ## Daily Procedure
 
 ### Step 1: Pre-check (30 seconds)
-Read `state/notes/memory-health.md`:
+Read `<state>/notes/memory-health.md`:
 - Check **Known Issues** for context
 - Review recent **Dated Insights** to avoid repeating investigations
 - Note any fixes deployed since last check
 
 ### Step 2: Collect Metrics (1 minute)
 ```bash
-sqlite3 /Users/thunder/src/bud2/state/system/memory.db "
+sqlite3 <state>/system/memory.db "
 SELECT 'episodes' as type, COUNT(*) FROM episodes
 UNION ALL SELECT 'entities', COUNT(*) FROM entities
 UNION ALL SELECT 'traces', COUNT(*) FROM traces
@@ -56,7 +56,7 @@ sqlite3 ... "SELECT name FROM entities WHERE type = 'PERSON';"
 
 **Safe to auto-delete:**
 - PRODUCT entities that are function names (`talk_to_user`, `notion_push`)
-- File paths (`~/src/...`, `state/system/core.md`)
+- File paths (`~/src/...`, `<state>/system/core.md`)
 - Code expressions (`hash(owner, token, amount, nonce)`)
 - Conversation snippets (`ok let's try it!`, `the token`)
 
@@ -66,7 +66,7 @@ sqlite3 ... "SELECT name FROM entities WHERE type = 'PERSON';"
 - Any deletion affecting >10 records
 
 ### Step 5: Document Findings
-Update `state/notes/memory-health.md`:
+Update `<state>/notes/memory-health.md`:
 1. Update **Latest Metrics** table
 2. Add **Dated Insights** entry if notable findings
 3. Update **Known Issues** / **Resolved Issues** as appropriate

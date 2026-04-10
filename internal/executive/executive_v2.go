@@ -1879,16 +1879,6 @@ func (e *ExecutiveV2) buildPrompt(bundle *focus.ContextBundle) string {
 				prompt.WriteString(note)
 				prompt.WriteString("\n\n")
 			}
-			// Surface seed drift — files that differ between the shipped seed
-			// and the user's state dir, indicating an update is available.
-			if driftFiles, ok := bundle.CurrentFocus.Data["seed_drift"].([]string); ok && len(driftFiles) > 0 {
-				prompt.WriteString("## Seed Update Available\n")
-				prompt.WriteString("The following seed files have been updated since your state was initialized:\n")
-				for _, f := range driftFiles {
-					prompt.WriteString(fmt.Sprintf("- `%s`\n", f))
-				}
-				prompt.WriteString("\nUse `talk_to_user` to ask the user whether they want to update these files in their state directory.\n\n")
-			}
 		}
 	}
 

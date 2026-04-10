@@ -24,6 +24,11 @@ Current skills and their triggers (grouped by plugin):
 - **ralph**: Converting existing PRDs to prd.json for autonomous execution
 - **web-research**: Deep web research on a topic
 - **code-review**: Code review for a PR or changeset
+- **repo-doc**: Generate or refresh overview.md and doc-plan.md for a code repository ("repo-doc", "generate overview", "document this repo")
+- **arch-doc**: Generate a deep-dive architectural doc for a specific topic ("arch-doc", "document this topic", "deep-dive on")
+- **doc-audit**: Audit existing docs in a repo — classify, archive, annotate fold-candidates ("doc-audit", "audit docs", "clean up docs")
+- **doc-scan**: Scan all repos under ~/src/ for undocumented or stale docs ("doc-scan", "scan repos", "which repos need docs")
+- **doc-maintain**: Autonomous doc maintenance idle fallback — picks one repo and makes one improvement ("doc-maintain", "maintain docs")
 
 **sandmill** — Sandmill content skills:
 - **blog**: Manage the sandmill.org blog pipeline — list ideas, research, draft, polish, publish ("blog status", "research post", "draft post", "publish post").
@@ -91,3 +96,28 @@ user-invocable: true
 ```
 
 After adding a skill, update the "Current skills" list in this guide so Bud can reference it without loading all skill files.
+
+## Skill Grants
+
+Skill assignments for agents are controlled centrally in `state/system/skill-grants.yaml` rather than in individual agent YAML files. The `skills:` field has been removed from agent files — this is intentional.
+
+**File location:** `state/system/skill-grants.yaml`
+
+**Pattern matching** (highest priority wins):
+1. Exact match: `"autopilot-epic:planner"` — grants specific skills to one agent
+2. Namespace wildcard: `"bud:*"` — grants to all agents in a namespace
+3. Glob wildcard: `"autopilot-*:planner"` — matches across namespaces via `filepath.Match`
+4. Global wildcard: `"*"` — fallback for all agents
+
+**Adding a new skill grant:**
+
+```yaml
+grants:
+  "mynamespace:myagent":
+    - skill-name
+    - another-skill
+```
+
+If the grants file is missing entirely, `LoadAllAgents` falls back to the `skills:` field in each agent YAML (backward compatibility). The absence of `skills:` in agent files is correct — do not add it back.
+
+**Alias resolution:** Skill names in the grants file are resolved through `state/system/agent-aliases.yaml` before loading. For example, `issue-operations` resolves to `things-operations`. Use the canonical skill name (e.g. `things-operations`) in grants whenever possible.

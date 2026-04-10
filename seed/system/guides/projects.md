@@ -1,10 +1,50 @@
 # Projects Guide
 
-Projects are tracked in `state/projects/`. This provides a place for project-specific notes and internal state.
+Projects are tracked in `state/projects/`. This provides a place for project-specific notes, metadata, and internal state.
+
+## Project Structure
+
+Each project has a folder under `state/projects/`:
+
+```
+state/projects/
+├── bud/
+│   ├── project.yaml    # metadata: name, repos, things_project_id, status
+│   └── notes.md        # active context scratchpad
+├── sandmill/
+│   ├── project.yaml
+│   ├── notes.md
+│   └── guides/
+│       └── vm-control.md   # project-specific guides live here
+├── avail/
+│   ├── nightshade/
+│   │   ├── project.yaml
+│   │   └── notes.md
+│   └── docs/
+│       ├── project.yaml
+│       └── notes.md
+└── ...
+```
+
+Sub-projects are supported (nested folders). Any level can have `project.yaml` and `notes.md`.
+
+## project.yaml
+
+Metadata for a project. Fields:
+
+```yaml
+name: Nightshade
+repos:
+  - availproject/nightshade     # GitHub slug or local path comment
+  - nightshade-app              # local: ~/src/nightshade-app/
+things_project_id: ""           # Things 3 project ID (empty if none)
+status: active                  # active | paused | archived
+description: One-line summary
+```
 
 ## Project Types
 
-Projects can have a `type` in their notes.md frontmatter. **Convention: `type: X` means load `X.md` guide.**
+Projects can have a `type` in their `notes.md` frontmatter. **Convention: `type: X` means load `X.md` guide.**
 
 ```yaml
 ---
@@ -20,15 +60,7 @@ When loading a project:
 
 ### Standard Projects (no type)
 
-Simple projects with all files in `state/projects/`:
-
-```
-state/projects/
-├── org-name/
-│   └── project-name/
-│       ├── notes.md        # Freeform project notes
-│       └── Notion-Doc.md   # Synced from Notion (optional)
-```
+Simple projects with all files in `state/projects/`.
 
 ### Avail-Style Projects (`type: avail-style`)
 
@@ -36,19 +68,11 @@ Team-collaborative projects with shared docs in a separate repo. See [avail-styl
 
 **Key difference:** Docs live in `~/src/project-docs/` (shared), not in `state/projects/` (internal).
 
-## Structure
+## notes.md
 
-- Projects are folders under `state/projects/`
-- Projects can have subprojects (nested folders)
-- Any level can have a `notes.md` file with freeform notes
-
-## Files
-
-### notes.md
-
-Freeform notes about the project. Use for:
-- Quick observations
-- Meeting notes
+Active context scratchpad. Use for:
+- Current sprint focus and known gotchas
+- Meeting notes and observations
 - Research findings and exploration notes
 - Links and references
 - Design sketches and brainstorming
@@ -70,30 +94,44 @@ Add an **Insights** section to track learnings:
 ## 2026-01-15
 - Discovered X requires Y dependency
 - User feedback: feature Z is confusing
-
-## 2026-01-14
-- Initial architecture decision: use approach A over B
 ```
 
-Date subsections with bullet points make it easy to track when insights were gained.
+## Before Working on Any Project
+
+**Rule:** Before touching a repo or source file, use `list_projects` to find the relevant project and read its `notes.md`. If no project exists, offer to create one.
+
+See also: [repositories.md](./repositories.md) — PR workflow, merge approval, branch conventions.
 
 ## Workflows
 
 ### Resuming work on a project
-When starting work on a project you don't remember the details of:
 
-1. **Find the project folder first** - search `state/projects/` including subdirectories (projects may be nested under org names like `avail/nightshade/`)
-2. **Check `notes.md`** - it contains important links, prior context, and saved references
-3. **If project not found** - ask the user before creating a new one (it may exist elsewhere or need a specific location)
+1. Use `list_projects` to find the project (searches all `project.yaml` files)
+2. Read `notes.md` for current context, gotchas, and active decisions
+3. Check for `type:` in frontmatter and load the relevant guide if present
 
 ### Starting a new project
-1. Create folder: `state/projects/org/project-name/`
-2. Add `notes.md` with initial context
-3. If there's a Notion doc, pull it: `notion_pull <page_id> <project_dir>`
+
+Use the `create_project` MCP tool — it creates the folder, `project.yaml`, and `notes.md` in one call:
+- `path`: relative path under `state/projects/` (e.g. `avail/myproject`)
+- `name`: human-readable name
+- `description`: one-line summary
+- `repos`: comma-separated GitHub slugs (optional)
+- `status`: active | paused | archived (default: active)
+
+Then if there's a Notion doc, pull it: `notion_pull <page_id> <project_dir>`
+
+### Project-specific guides
+
+Place in `state/projects/<project>/guides/`. These take precedence over general guides for that project.
+
+Example: `state/projects/sandmill/guides/vm-control.md` — Sandmill emulator control.
 
 ### Updating Notion docs
+
 1. Edit the local `.md` file
 2. Push changes: `notion_push <file_path>`
 
 ### Adding insights
+
 When you learn something notable about a project, add it to the Insights section of the relevant Notion doc with today's date.
