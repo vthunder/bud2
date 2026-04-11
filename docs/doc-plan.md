@@ -5,7 +5,7 @@ Topics span modules — signals are the max across constituent modules.
 
 | Rank | Topic | Score | Key Modules | Signals | Status |
 |------|-------|-------|-------------|---------|--------|
-| 1 | State-Defaults Overlay & Configuration Loading | 0.82 | `internal/paths`, `internal/config`, `cmd/bud` | no doc, centrality 8+ (paths imported by executive/reflex/main), 107 commits/90d (cmd/bud), replaces seed-copy model. (foundational) | missing |
+| 1 | State-Defaults Overlay & Configuration Loading | 0.82 | `internal/paths`, `internal/config`, `cmd/bud` | no doc, centrality 8+ (paths imported by executive/reflex/main), 107 commits/90d (cmd/bud), replaces seed-copy model. (foundational) | generated |
 | 2 | Session Lifecycle & Context Assembly | 0.80 | `internal/executive`, `internal/types` | centrality 19 (types), 124 commits/90d, 53 fix-commits; memory limit 6, startup path. (foundational). Source: `session-lifecycle-context-assembly.md` | generated |
 | 3 | Subagent Orchestration | 0.80 | `internal/executive`, `internal/types`, `internal/effectors` | centrality 19, 124 commits/90d, 53 fix-commits; startup subagent restart-notes pattern. (foundational). Source: `subagent-orchestration.md` | generated |
 | 4 | Startup Lifecycle & Context Injection | 0.78 | `cmd/bud`, `internal/executive`, `state-defaults/system/startup-instructions.md` | no stale doc, 107 commits/90d, 45 fix-commits; now reads via paths overlay. (foundational). Source: `startup-lifecycle-context-injection.md` | generated |
