@@ -13,7 +13,7 @@ score: 0.65
 
 ## Summary
 
-The skill grants system controls which behavioral skills (SKILL.md files) each agent type receives when it is spawned. It replaces the earlier approach where each agent YAML file declared its own `skills:` list, centralizing that policy into `state/system/skill-grants.yaml`. Agent composition is the complementary mechanism that assembles a final system prompt and tool list from an agent's body, its granted skills, and the tool grants declared in `plugins.yaml`.
+The skill grants system controls which behavioral skills (SKILL.md files) each agent type receives when it is spawned. It replaces the earlier approach where each agent YAML file declared its own `skills:` list, centralizing that policy into `state/system/skill-grants.yaml`. Agent composition is the complementary mechanism that assembles a final system prompt and tool list from an agent's body, its granted skills, and the tool grants declared in `extensions.yaml`.
 
 ## Key Data Structures
 
@@ -67,7 +67,7 @@ The final assembled representation passed to the Claude Agent SDK's `WithAgents`
 
 2. **Plugin discovery**: `allPluginDirsForAgents(statePath)` collects two sets of plugin directories:
    - Local plugins: directories under `state/system/plugins/` (via `scanLocalPlugins`)
-   - Manifest plugins: GitHub repos declared in `state/system/plugins.yaml`, cloned to `~/Library/Caches/bud/plugins/<owner>/<repo>/`. Each carries its `tool_grants` from the manifest.
+   - Manifest plugins: GitHub repos declared in `state/system/extensions.yaml`, cloned to `~/Library/Caches/bud/plugins/<owner>/<repo>/`. Each carries its `tool_grants` from the manifest.
 
 3. **Agent file enumeration**: For each plugin dir, `LoadAllAgents` reads all `.yaml` and `.md` files in the `agents/` subdirectory. The agent key is `"<namespace>:<agentName>"` where namespace is the plugin directory name.
 
@@ -126,7 +126,7 @@ For subagents spawned via `Agent_spawn_async` (the MCP tool), `ResolveSubagentCo
 | `internal/executive/executive_v2.go` | `internal/executive/agent_defs.go` | Calls `LoadAllAgents` on every prompt, passing `knownMCPTools` |
 | `internal/executive/executive_v2.go` | `internal/executive/profiles.go` | Calls `ResolveSubagentConfig` for subagents spawned via MCP tool |
 | `state/system/skill-grants.yaml` | `internal/executive/agent_defs.go` | Loaded by `LoadSkillGrants`; drives skill policy for SDK-spawned agents |
-| `state/system/plugins.yaml` | `internal/executive/simple_session.go` | `resolvedManifestPluginDirs` reads manifest and returns dirs with `ToolGrants` |
+| `state/system/extensions.yaml` | `internal/executive/simple_session.go` | `resolvedManifestPluginDirs` reads manifest and returns dirs with `ToolGrants` |
 | Plugin `agents/*.yaml` | `internal/executive/agent_defs.go` | Agent body, tool list, model, and fallback skill list |
 | Plugin `skills/**` | `internal/executive/profiles.go` | Skill body text injected into assembled system prompt |
 
@@ -138,7 +138,7 @@ For subagents spawned via `Agent_spawn_async` (the MCP tool), `ResolveSubagentCo
 
 - **Namespace is the plugin directory name, not a declared field**: The `"namespace:agent"` key is derived from `filepath.Base(pd.Path)` — the directory name of the plugin — not from any field in the agent YAML. If a plugin directory is renamed, all its agent keys change.
 
-- **Tool grants from plugins.yaml are additive**: Tool grants from the manifest entry are appended after the agent's own `Tools` list. They never remove tools. A plugin can only grant additional tools to its agents, not restrict them.
+- **Tool grants from extensions.yaml are additive**: Tool grants from the manifest entry are appended after the agent's own `Tools` list. They never remove tools. A plugin can only grant additional tools to its agents, not restrict them.
 
 - **Skill search is first-match across all plugin dirs**: `LoadSkillContent` returns the first matching file found in the ordered list of plugin dirs. Local plugins (`state/system/plugins/`) are scanned before manifest-cloned plugins. If two plugins both define a skill with the same short name, the local one wins.
 
@@ -150,4 +150,4 @@ For subagents spawned via `Agent_spawn_async` (the MCP tool), `ResolveSubagentCo
 - `internal/executive/agent_defs.go` — `resolveGrantedSkills` (line 42) and `LoadAllAgents` (line 91): the full assembly pipeline for SDK agents
 - `internal/executive/profiles.go` — `ResolveSubagentConfig` (line 383) and `LoadSkillContent` (line 165): the assembly path for MCP-tool subagents
 - `internal/executive/simple_session.go` — `allPluginDirsForAgents` (line 335) and `resolvedManifestPluginDirs` (line 272): how plugin directories are discovered
-- `state/system/plugins.yaml` — manifest entries include `tool_grants` fields that grant MCP tools to specific agents in that plugin
+- `state/system/extensions.yaml` — manifest entries include `tool_grants` fields that grant MCP tools to specific agents in that plugin
