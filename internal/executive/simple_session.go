@@ -631,6 +631,104 @@ func generateZettelLibraries(statePath string) {
 	log.Printf("[plugins] wrote zettel-libraries.yaml with %d libraries (%d manual)", len(libraries), len(manualEntries))
 }
 
+// generateClaudeCodeHooks scans skillDirs for hooks/bud/PreToolUse and
+// hooks/bud/PostToolUse scripts and writes them into
+// statePath/.claude/settings.json under the "hooks" key. Other keys already
+// present in settings.json (e.g. mcpServers, skipDangerousModePermissionPrompt)
+// are preserved unchanged.
+//
+// Claude Code reads this file natively and fires the listed commands for every
+// tool call — including Bash, Read, Write, Edit, Glob, and Grep — not just MCP
+// tools. This supplements the in-process HookRunner which only intercepts MCP
+// tool calls handled by the executive.
+func generateClaudeCodeHooks(statePath string, skillDirs []string) {
+	// Discover PreToolUse and PostToolUse scripts from skill dirs.
+	type hookCommand struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}
+	type hookEntry struct {
+		Hooks []hookCommand `json:"hooks"`
+	}
+
+	eventNames := []string{"PreToolUse", "PostToolUse"}
+	// Map event → list of discovered script paths.
+	discovered := make(map[string][]string, len(eventNames))
+	for _, event := range eventNames {
+		discovered[event] = nil
+	}
+
+	for _, dir := range skillDirs {
+		for _, event := range eventNames {
+			scriptPath := filepath.Join(dir, "hooks", "bud", event)
+			if info, err := os.Stat(scriptPath); err == nil && !info.IsDir() {
+				discovered[event] = append(discovered[event], scriptPath)
+				log.Printf("[hooks] claude-code hook discovered for %s: %s", event, scriptPath)
+			}
+		}
+	}
+
+	// Build the "hooks" value: map from event name → []hookEntry.
+	// Each script gets its own entry for clarity.
+	hooksSection := make(map[string][]hookEntry)
+	for _, event := range eventNames {
+		scripts := discovered[event]
+		if len(scripts) == 0 {
+			continue
+		}
+		entries := make([]hookEntry, 0, len(scripts))
+		for _, scriptPath := range scripts {
+			entries = append(entries, hookEntry{
+				Hooks: []hookCommand{{Type: "command", Command: scriptPath}},
+			})
+		}
+		hooksSection[event] = entries
+	}
+
+	// Ensure the .claude directory exists.
+	claudeDir := filepath.Join(statePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		log.Printf("[hooks] failed to create .claude dir: %v", err)
+		return
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+
+	// Read existing settings to preserve other keys.
+	existing := make(map[string]json.RawMessage)
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		if err := json.Unmarshal(data, &existing); err != nil {
+			log.Printf("[hooks] WARNING: could not parse existing settings.json, overwriting: %v", err)
+			existing = make(map[string]json.RawMessage)
+		}
+	}
+
+	// Rebuild the "hooks" key (replace stale entries with fresh discovery).
+	hooksJSON, err := json.Marshal(hooksSection)
+	if err != nil {
+		log.Printf("[hooks] failed to marshal hooks section: %v", err)
+		return
+	}
+	existing["hooks"] = json.RawMessage(hooksJSON)
+
+	out, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		log.Printf("[hooks] failed to marshal settings.json: %v", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, out, 0644); err != nil {
+		log.Printf("[hooks] failed to write settings.json: %v", err)
+		return
+	}
+
+	total := len(discovered["PreToolUse"]) + len(discovered["PostToolUse"])
+	log.Printf("[hooks] wrote claude-code hooks to settings.json (%d PreToolUse, %d PostToolUse scripts)",
+		len(discovered["PreToolUse"]), len(discovered["PostToolUse"]))
+	if total == 0 {
+		log.Printf("[hooks] no hook scripts found; wrote empty hooks section to clear stale entries")
+	}
+}
+
 // MaxContextTokens is the threshold for context tokens before auto-reset.
 // Uses cache_read_input_tokens from the API which tells us how much session
 // history is being read from cache. With a 200K context window, we reset
@@ -1051,6 +1149,7 @@ func (s *SimpleSession) SendPromptWithCfg(ctx context.Context, prompt string, cf
 		baseOpts = append(baseOpts, claudecode.WithLocalPlugin(pluginPath))
 	}
 	generateZettelLibraries(s.statePath)
+	generateClaudeCodeHooks(s.statePath, allPluginDirs(s.statePath))
 
 	// Resume existing Claude session when available, otherwise let the SDK
 	// create a new session (no --session-id equivalent in SDK).
