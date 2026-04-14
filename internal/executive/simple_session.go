@@ -821,11 +821,6 @@ func (s *SimpleSession) SessionID() string {
 	return s.sessionID
 }
 
-// SessionStartTime returns when this session was created (for guardrails)
-func (s *SimpleSession) SessionStartTime() time.Time {
-	return s.sessionStartTime
-}
-
 // HasSeenMemory returns true if a memory trace has been sent to this session
 func (s *SimpleSession) HasSeenMemory(id string) bool {
 	return s.seenMemoryIDs[id]
@@ -836,11 +831,6 @@ func (s *SimpleSession) MarkMemoriesSeen(ids []string) {
 	for _, id := range ids {
 		s.seenMemoryIDs[id] = true
 	}
-}
-
-// SeenMemoryCount returns how many memories have been sent in this session
-func (s *SimpleSession) SeenMemoryCount() int {
-	return len(s.seenMemoryIDs)
 }
 
 // GetOrAssignMemoryID returns the display ID for a trace, assigning one if needed.
@@ -856,11 +846,6 @@ func (s *SimpleSession) GetOrAssignMemoryID(traceID string) string {
 	}
 	s.memoryIDMap[traceID] = id
 	return id
-}
-
-// GetMemoryID returns the display ID for a trace, or empty string if not assigned
-func (s *SimpleSession) GetMemoryID(traceID string) string {
-	return s.memoryIDMap[traceID]
 }
 
 // ResolveMemoryEval takes a memory_eval map like {"a3f9c": 5, "b2e1d": 1} (5-char engram prefix)

@@ -266,22 +266,6 @@ func (l *Log) ByType(t Type, limit int) ([]Entry, error) {
 	return result, nil
 }
 
-// Range returns entries in a time range
-func (l *Log) Range(start, end time.Time) ([]Entry, error) {
-	entries, err := l.readAll()
-	if err != nil {
-		return nil, err
-	}
-
-	var result []Entry
-	for _, e := range entries {
-		if !e.Timestamp.Before(start) && !e.Timestamp.After(end) {
-			result = append(result, e)
-		}
-	}
-	return result, nil
-}
-
 // LastUserInputTime returns the timestamp of the most recent user-initiated input
 // (TypeInput entries that are not from impulse:system). Returns zero time if none found.
 func (l *Log) LastUserInputTime() time.Time {

@@ -69,15 +69,6 @@ func (r *ActionRegistry) Get(name string) (Action, bool) {
 	return action, ok
 }
 
-// List returns all registered action names
-func (r *ActionRegistry) List() []string {
-	names := make([]string, 0, len(r.actions))
-	for name := range r.actions {
-		names = append(names, name)
-	}
-	return names
-}
-
 // Built-in actions
 
 func actionFetchURL(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {

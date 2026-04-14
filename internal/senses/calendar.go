@@ -133,13 +133,6 @@ func (c *CalendarSense) Stop() error {
 	return nil
 }
 
-// SetOnError sets an error callback
-func (c *CalendarSense) SetOnError(callback func(err error)) {
-	c.mu.Lock()
-	c.onError = callback
-	c.mu.Unlock()
-}
-
 func (c *CalendarSense) pollLoop() {
 	// Do an initial poll immediately
 	c.poll()
@@ -585,13 +578,6 @@ func (c *CalendarSense) handleError(err error) {
 	if callback != nil {
 		callback(err)
 	}
-}
-
-// LastPoll returns when the calendar was last polled
-func (c *CalendarSense) LastPoll() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastPoll
 }
 
 // formatDuration formats a duration in a human-readable way

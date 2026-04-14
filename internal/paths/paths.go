@@ -35,16 +35,6 @@ func ResolveFile(statePath, relPath string) (string, bool) {
 	return "", false
 }
 
-// ResolveFilePath returns the absolute path where a file should be read from.
-// State directory takes priority; falls back to state-defaults.
-func ResolveFilePath(statePath, relPath string) string {
-	stateFile := filepath.Join(statePath, "system", relPath)
-	if _, err := os.Stat(stateFile); err == nil {
-		return stateFile
-	}
-	return filepath.Join(DefaultsDir, "system", relPath)
-}
-
 // MergeDir returns a merged list of file paths from both the state directory
 // and state-defaults, for a given subdirectory (e.g. "reflexes", "workflows",
 // "guides"). State files take priority — if a file with the same name exists in
@@ -109,69 +99,6 @@ func MergeDir(statePath, subDir string, extensions []string) []string {
 		if p, ok := merged[e.name]; ok {
 			result = append(result, p)
 			delete(merged, e.name)
-		}
-	}
-	return result
-}
-
-// MergeDirRecursive returns a merged list of file paths (including subdirectories)
-// from both the state directory and state-defaults, for a given subdirectory.
-// State files take priority over defaults files with the same relative path.
-// Only files matching the given extensions are included.
-func MergeDirRecursive(statePath, subDir string, extensions []string) []string {
-	defaultsBase := filepath.Join(DefaultsDir, "system", subDir)
-	stateBase := filepath.Join(statePath, "system", subDir)
-
-	extSet := make(map[string]bool, len(extensions))
-	for _, e := range extensions {
-		extSet[e] = true
-	}
-
-	type entry struct {
-		relPath string
-		path    string
-	}
-
-	collect := func(base string) []entry {
-		var entries []entry
-		filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if !extSet[filepath.Ext(d.Name())] {
-				return nil
-			}
-			rel, _ := filepath.Rel(base, path)
-			entries = append(entries, entry{relPath: rel, path: path})
-			return nil
-		})
-		return entries
-	}
-
-	defaults := collect(defaultsBase)
-	states := collect(stateBase)
-
-	// Build map: relPath → path, state overrides defaults
-	merged := make(map[string]string, len(defaults)+len(states))
-	for _, e := range defaults {
-		merged[e.relPath] = e.path
-	}
-	for _, e := range states {
-		merged[e.relPath] = e.path
-	}
-
-	// Deterministic order: defaults first (sorted), then state-only entries (sorted)
-	result := make([]string, 0, len(merged))
-	for _, e := range defaults {
-		if p, ok := merged[e.relPath]; ok {
-			result = append(result, p)
-			delete(merged, e.relPath)
-		}
-	}
-	for _, e := range states {
-		if p, ok := merged[e.relPath]; ok {
-			result = append(result, p)
-			delete(merged, e.relPath)
 		}
 	}
 	return result

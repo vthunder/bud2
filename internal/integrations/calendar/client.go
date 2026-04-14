@@ -713,61 +713,9 @@ func (c *Client) CreateEvent(ctx context.Context, params CreateEventParams) (*Ev
 	return &result, nil
 }
 
-// CalendarInfo represents a calendar in the user's calendar list
-type CalendarInfo struct {
-	ID          string `json:"id"`
-	Summary     string `json:"summary"`
-	Description string `json:"description,omitempty"`
-	Primary     bool   `json:"primary,omitempty"`
-	AccessRole  string `json:"access_role"` // owner, writer, reader, freeBusyReader
-}
-
-// ListCalendars retrieves all calendars accessible to the service account
-func (c *Client) ListCalendars(ctx context.Context) ([]CalendarInfo, error) {
-	data, err := c.request(ctx, "GET", "/users/me/calendarList", nil)
-	if err != nil {
-		return nil, fmt.Errorf("list calendars: %w", err)
-	}
-
-	var resp struct {
-		Items []struct {
-			ID          string `json:"id"`
-			Summary     string `json:"summary"`
-			Description string `json:"description"`
-			Primary     bool   `json:"primary"`
-			AccessRole  string `json:"accessRole"`
-		} `json:"items"`
-	}
-
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("parse calendar list: %w", err)
-	}
-
-	calendars := make([]CalendarInfo, len(resp.Items))
-	for i, item := range resp.Items {
-		calendars[i] = CalendarInfo{
-			ID:          item.ID,
-			Summary:     item.Summary,
-			Description: item.Description,
-			Primary:     item.Primary,
-			AccessRole:  item.AccessRole,
-		}
-	}
-
-	return calendars, nil
-}
-
 // CalendarIDs returns all configured calendar IDs
 func (c *Client) CalendarIDs() []string {
 	return c.calendarIDs
-}
-
-// PrimaryCalendarID returns the first (primary) calendar ID
-func (c *Client) PrimaryCalendarID() string {
-	if len(c.calendarIDs) > 0 {
-		return c.calendarIDs[0]
-	}
-	return ""
 }
 
 // convertEvent converts a Google Calendar event to our Event type

@@ -87,11 +87,6 @@ func (e *DiscordEffector) Submit(action *types.Action) {
 	e.pendingMu.Unlock()
 }
 
-// SetMaxRetryDuration configures how long to retry transient failures
-func (e *DiscordEffector) SetMaxRetryDuration(d time.Duration) {
-	e.maxRetryDuration = d
-}
-
 // SetOnSend sets a callback for when messages are sent (for memory capture)
 func (e *DiscordEffector) SetOnSend(callback func(channelID, content string)) {
 	e.onSend = callback

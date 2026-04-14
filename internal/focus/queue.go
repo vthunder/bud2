@@ -61,72 +61,6 @@ func (q *Queue) Add(item *PendingItem) error {
 	return nil
 }
 
-// Get retrieves and removes an item by ID
-func (q *Queue) Get(id string) *PendingItem {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	for i, item := range q.items {
-		if item.ID == id {
-			q.items = append(q.items[:i], q.items[i+1:]...)
-			return item
-		}
-	}
-	return nil
-}
-
-// PopHighest removes and returns the highest priority item
-func (q *Queue) PopHighest() *PendingItem {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if len(q.items) == 0 {
-		return nil
-	}
-
-	// Find highest priority
-	bestIdx := 0
-	for i, item := range q.items[1:] {
-		if item.Priority < q.items[bestIdx].Priority {
-			bestIdx = i + 1
-		} else if item.Priority == q.items[bestIdx].Priority && item.Salience > q.items[bestIdx].Salience {
-			bestIdx = i + 1
-		}
-	}
-
-	item := q.items[bestIdx]
-	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
-	return item
-}
-
-// PopHighestMaxPriority removes and returns the highest priority item
-// with priority <= maxPriority (i.e., items at least as urgent as maxPriority).
-// Returns nil if no qualifying item exists.
-func (q *Queue) PopHighestMaxPriority(maxPriority Priority) *PendingItem {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	bestIdx := -1
-	for i, item := range q.items {
-		if item.Priority > maxPriority {
-			continue
-		}
-		if bestIdx == -1 || item.Priority < q.items[bestIdx].Priority {
-			bestIdx = i
-		} else if item.Priority == q.items[bestIdx].Priority && item.Salience > q.items[bestIdx].Salience {
-			bestIdx = i
-		}
-	}
-
-	if bestIdx == -1 {
-		return nil
-	}
-
-	item := q.items[bestIdx]
-	q.items = append(q.items[:bestIdx], q.items[bestIdx+1:]...)
-	return item
-}
-
 // PopAllMaxPriority removes and returns all items with priority <= maxPriority,
 // sorted by priority ascending (most urgent first), then salience descending.
 // Returns nil if no qualifying items exist.
@@ -184,16 +118,6 @@ func (q *Queue) PopHighestMinPriority(minPriority Priority) *PendingItem {
 	return item
 }
 
-// All returns all items (copy)
-func (q *Queue) All() []*PendingItem {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	result := make([]*PendingItem, len(q.items))
-	copy(result, q.items)
-	return result
-}
-
 // trim removes excess items (oldest, lowest priority first)
 func (q *Queue) trim() {
 	// Sort by priority (desc) then age (desc)
@@ -216,27 +140,6 @@ func (q *Queue) trim() {
 	}
 
 	q.items = keep
-}
-
-// ExpireOld removes items older than the given duration
-func (q *Queue) ExpireOld(maxAge time.Duration) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	cutoff := time.Now().Add(-maxAge)
-	var keep []*PendingItem
-	removed := 0
-
-	for _, item := range q.items {
-		if item.Timestamp.Before(cutoff) {
-			removed++
-			continue
-		}
-		keep = append(keep, item)
-	}
-
-	q.items = keep
-	return removed
 }
 
 // Load loads queue state from disk

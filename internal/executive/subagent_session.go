@@ -206,13 +206,6 @@ func (s *SubagentSession) Result() string {
 	return s.result
 }
 
-// Err returns the error (only meaningful when Failed).
-func (s *SubagentSession) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastErr
-}
-
 // SubagentManager maintains a registry of active subagent sessions and
 // provides spawn/answer/status operations for the executive.
 type SubagentManager struct {

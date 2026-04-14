@@ -88,11 +88,6 @@ func (e *Engine) SetInteractionReplyCallback(cb func(token, appID, message strin
 	e.onInteractionReply = cb
 }
 
-// SetReactCallback sets the callback for react actions
-func (e *Engine) SetReactCallback(cb func(channelID, messageID, emoji string) error) {
-	e.onReact = cb
-}
-
 // SetDefaultChannel sets the default channel for notifications when no channel_id in context
 func (e *Engine) SetDefaultChannel(channelID string) {
 	e.defaultChannel = channelID
@@ -743,13 +738,6 @@ func (e *Engine) List() []*Reflex {
 		result = append(result, r)
 	}
 	return result
-}
-
-// Get returns a reflex by name
-func (e *Engine) Get(name string) *Reflex {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.reflexes[name]
 }
 
 // Delete removes a reflex

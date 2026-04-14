@@ -569,15 +569,3 @@ func (item *ProjectItem) CompactItem() string {
 	return strings.Join(parts, " ")
 }
 
-// FormatItemsCompact formats a slice of items in a compact, token-efficient format
-func FormatItemsCompact(items []ProjectItem) string {
-	if len(items) == 0 {
-		return "No items."
-	}
-
-	var lines []string
-	for _, item := range items {
-		lines = append(lines, item.CompactItem())
-	}
-	return strings.Join(lines, "\n")
-}
