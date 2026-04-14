@@ -100,18 +100,6 @@ func (t *SessionTracker) HasActiveSessions() bool {
 	return len(t.active) > 0
 }
 
-// GetActiveSessions returns all active sessions
-func (t *SessionTracker) GetActiveSessions() []*Session {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	sessions := make([]*Session, 0, len(t.active))
-	for _, s := range t.active {
-		sessions = append(sessions, s)
-	}
-	return sessions
-}
-
 // TodayThinkingMinutes returns total thinking time today in minutes
 func (t *SessionTracker) TodayThinkingMinutes() float64 {
 	t.mu.RLock()
@@ -130,21 +118,6 @@ func (t *SessionTracker) TodayThinkingMinutes() float64 {
 	}
 
 	return total / 60.0
-}
-
-// LongestActiveSession returns the duration of the longest-running active session
-func (t *SessionTracker) LongestActiveSession() time.Duration {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	var longest time.Duration
-	for _, s := range t.active {
-		d := time.Since(s.StartedAt)
-		if d > longest {
-			longest = d
-		}
-	}
-	return longest
 }
 
 // SetSessionUsage records token usage for a completed session

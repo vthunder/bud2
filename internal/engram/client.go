@@ -163,27 +163,6 @@ func (c *Client) IngestEpisode(req IngestEpisodeRequest) (*IngestResult, error) 
 	return &result, nil
 }
 
-// IngestThought stores a free-form thought and returns its ID.
-func (c *Client) IngestThought(content string) (*IngestResult, error) {
-	body := map[string]string{"content": content}
-	var result IngestResult
-	if err := c.post("/v1/thoughts", body, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// --- Consolidation ---
-
-// Consolidate runs the consolidation pipeline.
-func (c *Client) Consolidate() (*ConsolidateResult, error) {
-	var result ConsolidateResult
-	if err := c.post("/v1/consolidate", nil, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
 // --- Search ---
 
 // Search retrieves relevant memories for the given query via Engram's semantic search.
@@ -260,18 +239,6 @@ func (c *Client) DeleteTrace(id string) error {
 		return nil
 	}
 	return c.parseError(resp)
-}
-
-// ReinforceTrace boosts a trace's activation. alpha=0 uses the server default (0.3).
-func (c *Client) ReinforceTrace(id string, embedding []float64, alpha float64) error {
-	body := map[string]any{}
-	if len(embedding) > 0 {
-		body["embedding"] = embedding
-	}
-	if alpha > 0 {
-		body["alpha"] = alpha
-	}
-	return c.post("/v1/engrams/"+url.PathEscape(id)+"/reinforce", body, nil)
 }
 
 // GetActivatedTraces returns traces with activation above threshold.
@@ -351,19 +318,6 @@ func (c *Client) GetUnconsolidatedEpisodeIDs(channel string) (map[string]bool, e
 	return result, nil
 }
 
-// GetUnconsolidatedEpisodeCount returns the number of episodes not yet linked to any trace.
-func (c *Client) GetUnconsolidatedEpisodeCount() (int, error) {
-	params := url.Values{}
-	params.Set("unconsolidated", "true")
-	var result struct {
-		Count int `json:"count"`
-	}
-	if err := c.get("/v1/episodes/count", params, &result); err != nil {
-		return 0, err
-	}
-	return result.Count, nil
-}
-
 // AddEpisodeEdge creates a directed edge between two episodes (e.g. FOLLOWS).
 // edgeType should be "follows" or another semantic label.
 // confidence should be 0.0–1.0; 0 is treated as 1.0 by the server.
@@ -420,87 +374,6 @@ func (c *Client) GetEpisodeSummariesBatch(episodeIDs []string, level int) (map[s
 		return nil, err
 	}
 	return result, nil
-}
-
-// --- Entities ---
-
-// ListEntities returns entities. entityType="" returns all; limit<=0 uses server default (100).
-func (c *Client) ListEntities(entityType string, limit int) ([]*Entity, error) {
-	params := url.Values{}
-	if entityType != "" {
-		params.Set("type", entityType)
-	}
-	if limit > 0 {
-		params.Set("limit", strconv.Itoa(limit))
-	}
-	var entities []*Entity
-	if err := c.get("/v1/entities", params, &entities); err != nil {
-		return nil, err
-	}
-	return entities, nil
-}
-
-// --- Activation ---
-
-// DecayActivation applies exponential decay to trace activations.
-// Pass zero values to use server defaults.
-func (c *Client) DecayActivation(lambda, floor float64) (*DecayResult, error) {
-	body := map[string]any{}
-	if lambda > 0 {
-		body["lambda"] = lambda
-	}
-	if floor > 0 {
-		body["floor"] = floor
-	}
-	var result DecayResult
-	if err := c.post("/v1/activation/decay", body, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// --- Management ---
-
-// Flush triggers consolidation and cleanup.
-func (c *Client) Flush() error {
-	return c.post("/v1/memory/flush", nil, nil)
-}
-
-// RegeneratePyramids queues regeneration of stored pyramid summaries (L4–L64) for all engrams.
-// Pass depth >= 0 to filter by engram depth (e.g. depth=0 for L1 only). Pass -1 for all depths.
-// Returns {"started": N, "depth": D}. The operation runs in the background.
-func (c *Client) RegeneratePyramids(depth int) (map[string]any, error) {
-	params := url.Values{}
-	if depth >= 0 {
-		params.Set("depth", strconv.Itoa(depth))
-	}
-	path := "/v1/engrams/regenerate-pyramids"
-	if len(params) > 0 {
-		path += "?" + params.Encode()
-	}
-	var result map[string]any
-	if err := c.post(path, nil, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// Reset clears all memory. Destructive and irreversible.
-func (c *Client) Reset() error {
-	req, err := http.NewRequest(http.MethodDelete, c.baseURL+"/v1/memory/reset", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return c.parseError(resp)
-	}
-	return nil
 }
 
 // --- HTTP helpers ---
