@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -79,6 +81,67 @@ func (h *HookRunner) Run(event string, payload map[string]interface{}) (map[stri
 	}
 
 	return current, nil
+}
+
+// RunPreToolUse fires all registered PreToolUse scripts for the given tool call.
+// Each script receives {"event":"PreToolUse","tool_name":name,"tool_input":input} on stdin.
+// If any script exits with code 1, RunPreToolUse returns (true, stderr) to signal that the
+// tool call should be blocked. Other non-zero exits are logged as warnings and do not block.
+// Returns (false, "") if no scripts are registered or all scripts exit 0.
+func (h *HookRunner) RunPreToolUse(toolName string, toolInput map[string]any) (blocked bool, reason string) {
+	scripts := h.handlers["PreToolUse"]
+	if len(scripts) == 0 {
+		return false, ""
+	}
+	payload := map[string]interface{}{
+		"event":      "PreToolUse",
+		"tool_name":  toolName,
+		"tool_input": toolInput,
+	}
+	for _, scriptPath := range scripts {
+		blk, rsn, err := runHookScriptWithBlocking(scriptPath, payload)
+		if err != nil {
+			log.Printf("[hooks] WARNING: PreToolUse script %s failed: %v", scriptPath, err)
+			continue
+		}
+		if blk {
+			log.Printf("[hooks] PreToolUse script %s blocked tool %s: %s", scriptPath, toolName, rsn)
+			return true, rsn
+		}
+	}
+	return false, ""
+}
+
+// runHookScriptWithBlocking executes a hook script, differentiating exit code 1 (block)
+// from other non-zero exits (error). Returns (blocked=true, reason=stderr, nil) for exit 1.
+// Returns (false, "", error) for other non-zero exits or execution failures.
+// Returns (false, "", nil) on success.
+func runHookScriptWithBlocking(scriptPath string, payload map[string]interface{}) (blocked bool, reason string, err error) {
+	data, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return false, "", fmt.Errorf("marshal payload: %w", marshalErr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, scriptPath)
+	cmd.Stdin = bytes.NewReader(data)
+	cmd.Env = os.Environ()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+			return true, strings.TrimSpace(stderr.String()), nil
+		}
+		return false, "", fmt.Errorf("execute: %w", runErr)
+	}
+	return false, "", nil
 }
 
 // runHookScript executes a single hook script with payload as JSON on stdin.

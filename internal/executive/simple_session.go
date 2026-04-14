@@ -445,6 +445,7 @@ func resolvedManifestPluginPaths(statePath string) []string {
 //   - manifest git-skills (same cache, different subpaths)
 //   - manifest local-path skills
 //   - ClaWHub skills virtual dir (~/Library/Caches/bud/skills-clawhub)
+//   - ClaWHub per-slug dirs (~/Library/Caches/bud/skills-clawhub/skills/{slug}/)
 //
 // Used to pass --plugin-dir to subagents and to search for skill content.
 func allPluginDirs(statePath string) []string {
@@ -452,8 +453,17 @@ func allPluginDirs(statePath string) []string {
 	dirs = append(dirs, resolvedManifestSkillDirs(statePath)...)
 	if cacheBase, err := os.UserCacheDir(); err == nil {
 		chDir := clawhubSkillsDir(cacheBase)
-		if _, err := os.Stat(filepath.Join(chDir, "skills")); err == nil {
+		skillsDir := filepath.Join(chDir, "skills")
+		if _, err := os.Stat(skillsDir); err == nil {
 			dirs = append(dirs, chDir)
+			// Enumerate per-slug subdirs so hooks/bud/ inside each skill is discovered.
+			if slugEntries, err := os.ReadDir(skillsDir); err == nil {
+				for _, e := range slugEntries {
+					if e.IsDir() {
+						dirs = append(dirs, filepath.Join(skillsDir, e.Name()))
+					}
+				}
+			}
 		}
 	}
 	return dirs
@@ -473,8 +483,17 @@ func allPluginDirsForAgents(statePath string) []pluginDir {
 	}
 	if cacheBase, err := os.UserCacheDir(); err == nil {
 		chDir := clawhubSkillsDir(cacheBase)
-		if _, err := os.Stat(filepath.Join(chDir, "skills")); err == nil {
+		skillsDir := filepath.Join(chDir, "skills")
+		if _, err := os.Stat(skillsDir); err == nil {
 			dirs = append(dirs, pluginDir{Path: chDir})
+			// Enumerate per-slug subdirs so hooks/bud/ inside each skill is discovered.
+			if slugEntries, err := os.ReadDir(skillsDir); err == nil {
+				for _, e := range slugEntries {
+					if e.IsDir() {
+						dirs = append(dirs, pluginDir{Path: filepath.Join(skillsDir, e.Name())})
+					}
+				}
+			}
 		}
 	}
 	return dirs

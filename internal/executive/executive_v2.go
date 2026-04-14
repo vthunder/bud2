@@ -1874,13 +1874,41 @@ func readHandoff(statePath string) string {
 // is for side-effects like session tracking, not for tool execution.
 // MCP tool names are prefixed: mcp__bud2__talk_to_user, mcp__bud2__signal_done, etc.
 //
-// TODO(hooks-phase2): wire PreToolUse / PostToolUse hooks here once the tool
-// call flow surfaces enough context (name, args, result) in a single callback.
+// PreToolUse hooks can block a tool call (exit code 1); when blocked the current
+// session context is cancelled so no further tool execution occurs.
+// PostToolUse hooks are fired asynchronously; tool results are not available in
+// SDK -p mode (the CLI handles execution internally).
 func (e *ExecutiveV2) handleToolCall(item *focus.PendingItem, name string, args map[string]any) (string, error) {
 	isTalkToUser := strings.HasSuffix(name, "talk_to_user") || strings.HasSuffix(name, "send_message") || strings.HasSuffix(name, "respond_to_user")
 	isNoise := isTalkToUser || name == "ToolSearch"
 	if !isNoise {
 		log.Printf("[executive-v2] tool: %s", name)
+	}
+
+	// PreToolUse / PostToolUse hooks — skip noisy / infrastructure tools.
+	if e.hookRunner != nil && !isNoise {
+		if blocked, reason := e.hookRunner.RunPreToolUse(name, args); blocked {
+			log.Printf("[hooks] PreToolUse blocked tool %s: %s", name, reason)
+			// Cancel the session context so the CLI stops executing.
+			e.backgroundMu.Lock()
+			cancel := e.signalDoneCancel
+			e.backgroundMu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			return "blocked by PreToolUse hook", nil
+		}
+
+		// PostToolUse: fire informational notification asynchronously.
+		// tool_result is absent because the SDK does not surface per-tool results.
+		hookName := name
+		hookArgs := args
+		go func() {
+			_, _ = e.hookRunner.Run("PostToolUse", map[string]interface{}{
+				"tool_name":  hookName,
+				"tool_input": hookArgs,
+			})
+		}()
 	}
 
 	// Match both bare names (legacy) and MCP-prefixed names
