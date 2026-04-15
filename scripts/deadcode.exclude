@@ -1,0 +1,6 @@
+# Known false positives for deadcode analysis.
+# Each line is a substring matched against deadcode output lines.
+# Typically these are interface implementations that RTA cannot prove are called.
+
+# Implements provider.Session — dispatched via interface, compile-time asserted on simple_session.go:25
+SimpleSession.SendPrompt
