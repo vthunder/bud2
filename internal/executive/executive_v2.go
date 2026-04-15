@@ -121,7 +121,7 @@ type ExecutiveV2Config struct {
 
 	// MCPServerURL is the HTTP URL for the bud2 MCP server (e.g. "http://127.0.0.1:8066/mcp").
 	// Passed directly to Claude SDK sessions so MCP tools are available without
-	// relying on .mcp.json auto-discovery.
+	// relying on auto-discovery.
 	MCPServerURL string
 
 	// MaxAutonomousSessionDuration caps how long a wake session can run.

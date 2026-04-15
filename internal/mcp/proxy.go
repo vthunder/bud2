@@ -307,12 +307,12 @@ func (c *ProxyClient) Close() {
 	c.cmd.Wait()
 }
 
-// MCPConfig represents the .mcp.json configuration file
+// MCPConfig represents the MCP proxy configuration file (state/system/mcp.json)
 type MCPConfig struct {
 	MCPServers map[string]MCPServerEntry `json:"mcpServers"`
 }
 
-// MCPServerEntry is a single server entry in .mcp.json
+// MCPServerEntry is a single server entry in the MCP proxy config
 type MCPServerEntry struct {
 	Type    string            `json:"type,omitempty"`    // "http" for HTTP transport
 	URL     string            `json:"url,omitempty"`     // for type=http
@@ -321,7 +321,7 @@ type MCPServerEntry struct {
 	Env     map[string]string `json:"env,omitempty"`     // for stdio
 }
 
-// LoadMCPConfig reads and parses a .mcp.json file
+// LoadMCPConfig reads and parses an MCP proxy config file
 func LoadMCPConfig(path string) (*MCPConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -329,12 +329,12 @@ func LoadMCPConfig(path string) (*MCPConfig, error) {
 	}
 	var cfg MCPConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse .mcp.json: %w", err)
+		return nil, fmt.Errorf("parse mcp config: %w", err)
 	}
 	return &cfg, nil
 }
 
-// StartProxiesFromConfig reads .mcp.json and starts proxy clients for all stdio servers.
+// StartProxiesFromConfig reads state/system/mcp.json and starts proxy clients for all stdio servers.
 // For each server discovered, it registers its tools with the given MCP server.
 // Returns a slice of started proxy clients (caller should defer Close on each).
 func StartProxiesFromConfig(mcpConfigPath string, server *Server) ([]*ProxyClient, error) {

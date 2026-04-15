@@ -28,7 +28,7 @@ If found:
 
 If errors found, investigate root cause and either:
 - Fix immediately if simple
-- Create a beads issue if complex
+- Create a Things task if complex
 
 ### 2. Review State Health
 

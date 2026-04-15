@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/itchyny/gojq"
-	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/paths"
 	"gopkg.in/yaml.v3"
@@ -44,15 +43,6 @@ type Engine struct {
 	onInteractionReply func(token, appID, message string) error // for slash command followup responses
 	onReact            func(channelID, messageID, emoji string) error
 
-	// GTD store for gtd_* actions
-	gtdStore interface {
-		GetTasks(when, projectID, areaID string) []gtd.Task
-		AddTask(task *gtd.Task)
-		CompleteTask(id string) error
-		Save() error
-		FindTaskByTitle(title string) *gtd.Task
-	}
-
 	// Calendar client for calendar_* actions
 	calendarClient *calendar.Client
 
@@ -69,7 +59,6 @@ func NewEngine(statePath string) *Engine {
 		statePath:   statePath,
 		fileModTime: make(map[string]time.Time),
 	}
-	e.createGTDActions()
 	e.createCallToolAction()
 	e.createGTDThingsActions()
 	e.createInvokeReflexAction()
@@ -91,17 +80,6 @@ func (e *Engine) SetInteractionReplyCallback(cb func(token, appID, message strin
 // SetDefaultChannel sets the default channel for notifications when no channel_id in context
 func (e *Engine) SetDefaultChannel(channelID string) {
 	e.defaultChannel = channelID
-}
-
-// SetGTDStore sets the GTD store for reflex actions
-func (e *Engine) SetGTDStore(store interface {
-	GetTasks(when, projectID, areaID string) []gtd.Task
-	AddTask(task *gtd.Task)
-	CompleteTask(id string) error
-	Save() error
-	FindTaskByTitle(title string) *gtd.Task
-}) {
-	e.gtdStore = store
 }
 
 // SetCalendarClient sets the calendar client for calendar_* actions
@@ -762,168 +740,6 @@ func (e *Engine) Delete(name string) error {
 	return nil
 }
 
-// createGTDActions registers GTD-related actions that need engine access
-func (e *Engine) createGTDActions() {
-	e.actions.Register("gtd_list", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.gtdStore == nil {
-			return nil, fmt.Errorf("GTD store not configured")
-		}
-
-		when := resolveVar(params, vars, "when")
-		if when == "" {
-			when = "today" // default
-		}
-
-		tasks := e.gtdStore.GetTasks(when, "", "")
-		if len(tasks) == 0 {
-			return fmt.Sprintf("No tasks for %s", when), nil
-		}
-
-		var lines []string
-		for i, t := range tasks {
-			lines = append(lines, fmt.Sprintf("%d. %s", i+1, t.Title))
-		}
-		return strings.Join(lines, "\n"), nil
-	}))
-
-	e.actions.Register("gtd_add", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.gtdStore == nil {
-			return nil, fmt.Errorf("GTD store not configured")
-		}
-
-		title := resolveVar(params, vars, "title")
-		if title == "" {
-			return nil, fmt.Errorf("title is required")
-		}
-
-		task := &gtd.Task{
-			Title: title,
-			When:  "inbox",
-		}
-		if notes := resolveVar(params, vars, "notes"); notes != "" {
-			task.Notes = notes
-		}
-
-		e.gtdStore.AddTask(task)
-		if err := e.gtdStore.Save(); err != nil {
-			return nil, fmt.Errorf("failed to save: %w", err)
-		}
-
-		return fmt.Sprintf("Added '%s' to inbox", title), nil
-	}))
-
-	e.actions.Register("gtd_complete", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.gtdStore == nil {
-			return nil, fmt.Errorf("GTD store not configured")
-		}
-
-		identifier := resolveVar(params, vars, "id", "title")
-		if identifier == "" {
-			return nil, fmt.Errorf("id or title is required")
-		}
-
-		// Try to find task
-		task := e.gtdStore.FindTaskByTitle(identifier)
-		if task == nil {
-			return nil, fmt.Errorf("task not found: %s", identifier)
-		}
-
-		if err := e.gtdStore.CompleteTask(task.ID); err != nil {
-			return nil, err
-		}
-		if err := e.gtdStore.Save(); err != nil {
-			return nil, fmt.Errorf("failed to save: %w", err)
-		}
-
-		return fmt.Sprintf("Completed '%s'", task.Title), nil
-	}))
-
-	e.actions.Register("gtd_dispatch", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.gtdStore == nil {
-			return nil, fmt.Errorf("GTD store not configured")
-		}
-
-		intent, _ := vars["intent"].(string)
-		content, _ := vars["content"].(string)
-
-		switch intent {
-		case "gtd_show_today":
-			allTasks := e.gtdStore.GetTasks("today", "", "")
-			tasks := filterOpenTasks(allTasks)
-			if len(tasks) == 0 {
-				return "No tasks for today", nil
-			}
-			lines := formatTaskList(tasks, 1800)
-			header := "Today's tasks:\n"
-			if len(lines) < len(tasks) {
-				header = fmt.Sprintf("Today (%d of %d):\n", len(lines), len(tasks))
-			}
-			return header + strings.Join(lines, "\n"), nil
-
-		case "gtd_show_inbox":
-			allTasks := e.gtdStore.GetTasks("inbox", "", "")
-			tasks := filterOpenTasks(allTasks)
-			if len(tasks) == 0 {
-				return "Inbox is empty", nil
-			}
-			lines := formatTaskList(tasks, 1800)
-			header := "Inbox:\n"
-			if len(lines) < len(tasks) {
-				header = fmt.Sprintf("Inbox (%d of %d):\n", len(lines), len(tasks))
-			}
-			return header + strings.Join(lines, "\n"), nil
-
-		case "gtd_show_logbook":
-			allTasks := e.gtdStore.GetTasks("", "", "")
-			var tasks []gtd.Task
-			for _, t := range allTasks {
-				if t.Status == "completed" || t.Status == "canceled" {
-					tasks = append(tasks, t)
-				}
-			}
-			if len(tasks) == 0 {
-				return "Logbook is empty", nil
-			}
-			lines := formatTaskList(tasks, 1800)
-			header := "Logbook:\n"
-			if len(lines) < len(tasks) {
-				header = fmt.Sprintf("Logbook (%d of %d):\n", len(lines), len(tasks))
-			}
-			return header + strings.Join(lines, "\n"), nil
-
-		case "gtd_add_inbox":
-			// Extract what to add from content
-			item := content
-			if idx := strings.Index(strings.ToLower(content), "add "); idx >= 0 {
-				item = content[idx+4:]
-			}
-			if idx := strings.Index(strings.ToLower(item), " to inbox"); idx >= 0 {
-				item = item[:idx]
-			}
-			item = strings.TrimSpace(item)
-
-			if item == "" {
-				return nil, fmt.Errorf("couldn't extract item to add")
-			}
-
-			task := &gtd.Task{Title: item, When: "inbox"}
-			e.gtdStore.AddTask(task)
-			if err := e.gtdStore.Save(); err != nil {
-				return nil, fmt.Errorf("failed to save: %w", err)
-			}
-			return fmt.Sprintf("Added '%s' to inbox", item), nil
-
-		case "gtd_complete":
-			return nil, fmt.Errorf("gtd_complete via dispatch not yet implemented - use direct action")
-
-		default:
-			return nil, fmt.Errorf("unknown GTD intent: %s", intent)
-		}
-	}))
-
-	// Bud task actions have been migrated to Things MCP integration
-}
-
 // createCalendarActions registers calendar-related actions
 func (e *Engine) createCalendarActions() {
 	e.actions.Register("calendar_today", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
@@ -1021,7 +837,6 @@ func (e *Engine) createCalendarActions() {
 			return fmt.Sprintf("Upcoming events (%d):\n%s", len(events), strings.Join(lines, "\n")), nil
 
 		case "calendar_query":
-			// Query events in a date range
 			events, err := e.calendarClient.GetUpcomingEvents(ctx, 7*24*time.Hour, 20)
 			if err != nil {
 				return nil, fmt.Errorf("failed to query events: %w", err)
@@ -1048,7 +863,6 @@ func (e *Engine) createCalendarActions() {
 			return fmt.Sprintf("Events this week (%d):\n%s", len(events), strings.Join(lines, "\n")), nil
 
 		case "calendar_free":
-			// Check availability for today
 			now := time.Now()
 			endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
 
@@ -1083,17 +897,6 @@ func (e *Engine) createCalendarActions() {
 			return nil, fmt.Errorf("unknown calendar intent: %s", intent)
 		}
 	}))
-}
-
-// filterOpenTasks returns only tasks with status "open"
-func filterOpenTasks(tasks []gtd.Task) []gtd.Task {
-	var result []gtd.Task
-	for _, t := range tasks {
-		if t.Status == "open" {
-			result = append(result, t)
-		}
-	}
-	return result
 }
 
 // createCallToolAction registers the generic call_tool action that routes to the MCP dispatcher
@@ -1348,26 +1151,3 @@ func (e *Engine) createJSONQueryAction() {
 	}))
 }
 
-// formatTaskList formats tasks into numbered lines, truncating to fit within maxLen
-func formatTaskList(tasks []gtd.Task, maxLen int) []string {
-	var lines []string
-	totalLen := 0
-	for i, t := range tasks {
-		line := fmt.Sprintf("%d. %s", i+1, t.Title)
-		// Truncate long titles
-		if len(line) > 80 {
-			line = line[:77] + "..."
-		}
-		// Check if adding this line would exceed limit
-		newLen := totalLen + len(line)
-		if len(lines) > 0 {
-			newLen++ // account for newline
-		}
-		if newLen > maxLen {
-			break
-		}
-		lines = append(lines, line)
-		totalLen = newLen
-	}
-	return lines
-}

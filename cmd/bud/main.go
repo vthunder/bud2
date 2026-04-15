@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,7 +31,6 @@ import (
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/executive/provider"
 	"github.com/vthunder/bud2/internal/focus"
-	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/logging"
@@ -352,11 +350,6 @@ func main() {
 	// ResolveFile/MergeDir handle the overlay at read time).
 	paths.EnsureStateSystemDirs(statePath)
 
-	// Generate .mcp.json in state/ directory for Claude MCP tools
-	if err := writeMCPConfig(statePath, mcpHTTPPort); err != nil {
-		log.Printf("Warning: failed to write .mcp.json: %v", err)
-	}
-
 	// Initialize paths
 	systemPath := filepath.Join(statePath, "system")
 	queuesPath := filepath.Join(systemPath, "queues")
@@ -389,13 +382,6 @@ func main() {
 	startupContent, _ := paths.ResolveFile(statePath, "startup-instructions.md")
 	startupInstructions := startupContent
 
-	// Initialize GTD store (always using JSON store - Things integration via MCP)
-	gtdStore := gtd.NewGTDStore(statePath)
-
-	if err := gtdStore.Load(); err != nil {
-		log.Printf("Warning: failed to load GTD store: %v", err)
-	}
-
 	// Initialize activity logger for observability
 	activityLog := activity.New(statePath)
 
@@ -416,7 +402,6 @@ func main() {
 	if err := reflexEngine.Load(); err != nil {
 		log.Printf("Warning: failed to load reflexes: %v", err)
 	}
-	reflexEngine.SetGTDStore(gtdStore)
 	reflexEngine.SetDefaultChannel(discordChannel)
 
 	// Initialize calendar client (optional)
@@ -493,7 +478,6 @@ func main() {
 		QueuesPath:     queuesPath,
 		DefaultChannel: discordChannel,
 		ReflexEngine:   reflexEngine,
-		GTDStore:       gtdStore,
 		MemoryJudge:    memoryJudge,
 		CalendarClient: calendarClient,
 		GitHubClient:   githubClient,
@@ -626,10 +610,10 @@ func main() {
 	tools.RegisterAll(mcpServer, mcpDeps)
 	log.Printf("[main] MCP server initialized with %d tools", mcpServer.ToolCount())
 
-	// Start stdio MCP proxy servers from .mcp.json and register their tools
+	// Start stdio MCP proxy servers from state/system/mcp.json and register their tools
 	// This makes things-mcp (and any other stdio servers) available to both
 	// Claude sessions (via HTTP) and the reflex engine (via call_tool action).
-	mcpConfigPath := filepath.Join(statePath, ".mcp.json")
+	mcpConfigPath := filepath.Join(statePath, "system", "mcp.json")
 	if proxyClients, proxyErr := mcp.StartProxiesFromConfig(mcpConfigPath, mcpServer); proxyErr != nil {
 		log.Printf("[main] Warning: failed to start MCP proxies: %v", proxyErr)
 	} else if len(proxyClients) > 0 {
@@ -669,7 +653,7 @@ func main() {
 			ProviderName:                 providerName,
 			ProviderConfig:               budCfg,
 			Model:                        claudeModel,
-			WorkDir:                      statePath, // Run Claude from state/ to pick up .mcp.json
+			WorkDir:                      statePath, // Run Claude from state/ directory
 			MCPServerURL:                 fmt.Sprintf("http://127.0.0.1:%s/mcp", mcpHTTPPort),
 			BotAuthor:                    "Bud", // Kept for compatibility, but no longer used
 			SessionTracker:               sessionTracker,
@@ -1566,47 +1550,3 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// writeMCPConfig writes .mcp.json to the state directory with HTTP MCP server configuration
-// This allows Claude sessions to discover and use the MCP tools
-func writeMCPConfig(statePath, httpPort string) error {
-	mcpConfigPath := filepath.Join(statePath, ".mcp.json")
-
-	// Read existing config if present
-	config := map[string]any{}
-	if data, err := os.ReadFile(mcpConfigPath); err == nil {
-		if err := json.Unmarshal(data, &config); err != nil {
-			log.Printf("[main] Warning: existing .mcp.json invalid, will overwrite: %v", err)
-			config = map[string]any{}
-		}
-	}
-
-	// Ensure mcpServers map exists
-	servers, ok := config["mcpServers"].(map[string]any)
-	if !ok {
-		servers = map[string]any{}
-		config["mcpServers"] = servers
-	}
-
-	// Add/update bud2 server with HTTP transport
-	// HTTP transport connects to the embedded MCP server in the main bud process
-	servers["bud2"] = map[string]any{
-		"type": "http",
-		"url":  fmt.Sprintf("http://127.0.0.1:%s/mcp", httpPort),
-	}
-
-	// Use encoder with SetEscapeHTML(false) to preserve characters like > in paths
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(config); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(mcpConfigPath, buf.Bytes(), 0644); err != nil {
-		return err
-	}
-
-	log.Printf("[main] Wrote %s with HTTP MCP server at port %s", mcpConfigPath, httpPort)
-	return nil
-}

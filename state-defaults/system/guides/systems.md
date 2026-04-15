@@ -29,7 +29,7 @@ Tasks are commitments - things I've promised to do. My tasks are stored in Thing
 Every task should have notes that include:
 - Why the task exists (context, trigger, what problem it solves)
 - Links to relevant files (e.g. `state/projects/avail/nightshade/ui-first-ux-exploration.md`)
-- Links to relevant beads issues (e.g. `beads#123`)
+- Links to relevant Things tasks (e.g. Things task title or ID)
 - Outcome summary when completing (what was done, what was found)
 
 This makes the logbook useful for future reference — a task title alone is not enough context.
@@ -38,7 +38,7 @@ Overdue tasks generate high-intensity impulses that wake me up.
 
 ## Ideas (Things "Ideas" Project)
 
-Ideas are things I want to explore someday - not commitments, just curiosities. They're for learning and exploration. When exploration reveals actionable work, that graduates to a task or beads issue.
+Ideas are things I want to explore someday - not commitments, just curiosities. They're for learning and exploration. When exploration reveals actionable work, that graduates to a Things task.
 
 Ideas are stored as todos in a single Things 3 project called "Ideas" in the "Bud" area (scheduled as "Someday"). Active and explored ideas live in the same project - toggle "Show Completed" in the UI to see both.
 
@@ -65,14 +65,14 @@ At minimum, add notes when creating. Before completing, update notes with full f
 1. **Capture**: Add idea as todo to "Ideas" project with context in notes
 2. **Explore**: During idle time, research and think through the idea
 3. **Record outcome**: Update notes with findings before marking complete:
-   - **Actionable**: Discovered work → create task/beads issue, reference in notes
+   - **Actionable**: Discovered work → create Things task, reference in notes
    - **Interesting**: Learned something useful, document in notes
    - **Not useful**: Dead end, note why
    - **Deferred**: Worth revisiting later, note blockers
 4. **Save thought**: Use `save_thought` with "IDEA EXPLORED:" prefix + summary of exploration and findings
 5. **Complete**: Mark todo as complete (stays in Ideas project, visible when showing completed items)
 6. **Update index**: Add entry to `notes/ideas-explored.md` index mapping idea title → **Things ID** (use the ID returned by Things MCP tools, format: `QgT7r8HrJxzVHw6uYJe7Hr`, NOT the old `idea-` format). If exploration produced a file, include the file path in the index entry: `→ \`QgT7r8HrJxzVHw6uYJe7Hr\` (File: \`state/notes/my-exploration.md\`)`
-7. **Track follow-up**: If actionable work created, track task/beads to completion
+7. **Track follow-up**: If actionable work created, track Things task to completion
 
 **Explored ideas index:**
 A lightweight index is maintained at `notes/ideas-explored.md` that maps idea titles to their Things IDs for quick lookup. This enables searching for relevant past explorations by keywords, then retrieving full details via `things_get_todo_details` with the ID.

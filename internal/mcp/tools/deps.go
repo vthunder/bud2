@@ -5,7 +5,6 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/eval"
-	"github.com/vthunder/bud2/internal/gtd"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/reflex"
@@ -28,7 +27,6 @@ type Dependencies struct {
 
 	// Optional services
 	ReflexEngine   *reflex.Engine
-	GTDStore       gtd.Store
 	MemoryJudge    *eval.Judge
 	CalendarClient *calendar.Client
 	GitHubClient   *github.Client

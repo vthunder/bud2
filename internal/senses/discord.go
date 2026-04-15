@@ -555,18 +555,6 @@ func (d *DiscordSense) SetOnStop(fn func()) {
 func (d *DiscordSense) RegisterSlashCommands(guildID string) error {
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "gtd",
-			Description: "Interact with your GTD task system",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "query",
-					Description: "What do you want to do? (e.g., 'show today', 'add buy milk')",
-					Required:    true,
-				},
-			},
-		},
-		{
 			Name:        "stop",
 			Description: "Stop the current session if it is stuck or taking too long",
 		},

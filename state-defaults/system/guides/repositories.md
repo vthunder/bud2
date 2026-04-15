@@ -58,7 +58,7 @@ Even if tests pass and the PR looks good, I wait for human approval before mergi
 ## Multi-Repository Work
 
 When work spans multiple repositories:
-1. Track the overall goal in beads
+1. Track the overall goal in Things (Bud area)
 2. Create separate PRs for each repo
 3. Note dependencies between PRs
 4. Coordinate merging order with owner
