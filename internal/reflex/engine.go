@@ -718,6 +718,14 @@ func (e *Engine) List() []*Reflex {
 	return result
 }
 
+// Get returns a reflex by name, or nil if not found
+func (e *Engine) Get(name string) *Reflex {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.reflexes[name]
+}
+
 // Delete removes a reflex
 func (e *Engine) Delete(name string) error {
 	e.mu.Lock()
