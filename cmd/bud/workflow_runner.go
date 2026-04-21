@@ -20,6 +20,10 @@ type extWorkflowRunner struct {
 func (r *extWorkflowRunner) RunWorkflow(ctx context.Context, name string, params map[string]any) (any, error) {
 	cap, ext, ok := r.registry.GetCapabilityByFullName(name)
 	if !ok {
+		// Fall back: try short name search (for behaviors that omit the ext prefix).
+		cap, ext, ok = r.registry.FindCapabilityByName(name)
+	}
+	if !ok {
 		return nil, fmt.Errorf("workflow %q not found in extension registry", name)
 	}
 	if cap.Type != "workflow" {

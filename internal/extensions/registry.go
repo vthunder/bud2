@@ -232,6 +232,18 @@ func (r *Registry) GetCapabilityByFullName(fullName string) (*Capability, *Exten
 	return cap, ext, true
 }
 
+// FindCapabilityByName searches all extensions for a capability with the given short name.
+// If multiple extensions define a capability with the same name, returns the first match.
+// Returns (nil, nil, false) if not found.
+func (r *Registry) FindCapabilityByName(name string) (*Capability, *Extension, bool) {
+	for _, ext := range r.All() {
+		if cap, ok := ext.Capabilities[name]; ok {
+			return cap, ext, true
+		}
+	}
+	return nil, nil, false
+}
+
 // CapabilitiesOfType returns all capabilities across all extensions with the given type
 // and a callable_from value that includes model invocation ("model" or "both").
 // Each entry is a (fullName, capability, extension) triple.

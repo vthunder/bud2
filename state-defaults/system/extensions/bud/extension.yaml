@@ -31,8 +31,6 @@ capabilities:
     callable_from: both
   gtd-dispatcher:
     callable_from: direct
-  gtd-handler:
-    callable_from: direct
   gtd-inbox:
     callable_from: both
   gtd-today:
@@ -62,7 +60,7 @@ behaviors:
       type: pattern_match
       source: inbox
       pattern: "^/cal(?:\\s+(.*))?$"
-    workflow: calendar-handler
+    workflow: bud:calendar-handler
 
   - name: daily-agenda
     trigger:
@@ -70,7 +68,7 @@ behaviors:
       source: "impulse:daily_agenda"
       event_type: daily_agenda
       pattern: "^Daily agenda for"
-    workflow: daily-agenda
+    workflow: bud:daily-agenda
 
   - name: gtd-dispatcher
     trigger:
@@ -79,22 +77,13 @@ behaviors:
       source: inbox
       classifier: ollama
       model: "qwen2.5:7b"
-    workflow: gtd-dispatcher
-
-  - name: gtd-handler
-    trigger:
-      type: slash_command
-      name: gtd
-      source: discord
-      classifier: ollama
-      model: "qwen2.5:7b"
-    workflow: gtd-handler
+    workflow: bud:gtd-dispatcher
 
   - name: meeting-reminder
     trigger:
       type: pattern_match
       source: "impulse:meeting_reminder"
-    workflow: meeting-reminder
+    workflow: bud:meeting-reminder
 
   - name: state-sync
     trigger:
@@ -102,4 +91,4 @@ behaviors:
       source: "impulse:task"
       event_type: recurring
       pattern: "Sync state to git"
-    workflow: state-sync
+    workflow: bud:state-sync
