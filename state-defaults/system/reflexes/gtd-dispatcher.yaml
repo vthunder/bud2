@@ -10,16 +10,16 @@ trigger:
   classifier: ollama
   model: qwen2.5:7b
   intents:
-    - gtd_show_today
-    - gtd_show_inbox
-    - gtd_add_inbox
+    - today
+    - inbox
+    - add
   prompt: |
     Classify this GTD task management request from a /gtd slash command.
 
     Intents:
-    - gtd_show_today: User wants to see today's tasks (e.g., "today", "what's on my list", "tasks", "show", "list")
-    - gtd_show_inbox: User wants to see inbox items (e.g., "inbox", "what's waiting", "captured", "unsorted")
-    - gtd_add_inbox: User wants to add an item to inbox (e.g., "add buy milk", "capture call doctor", "remember to...")
+    - today: User wants to see today's tasks (e.g., "today", "what's on my list", "tasks", "show", "list")
+    - inbox: User wants to see inbox items (e.g., "inbox", "what's waiting", "captured", "unsorted")
+    - add: User wants to add an item to inbox (e.g., "add buy milk", "capture call doctor", "remember to...")
 
     Answer with ONE intent name only, no explanation.
 
@@ -35,7 +35,7 @@ pipeline:
   # {{intent}} is set by the Ollama classifier; if the sub-workflow doesn't
   # exist, escalate to the executive rather than failing silently.
   - type: invoke
-    workflow: "{{intent}}"
+    workflow: "gtd-{{intent}}"
     on_missing: escalate
     output: response
 

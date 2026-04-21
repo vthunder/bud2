@@ -504,6 +504,22 @@ func main() {
 		})
 		dispatcher.RegisterAll(context.Background())
 		log.Printf("[main] Dispatcher registered behaviors for %d extension(s)", extensionRegistry.Len())
+
+		// Wire a workflow fallback so type:invoke steps in reflexes can resolve
+		// extension capability workflows (e.g. gtd-today, gtd-inbox, gtd-add).
+		reflexEngine.SetWorkflowFallback(func(name string) (*reflex.Reflex, error) {
+			cap, ext, ok := extensionRegistry.GetCapabilityByFullName(name)
+			if !ok {
+				cap, ext, ok = extensionRegistry.FindCapabilityByName(name)
+			}
+			if !ok || cap.Type != "workflow" {
+				return nil, nil
+			}
+			idx := strings.LastIndex(name, ":")
+			capName := name[idx+1:]
+			yamlPath := filepath.Join(ext.Dir, "capabilities", capName+".yaml")
+			return reflexEngine.LoadFile(yamlPath)
+		})
 	}
 
 	// Declare variable for executive (will be initialized after MCP deps are set up)

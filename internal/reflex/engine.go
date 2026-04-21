@@ -60,6 +60,10 @@ type Engine struct {
 
 	// WS6: Action caller for type:direct steps (routes to ActionProxy)
 	actionCaller ToolCaller
+
+	// Fallback resolver for type:invoke steps when the workflow is not in e.reflexes.
+	// Used to look up capabilities from the extension registry at runtime.
+	workflowFallback func(name string) (*Reflex, error)
 }
 
 // NewEngine creates a new reflex engine
@@ -123,6 +127,12 @@ func (e *Engine) SetCapabilityResolver(r CapabilityResolver) {
 // The ActionProxy from the extensions package satisfies this interface.
 func (e *Engine) SetActionCaller(ac ToolCaller) {
 	e.actionCaller = ac
+}
+
+// SetWorkflowFallback sets a resolver called by type:invoke steps when a workflow
+// is not found in the loaded reflexes. Use this to bridge into the extension registry.
+func (e *Engine) SetWorkflowFallback(f func(name string) (*Reflex, error)) {
+	e.workflowFallback = f
 }
 
 // Load loads all reflexes from the reflexes directory, merging state and defaults
@@ -668,10 +678,19 @@ func (e *Engine) executeInvokeStep(ctx context.Context, step PipelineStep, vars 
 		return nil, fmt.Errorf("type:invoke: max recursion depth (5) exceeded at %q", workflowName)
 	}
 
-	// Look up target workflow
+	// Look up target workflow in loaded reflexes first.
 	e.mu.RLock()
 	target, ok := e.reflexes[workflowName]
 	e.mu.RUnlock()
+
+	// Fall back to the extension registry resolver (e.g. capability YAML files).
+	if !ok && e.workflowFallback != nil {
+		loaded, err := e.workflowFallback(workflowName)
+		if err == nil && loaded != nil {
+			target = loaded
+			ok = true
+		}
+	}
 
 	if !ok {
 		// on_missing is read from the inline Params map to avoid yaml field conflict
