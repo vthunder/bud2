@@ -30,6 +30,7 @@ import (
 	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/executive/provider"
+	"github.com/vthunder/bud2/internal/extensions"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -466,6 +467,21 @@ func main() {
 		)
 	}
 
+	// Load extension registry from system (state-defaults) and user (statePath) extension dirs.
+	// Extensions missing from either dir are silently skipped. A failed load is non-fatal.
+	var extensionRegistry *extensions.Registry
+	{
+		sysExtDir := filepath.Join(paths.DefaultsDir, "system", "extensions")
+		userExtDir := filepath.Join(statePath, "system", "extensions")
+		reg, regErr := extensions.LoadAll(sysExtDir, userExtDir)
+		if regErr != nil {
+			log.Printf("[main] Warning: failed to load extension registry: %v", regErr)
+		} else {
+			extensionRegistry = reg
+			log.Printf("[main] Extension registry loaded: %d extension(s)", reg.Len())
+		}
+	}
+
 	// Declare variable for executive (will be initialized after MCP deps are set up)
 	var exec *executive.ExecutiveV2
 
@@ -481,7 +497,8 @@ func main() {
 		MemoryJudge:    memoryJudge,
 		CalendarClient: calendarClient,
 		GitHubClient:   githubClient,
-		VMControlURL:   os.Getenv("VM_CONTROL_URL"), // defaults to http://127.0.0.1:3099 in vm_browser.go
+		VMControlURL:      os.Getenv("VM_CONTROL_URL"), // defaults to http://127.0.0.1:3099 in vm_browser.go
+		ExtensionRegistry: extensionRegistry,
 		GKCallTool: func() func(domain, toolName string, args map[string]any) (string, error) {
 			if gkPool == nil {
 				return nil
@@ -661,6 +678,7 @@ func main() {
 			StartupInstructions:          startupInstructions,
 			DefaultChannelID:             discordChannel,
 			MaxAutonomousSessionDuration: autonomousSessionCap,
+			ExtensionRegistry:            extensionRegistry,
 			SendMessageFallback: func(channelID, message string) error {
 				if fallbackSendMessage != nil {
 					return fallbackSendMessage(channelID, message)
@@ -709,11 +727,6 @@ func main() {
 	}
 	log.Printf("[main] Executive started (active_sessions=%v, thinking_min_today=%.1f)",
 		exec.HasActiveSessions(), exec.TodayThinkingMinutes())
-
-	// Validate agent alias targets at startup — logs errors for broken aliases.
-	if !executive.ValidateAliasTargets(statePath) {
-		log.Printf("[main] Warning: some agent aliases have unresolvable targets (see above)")
-	}
 
 	// Open the single persistent executive log pane exactly once at startup.
 	// All wakes append to the same file; context clears do not open a new pane.

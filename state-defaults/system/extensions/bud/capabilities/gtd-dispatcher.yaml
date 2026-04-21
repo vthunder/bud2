@@ -1,0 +1,28 @@
+name: gtd-dispatcher
+description: Dispatch GTD queries via /gtd slash command using ollama classification
+type: workflow
+callable_from: direct
+priority: 10
+trigger:
+  source: inbox
+  slash_command: gtd
+  classifier: ollama
+  model: qwen2.5:7b
+  intents:
+    - inbox
+    - today
+    - add
+  prompt: |
+    Classify this GTD task management request from a /gtd slash command.
+
+    Intents:
+    - inbox: User wants to see inbox items (e.g., "inbox", "what's waiting", "captured", "unsorted")
+    - today: User wants to see today's tasks (e.g., "today", "what's on my list", "tasks", "show", "list")
+    - add: User wants to add an item to inbox (e.g., "add buy milk", "capture call doctor", "remember to...")
+
+    Answer with ONE intent name only, no explanation.
+pipeline:
+  - type: invoke
+    workflow: "gtd-{{intent}}"
+    params:
+      on_missing: escalate

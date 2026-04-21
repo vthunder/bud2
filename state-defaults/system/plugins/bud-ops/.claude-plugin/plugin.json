@@ -1,8 +1,0 @@
-{
-  "name": "bud-ops",
-  "description": "Bud operational skills — subagent handling, workflow control, task operations, GK conventions, and planning methodology",
-  "author": {
-    "name": "Bud"
-  },
-  "skills": "./skills/"
-}

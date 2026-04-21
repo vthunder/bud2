@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	github.com/expr-lang/expr v1.17.8 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect

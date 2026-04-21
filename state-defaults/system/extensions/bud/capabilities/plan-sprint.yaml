@@ -1,0 +1,20 @@
+name: plan-sprint
+description: Lightweight planning for a known epic
+type: workflow
+callable_from: both
+params:
+  input:
+    type: string
+    description: Epic description or title to plan
+    required: true
+# NOTE: context_template rendering from legacy workflow format is not yet fully
+# wired through the new engine. Steps spawn agents with params passed via context.
+# The agents receive input via the standard param injection mechanism.
+# Full context_template → subagent prompt translation is a follow-up for M8.
+pipeline:
+  - type: subagent
+    agent: "autopilot-epic:planner"
+    output: epics
+  - type: subagent
+    agent: "autopilot-task:planner"
+    output: tasks

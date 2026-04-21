@@ -1,0 +1,11 @@
+name: gtd-today
+description: Show today's tasks via Things 3
+type: workflow
+callable_from: both
+pipeline:
+  - action: call_tool
+    tool: things_get_today
+  - action: json_query
+    query: '.todos | if length == 0 then "_(empty)_" else [.[] | "• \(.name)"] | join("\n") end'
+  - action: reply
+    message: "📅 Today:\n{{_}}"

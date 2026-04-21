@@ -1,0 +1,33 @@
+name: redeploy-bud
+description: Pre-deploy checklist — save running subagent state so they can be restarted after redeploy
+type: workflow
+callable_from: both
+pipeline:
+  - type: subagent
+    agent: coder
+    output: result
+    prompt: |
+      Your task is to record the state of all running subagents before a redeploy, so they can be restarted after the new version comes up.
+
+      ## Steps
+
+      1. **Check for existing restart notes**: Read `~/src/bud2/state/system/subagent-restart-notes.md` if it exists. If it does, note which subagent IDs are already recorded to avoid duplicates.
+
+      2. **List running subagents**: Call the `list_subagents` MCP tool to get all currently running subagents.
+
+      3. **Write restart notes**: For each running subagent that is not already in the notes file, write its details to `~/src/bud2/state/system/subagent-restart-notes.md` in the following YAML format:
+
+      ```yaml
+      # Subagent restart notes - written before redeploy at <timestamp>
+      subagents:
+        - id: <session_id>
+          task: |
+            <full task text>
+          profile: <profile or "">
+          constraints: <constraints or "">
+          saved_at: <timestamp>
+      ```
+
+         Use the current UTC timestamp in ISO 8601 format (e.g., `2026-03-20T15:04:05Z`).
+
+         If no subagents are running, write the file with an empty `subagents: []` list and a note explaining no subagents were running.

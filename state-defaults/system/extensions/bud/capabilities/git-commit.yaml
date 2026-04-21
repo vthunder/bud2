@@ -1,0 +1,41 @@
+name: git-commit
+description: Stage files and commit changes to a git repository
+type: workflow
+callable_from: both
+params:
+  path:
+    type: string
+    description: Absolute path to the git repository root
+    required: true
+  message:
+    type: string
+    description: Commit message
+    required: true
+  files:
+    type: string
+    description: Files or paths to stage (space-separated, passed to git add). Defaults to all changes.
+    default: "."
+pipeline:
+  - type: subagent
+    agent: coder
+    output: result
+    # Prompt template — the subagent receives params injected as context
+    prompt: |
+      Your task is to commit changes in a git repository. Do NOT push.
+
+      ## Steps
+
+      1. `cd {{path}}`
+      2. Run `git status` to see the current state of the working tree.
+      3. Run `git diff` (staged and unstaged) to review what will be committed.
+      4. Stage files: `git add {{files}}`
+      5. Commit: `git commit -m "{{message}}"`
+      6. Run `git log -1 --oneline` to confirm the commit and capture the hash.
+
+      ## Report
+
+      When done, report:
+      - The commit hash (short form)
+      - The commit message used
+      - How many files were staged
+      - Any errors encountered

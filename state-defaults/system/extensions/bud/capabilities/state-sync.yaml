@@ -1,8 +1,10 @@
 name: state-sync
 description: Sync state directory to git when triggered by recurring task
+type: workflow
+callable_from: direct
 priority: 20
 trigger:
-  source: impulse:task
+  source: "impulse:task"
   type: recurring
   pattern: "Sync state to git"
 pipeline:

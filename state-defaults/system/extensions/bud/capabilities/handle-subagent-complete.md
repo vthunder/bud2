@@ -1,6 +1,8 @@
 ---
 name: handle-subagent-complete
 description: "Process a completed subagent: retrieve output, close associated Things task, approve/reject staged memories, and act on next.action. Invoke when woken for a subagent-done focus item."
+type: skill
+callable_from: direct
 ---
 
 You have been woken because a subagent has completed. Follow these steps in order.

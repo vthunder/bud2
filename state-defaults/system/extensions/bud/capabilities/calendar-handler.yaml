@@ -1,5 +1,7 @@
 name: calendar-handler
 description: Handle calendar queries via /cal slash command
+type: workflow
+callable_from: direct
 priority: 8
 trigger:
   source: inbox

@@ -2,215 +2,117 @@ package executive
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	claudecode "github.com/severity1/claude-agent-sdk-go"
-	"gopkg.in/yaml.v3"
+	"github.com/vthunder/bud2/internal/extensions"
 )
 
-// SkillGrants holds the centralized skill grant configuration.
-type SkillGrants struct {
-	Grants map[string][]string `yaml:"grants"` // pattern -> skill names
-}
-
-// LoadSkillGrants reads state/system/skill-grants.yaml.
-// Returns empty grants (not an error) if the file is missing.
-func LoadSkillGrants(statePath string) (*SkillGrants, error) {
-	grantsPath := filepath.Join(statePath, "system", "skill-grants.yaml")
-	data, err := os.ReadFile(grantsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &SkillGrants{Grants: make(map[string][]string)}, nil
-		}
-		return nil, fmt.Errorf("read skill-grants.yaml: %w", err)
-	}
-	var sg SkillGrants
-	if err := yaml.Unmarshal(data, &sg); err != nil {
-		return nil, fmt.Errorf("parse skill-grants.yaml: %w", err)
-	}
-	if sg.Grants == nil {
-		sg.Grants = make(map[string][]string)
-	}
-	return &sg, nil
-}
-
-// resolveGrantedSkills returns the skills granted to the given "namespace:agent" key.
-// Match priority: exact key > "namespace:*" > wildcard patterns (filepath.Match) > "*".
-// Returns nil if no grants file entry applies.
-func resolveGrantedSkills(grants *SkillGrants, key string) ([]string, bool) {
-	if grants == nil || len(grants.Grants) == 0 {
-		return nil, false
-	}
-
-	// 1. Exact match
-	if skills, ok := grants.Grants[key]; ok {
-		return skills, true
-	}
-
-	// 2. Namespace wildcard: "namespace:*"
-	if idx := strings.Index(key, ":"); idx != -1 {
-		nsWild := key[:idx] + ":*"
-		if skills, ok := grants.Grants[nsWild]; ok {
-			return skills, true
-		}
-	}
-
-	// 3. Pattern wildcards (e.g. "autopilot-*:planner")
-	for pattern, skills := range grants.Grants {
-		if pattern == "*" || strings.HasSuffix(pattern, ":*") {
-			continue // already handled above or handled as global below
-		}
-		matched, err := filepath.Match(pattern, key)
-		if err == nil && matched {
-			return skills, true
-		}
-	}
-
-	// 4. Global wildcard "*"
-	if skills, ok := grants.Grants["*"]; ok {
-		return skills, true
-	}
-
-	return nil, false
-}
-
-// LoadAllAgents scans all plugin directories (local and manifest-cloned) for
-// agents/ subdirs and builds an AgentDefinition map for use with the SDK's
-// WithAgents option. Keys are "namespace:agent" (e.g. "autopilot-vision:explorer",
-// "bud:coder").
+// LoadAgentDefsFromRegistry builds an AgentDefinition map from the extension registry.
+// It returns definitions for all agent-type capabilities with callable_from "both" or "model".
+// Keys follow the "extname:capname" format (e.g. "bud:coder").
 //
-// knownTools is the list of MCP tool names (with their full mcp__<server>__ prefix)
-// used to expand wildcard patterns in tool_grants (e.g. "mcp__bud2__gk_*").
-// Pass nil to skip wildcard expansion (granted tools are added as literals only).
-//
-// For each agent, the prompt is assembled as: agent body + concatenated skill content
-// (same logic as ResolveSubagentConfig). The Tools list contains the agent's declared
-// tools with Agent(...) syntax normalized to plain "Agent".
-func LoadAllAgents(statePath string, knownTools []string) (map[string]claudecode.AgentDefinition, error) {
-	// Load aliases for skill resolution
-	aliases, aliasErr := LoadAgentAliases(statePath)
-	if aliasErr != nil {
-		aliases = &AgentAliases{Agents: make(map[string]string), Skills: make(map[string]string)}
-	}
-
-	// Load centralized skill grants (optional — falls back to agent.Skills if missing)
-	grants, _ := LoadSkillGrants(statePath)
-
-	// Collect all plugin dirs (local + manifest) with their tool grants
-	pluginDirs := allPluginDirsForAgents(statePath)
-
+// knownTools is the list of MCP tool names (with mcp__<server>__ prefix) used to
+// expand wildcard patterns in extension requires.tools (e.g. "mcp__bud2__gk_*").
+func LoadAgentDefsFromRegistry(reg *extensions.Registry, knownTools []string) map[string]claudecode.AgentDefinition {
 	defs := make(map[string]claudecode.AgentDefinition)
+	for _, entry := range reg.CapabilitiesOfType("agent") {
+		cap := entry.Cap
+		ext := entry.Ext
 
-	for _, pd := range pluginDirs {
-		namespace := filepath.Base(pd.Path)
-		agentsDir := filepath.Join(pd.Path, "agents")
-
-		agentFiles, err := os.ReadDir(agentsDir)
-		if err != nil {
-			continue // no agents dir for this plugin
+		prompt := ""
+		if cap.Body != "" {
+			prompt = "## Agent Behavioral Guide\n\n" + cap.Body
 		}
 
-		for _, f := range agentFiles {
-			if f.IsDir() {
-				continue
+		// Build tools list: per-capability tools first, then extension-level requires.tools.
+		toolSeen := make(map[string]bool)
+		var tools []string
+		for _, t := range cap.Tools {
+			t = strings.TrimSpace(t)
+			if strings.HasPrefix(t, "Agent(") {
+				t = "Agent"
 			}
-			fname := f.Name()
-			ext := filepath.Ext(fname)
-			if ext != ".yaml" && ext != ".md" {
-				continue
+			if t != "" && !toolSeen[t] {
+				toolSeen[t] = true
+				tools = append(tools, t)
 			}
-			agentName := strings.TrimSuffix(fname, ext)
-			key := namespace + ":" + agentName
+		}
+		for _, t := range expandToolGrants(ext.Manifest.Requires.Tools, knownTools) {
+			t = strings.TrimSpace(t)
+			if strings.HasPrefix(t, "Agent(") {
+				t = "Agent"
+			}
+			if t != "" && !toolSeen[t] {
+				toolSeen[t] = true
+				tools = append(tools, t)
+			}
+		}
 
-			data, err := os.ReadFile(filepath.Join(agentsDir, fname))
-			if err != nil {
-				continue
-			}
-
-			agent, err := parseAgentData(data, agentName)
-			if err != nil {
-				continue
-			}
-
-			// Determine skill list: grants file wins; fall back to agent.Skills
-			var skillNames []string
-			if grantedSkills, ok := resolveGrantedSkills(grants, key); ok {
-				skillNames = grantedSkills
-			} else {
-				skillNames = agent.Skills
-			}
-
-			// Assemble prompt: agent body + skill content
-			var skillParts []string
-			for _, skillName := range skillNames {
-				if target, ok := aliases.Skills[skillName]; ok {
-					skillName = target
-				}
-				content, skillErr := LoadSkillContent(allPluginDirs(statePath), skillName)
-				if skillErr != nil || content == "" {
-					continue
-				}
-				skillParts = append(skillParts, content)
-			}
-			skillContent := strings.Join(skillParts, "\n\n---\n\n")
-
-			var prompt string
-			if agent.Body != "" {
-				if skillContent != "" {
-					prompt = "## Agent Behavioral Guide\n\n" + agent.Body + "\n\n---\n\n" + skillContent
-				} else {
-					prompt = "## Agent Behavioral Guide\n\n" + agent.Body
-				}
-			} else {
-				prompt = skillContent
-			}
-
-			// Build tools list, normalizing Agent(...) declarations to plain "Agent"
-			toolSeen := make(map[string]bool)
-			var tools []string
-			for _, t := range agent.Tools {
-				t = strings.TrimSpace(t)
-				if strings.HasPrefix(t, "Agent(") {
-					t = "Agent"
-				}
-				if t != "" && !toolSeen[t] {
-					toolSeen[t] = true
-					tools = append(tools, t)
-				}
-			}
-
-			// Apply tool_grants from this plugin's manifest entry.
-			// Collect all grants whose pattern matches this agent key.
-			if len(pd.ToolGrants) > 0 {
-				var grantPatterns []string
-				for pattern := range pd.ToolGrants {
-					if matchesAgentPattern(pattern, key) {
-						grantPatterns = append(grantPatterns, pattern)
-					}
-				}
-				for _, pattern := range grantPatterns {
-					expanded := expandToolGrants(pd.ToolGrants[pattern], knownTools)
-					for _, t := range expanded {
-						if !toolSeen[t] {
-							toolSeen[t] = true
-							tools = append(tools, t)
-						}
-					}
-				}
-			}
-
-			defs[key] = claudecode.AgentDefinition{
-				Description: agent.Description,
-				Prompt:      prompt,
-				Tools:       tools,
-				Model:       parseAgentModel(agent.Model),
-			}
+		defs[entry.FullName] = claudecode.AgentDefinition{
+			Description: cap.Description,
+			Prompt:      prompt,
+			Tools:       tools,
+			Model:       parseAgentModel(cap.Model),
 		}
 	}
+	return defs
+}
 
-	return defs, nil
+// ResolveSubagentConfigFromRegistry is the extension-registry-based resolver for
+// on-demand subagent spawning. It looks up an agent capability by its "ext:cap" name
+// and returns:
+//   - mergedTools: baseTools merged with the capability's declared tools, comma-separated
+//   - systemPromptAppend: the capability body prepended with the agent guide header
+//
+// Returns an error if the capability is not found or is not of type "agent".
+func ResolveSubagentConfigFromRegistry(reg *extensions.Registry, agentName, baseTools string) (mergedTools, systemPromptAppend string, err error) {
+	if agentName == "" {
+		return baseTools, "", nil
+	}
+
+	cap, ext, ok := reg.GetCapabilityByFullName(agentName)
+	if !ok {
+		return baseTools, "", fmt.Errorf("agent %q not found in extension registry", agentName)
+	}
+	if cap.Type != "agent" {
+		return baseTools, "", fmt.Errorf("capability %q is not an agent (type: %s)", agentName, cap.Type)
+	}
+
+	// Merge tools: start with base, add capability-declared and extension-level tools.
+	toolSet := make(map[string]bool)
+	var toolList []string
+	for _, t := range strings.Split(baseTools, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" && !toolSet[t] {
+			toolSet[t] = true
+			toolList = append(toolList, t)
+		}
+	}
+	for _, t := range cap.Tools {
+		t = strings.TrimSpace(t)
+		if strings.HasPrefix(t, "Agent(") {
+			t = "Agent"
+		}
+		if t != "" && !toolSet[t] {
+			toolSet[t] = true
+			toolList = append(toolList, t)
+		}
+	}
+	for _, t := range ext.Manifest.Requires.Tools {
+		t = strings.TrimSpace(t)
+		if t != "" && !toolSet[t] {
+			toolSet[t] = true
+			toolList = append(toolList, t)
+		}
+	}
+	mergedTools = strings.Join(toolList, ",")
+
+	if cap.Body != "" {
+		systemPromptAppend = "## Agent Behavioral Guide\n\n" + cap.Body
+	}
+
+	return mergedTools, systemPromptAppend, nil
 }
 
 // parseAgentModel converts a model string from agent YAML to an AgentModel enum value.

@@ -1,0 +1,105 @@
+name: bud
+version: "1.0.0"
+description: Core built-in capabilities for bud2 — agents, ops skills, reflexes, and workflows
+author: bud2
+
+capabilities:
+  # Agents (from system/plugins/bud/agents/)
+  coder:
+    callable_from: both
+  researcher:
+    callable_from: both
+  reviewer:
+    callable_from: both
+  writer:
+    callable_from: both
+
+  # Skills (from system/plugins/bud-ops/skills/)
+  handle-subagent-complete:
+    callable_from: direct
+  start-workflow:
+    callable_from: direct
+  things-operations:
+    callable_from: direct
+
+  # Workflow capabilities (from system/reflexes/)
+  calendar-handler:
+    callable_from: direct
+  daily-agenda:
+    callable_from: direct
+  gtd-add:
+    callable_from: both
+  gtd-dispatcher:
+    callable_from: direct
+  gtd-handler:
+    callable_from: direct
+  gtd-inbox:
+    callable_from: both
+  gtd-today:
+    callable_from: both
+  meeting-reminder:
+    callable_from: direct
+  state-sync:
+    callable_from: direct
+
+  # Multi-step workflows (from system/workflows/)
+  plan-sprint:
+    callable_from: both
+  research:
+    callable_from: both
+
+  # Job workflows (from system/jobs/)
+  git-commit:
+    callable_from: both
+  redeploy-bud:
+    callable_from: both
+  startup:
+    callable_from: both
+
+behaviors:
+  - name: calendar-handler
+    trigger:
+      type: pattern_match
+      source: inbox
+      pattern: "^/cal(?:\\s+(.*))?$"
+    workflow: calendar-handler
+
+  - name: daily-agenda
+    trigger:
+      type: pattern_match
+      source: "impulse:daily_agenda"
+      event_type: daily_agenda
+      pattern: "^Daily agenda for"
+    workflow: daily-agenda
+
+  - name: gtd-dispatcher
+    trigger:
+      type: slash_command
+      name: gtd
+      source: inbox
+      classifier: ollama
+      model: "qwen2.5:7b"
+    workflow: gtd-dispatcher
+
+  - name: gtd-handler
+    trigger:
+      type: slash_command
+      name: gtd
+      source: discord
+      classifier: ollama
+      model: "qwen2.5:7b"
+    workflow: gtd-handler
+
+  - name: meeting-reminder
+    trigger:
+      type: pattern_match
+      source: "impulse:meeting_reminder"
+    workflow: meeting-reminder
+
+  - name: state-sync
+    trigger:
+      type: pattern_match
+      source: "impulse:task"
+      event_type: recurring
+      pattern: "Sync state to git"
+    workflow: state-sync

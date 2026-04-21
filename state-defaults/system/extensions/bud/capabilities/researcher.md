@@ -1,7 +1,8 @@
 ---
 name: researcher
 description: Web research and information gathering
-level: execution
+type: agent
+callable_from: both
 tools:
   - WebSearch
   - WebFetch

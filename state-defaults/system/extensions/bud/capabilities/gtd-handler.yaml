@@ -1,5 +1,7 @@
 name: gtd-handler
 description: Handle GTD queries via /gtd slash command using Things 3 via MCP
+type: workflow
+callable_from: direct
 priority: 10
 trigger:
   source: discord

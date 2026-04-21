@@ -1,6 +1,8 @@
 ---
 name: start-workflow
 description: "Start a multi-step planning workflow. Invoke when user asks to 'plan X', 'create a plan for X', or explicitly names a workflow."
+type: skill
+callable_from: direct
 ---
 
 # start-workflow

@@ -48,6 +48,18 @@ type Engine struct {
 
 	// Tool caller for call_tool action (bridges to MCP dispatcher)
 	toolCaller ToolCaller
+
+	// WS4: Subagent spawner for type:subagent steps
+	subagentSpawner SubagentSpawner
+
+	// WS4: Capability resolver for type:subagent agent prompt lookup
+	capabilityResolver CapabilityResolver
+
+	// WS4: Per-extension execution semaphores (map[extensionName]chan struct{})
+	extSems sync.Map
+
+	// WS6: Action caller for type:direct steps (routes to ActionProxy)
+	actionCaller ToolCaller
 }
 
 // NewEngine creates a new reflex engine
@@ -61,6 +73,7 @@ func NewEngine(statePath string) *Engine {
 	}
 	e.createCallToolAction()
 	e.createGTDThingsActions()
+	e.createCompleteBudTaskAction()
 	e.createInvokeReflexAction()
 	e.createJSONQueryAction()
 	return e
@@ -93,6 +106,23 @@ func (e *Engine) SetCalendarClient(client *calendar.Client) {
 // SetToolCaller sets the tool caller for call_tool pipeline actions
 func (e *Engine) SetToolCaller(tc ToolCaller) {
 	e.toolCaller = tc
+}
+
+// SetSubagentSpawner sets the spawner used for type:subagent steps.
+func (e *Engine) SetSubagentSpawner(s SubagentSpawner) {
+	e.subagentSpawner = s
+}
+
+// SetCapabilityResolver sets the resolver used to look up capability prompts
+// for type:subagent steps.
+func (e *Engine) SetCapabilityResolver(r CapabilityResolver) {
+	e.capabilityResolver = r
+}
+
+// SetActionCaller sets the caller used to dispatch type:direct steps.
+// The ActionProxy from the extensions package satisfies this interface.
+func (e *Engine) SetActionCaller(ac ToolCaller) {
+	e.actionCaller = ac
 }
 
 // Load loads all reflexes from the reflexes directory, merging state and defaults
@@ -217,7 +247,28 @@ func (e *Engine) loadReflexFile(path string) (*Reflex, error) {
 		reflex.Name = filepath.Base(path)
 	}
 
+	if err := validateOutputNames(&reflex); err != nil {
+		return nil, fmt.Errorf("invalid pipeline in %s: %w", filepath.Base(path), err)
+	}
+
 	return &reflex, nil
+}
+
+// validateOutputNames returns an error if any two steps share the same named output variable.
+// Unnamed outputs (empty or "_") are excluded from the check.
+func validateOutputNames(r *Reflex) error {
+	seen := make(map[string]int)
+	for i, step := range r.Pipeline {
+		name := step.Output
+		if name == "" || name == "_" {
+			continue
+		}
+		if prev, exists := seen[name]; exists {
+			return fmt.Errorf("duplicate output name %q in steps %d and %d", name, prev, i)
+		}
+		seen[name] = i
+	}
+	return nil
 }
 
 // SaveReflex saves a reflex to a YAML file
@@ -264,11 +315,12 @@ func (e *Engine) Match(source, typ, content string) []*Reflex {
 	return matches
 }
 
-// Execute runs a reflex pipeline with extracted variables
+// Execute runs a reflex pipeline with extracted variables.
+// Supports both legacy action steps and new type-based steps (WS4).
 func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[string]string, perceptData map[string]any) (*ReflexResult, error) {
 	start := time.Now()
 
-	// Initialize variables with extracted values and percept data
+	// Initialize variables: extracted captures + percept data + implicit pipe
 	vars := make(map[string]any)
 	for k, v := range extracted {
 		vars[k] = v
@@ -276,68 +328,50 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 	for k, v := range perceptData {
 		vars[k] = v
 	}
-	// Initialize implicit pipe variable (steps auto-chain through $_)
 	if _, exists := vars["_"]; !exists {
 		vars["_"] = nil
 	}
 
+	// Apply workflow params: validate required, apply defaults
+	if err := e.applyWorkflowParams(reflex, vars); err != nil {
+		return &ReflexResult{
+			ReflexName: reflex.Name,
+			Success:    false,
+			Error:      err,
+			Duration:   time.Since(start),
+		}, nil
+	}
+
+	// Per-extension execution serialization
+	if reflex.Extension != "" {
+		ok, release := e.acquireExtSem(reflex.Extension, 30*time.Second)
+		if !ok {
+			return &ReflexResult{
+				ReflexName: reflex.Name,
+				Success:    false,
+				Error:      fmt.Errorf("timeout waiting for extension %q semaphore", reflex.Extension),
+				Duration:   time.Since(start),
+			}, nil
+		}
+		defer release()
+	}
+
 	// Execute pipeline steps
 	for i, step := range reflex.Pipeline {
-		action, ok := e.actions.Get(step.Action)
-		if !ok {
-			// Check for special actions (reply, react)
-			switch step.Action {
-			case "reply":
-				if err := e.executeReply(step, vars); err != nil {
-					return &ReflexResult{
-						ReflexName: reflex.Name,
-						Success:    false,
-						Error:      fmt.Errorf("step %d (reply) failed: %w", i, err),
-						Duration:   time.Since(start),
-					}, nil
-				}
-				continue
-			case "react":
-				if err := e.executeReact(step, vars); err != nil {
-					return &ReflexResult{
-						ReflexName: reflex.Name,
-						Success:    false,
-						Error:      fmt.Errorf("step %d (react) failed: %w", i, err),
-						Duration:   time.Since(start),
-					}, nil
-				}
-				continue
-			case "add_task", "add_idea":
-				// These would integrate with motivation package
-				log.Printf("[reflex] Action %s not yet integrated", step.Action)
-				continue
-			default:
-				return &ReflexResult{
-					ReflexName: reflex.Name,
-					Success:    false,
-					Error:      fmt.Errorf("unknown action: %s", step.Action),
-					Duration:   time.Since(start),
-				}, nil
-			}
+		var stepResult any
+		var stepErr error
+
+		if step.Type != "" {
+			stepResult, stepErr = e.executeTypedStep(ctx, step, vars)
+		} else {
+			stepResult, stepErr = e.executeActionStep(ctx, i, step, vars)
 		}
 
-		// Build params from step
-		params := make(map[string]any)
-		for k, v := range step.Params {
-			params[k] = v
-		}
-		if step.Input != "" {
-			params["input"] = step.Input
-		}
-
-		// Execute action
-		result, err := action.Execute(ctx, params, vars)
-		if err != nil {
-			// Check if this is a pipeline stop (not an error)
-			if errors.Is(err, ErrStopPipeline) {
+		if stepErr != nil {
+			// Control-flow signals bypass on_error handling
+			if errors.Is(stepErr, ErrStopPipeline) {
 				reflex.LastFired = time.Now()
 				reflex.FireCount++
-				// Persist stats (unlock before save to avoid deadlock)
 				e.saveReflexStats(reflex)
 				return &ReflexResult{
 					ReflexName: reflex.Name,
@@ -347,8 +381,7 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 					Duration:   time.Since(start),
 				}, nil
 			}
-			// Check if this is an escalate signal
-			if errors.Is(err, ErrEscalate) {
+			if errors.Is(stepErr, ErrEscalate) {
 				msg, _ := vars["_escalate_message"].(string)
 				varsCopy := make(map[string]any, len(vars))
 				for k, v := range vars {
@@ -365,26 +398,82 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 					Duration:        time.Since(start),
 				}, nil
 			}
-			return &ReflexResult{
-				ReflexName: reflex.Name,
-				Success:    false,
-				Error:      fmt.Errorf("step %d (%s) failed: %w", i, step.Action, err),
-				Duration:   time.Since(start),
-			}, nil
+
+			// Apply per-step on_error policy
+			switch step.OnError {
+			case "skip":
+				// Record error, set output to nil, continue pipeline
+				vars["_error"] = stepErr.Error()
+				setStepOutput(vars, step, nil)
+				continue
+
+			case "retry":
+				maxR := step.MaxRetries
+				if maxR <= 0 {
+					maxR = 3
+				}
+				delay := time.Duration(step.RetryDelaySecs) * time.Second
+				if delay <= 0 {
+					delay = time.Second
+				}
+				var lastErr error = stepErr
+				for attempt := 1; attempt <= maxR; attempt++ {
+					select {
+					case <-time.After(delay):
+					case <-ctx.Done():
+						return &ReflexResult{
+							ReflexName: reflex.Name,
+							Success:    false,
+							Error:      ctx.Err(),
+							Duration:   time.Since(start),
+						}, nil
+					}
+					if step.Type != "" {
+						stepResult, lastErr = e.executeTypedStep(ctx, step, vars)
+					} else {
+						stepResult, lastErr = e.executeActionStep(ctx, i, step, vars)
+					}
+					if lastErr == nil {
+						break
+					}
+				}
+				if lastErr != nil {
+					return &ReflexResult{
+						ReflexName: reflex.Name,
+						Success:    false,
+						Error:      fmt.Errorf("step %d (%s) failed after %d retries: %w", i, stepLabel(step), maxR, lastErr),
+						Duration:   time.Since(start),
+					}, nil
+				}
+				stepErr = nil // retry succeeded
+
+			default: // "stop" or ""
+				return &ReflexResult{
+					ReflexName: reflex.Name,
+					Success:    false,
+					Error:      fmt.Errorf("step %d (%s) failed: %w", i, stepLabel(step), stepErr),
+					Duration:   time.Since(start),
+				}, nil
+			}
 		}
 
-		// Store output: named var if specified, otherwise implicit pipe ($_)
-		if step.Output != "" {
-			vars[step.Output] = result
+		if stepErr == nil {
+			setStepOutput(vars, step, stepResult)
+		}
+	}
+
+	// Apply returns: field — promotes named output to implicit pipe position
+	if reflex.Returns != "" {
+		if val, ok := vars[reflex.Returns]; ok {
+			vars["_"] = val
 		} else {
-			vars["_"] = result
+			log.Printf("[reflex] %s: returns %q not found in output vars", reflex.Name, reflex.Returns)
 		}
 	}
 
 	// Update stats
 	reflex.LastFired = time.Now()
 	reflex.FireCount++
-	// Persist stats
 	e.saveReflexStats(reflex)
 
 	return &ReflexResult{
@@ -393,6 +482,263 @@ func (e *Engine) Execute(ctx context.Context, reflex *Reflex, extracted map[stri
 		Output:     vars,
 		Duration:   time.Since(start),
 	}, nil
+}
+
+// executeActionStep dispatches a legacy action-based pipeline step.
+func (e *Engine) executeActionStep(ctx context.Context, stepIdx int, step PipelineStep, vars map[string]any) (any, error) {
+	action, ok := e.actions.Get(step.Action)
+	if !ok {
+		switch step.Action {
+		case "reply":
+			return nil, e.executeReply(step, vars)
+		case "react":
+			return nil, e.executeReact(step, vars)
+		case "add_task", "add_idea":
+			log.Printf("[reflex] Action %s not yet integrated", step.Action)
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unknown action: %s", step.Action)
+		}
+	}
+
+	params := make(map[string]any)
+	for k, v := range step.Params {
+		params[k] = v
+	}
+	if step.Input != "" {
+		params["input"] = step.Input
+	}
+	return action.Execute(ctx, params, vars)
+}
+
+// executeTypedStep dispatches a WS4/WS6 type-based pipeline step.
+func (e *Engine) executeTypedStep(ctx context.Context, step PipelineStep, vars map[string]any) (any, error) {
+	switch step.Type {
+	case "subagent":
+		return e.executeSubagentStep(ctx, step, vars)
+	case "invoke":
+		return e.executeInvokeStep(ctx, step, vars)
+	case "direct":
+		return e.executeDirectStep(ctx, step, vars)
+	default:
+		return nil, fmt.Errorf("unknown step type: %s", step.Type)
+	}
+}
+
+// executeDirectStep invokes an extension action through the ActionProxy (WS6).
+// The tool: field names the action in <ext>:<cap> format and may contain {{var}}
+// template expressions. Step params (params: block) are resolved and passed to
+// the action as its input. The action must be registered in the ActionProxy;
+// callable_from:direct actions are reachable here even without MCP registration.
+func (e *Engine) executeDirectStep(_ context.Context, step PipelineStep, vars map[string]any) (any, error) {
+	if e.actionCaller == nil {
+		return nil, fmt.Errorf("type:direct: action caller not configured (call SetActionCaller)")
+	}
+
+	// Resolve tool name — supports {{var}} expressions.
+	toolName, err := renderNewTemplate(step.Tool, vars)
+	if err != nil {
+		return nil, fmt.Errorf("type:direct: tool name template failed: %w", err)
+	}
+	if toolName == "" {
+		return nil, fmt.Errorf("type:direct: tool field is required")
+	}
+
+	// Build args from the step's params: block, resolving string templates.
+	args := make(map[string]any, len(step.StepParams))
+	for k, v := range step.StepParams {
+		if str, ok := v.(string); ok {
+			resolved, rerr := renderNewTemplate(str, vars)
+			if rerr != nil {
+				return nil, fmt.Errorf("type:direct: resolving param %q: %w", k, rerr)
+			}
+			args[k] = resolved
+		} else {
+			args[k] = v
+		}
+	}
+
+	return e.actionCaller.Call(toolName, args)
+}
+
+// executeSubagentStep spawns a subagent session for a named capability and returns its output.
+// The capability's prompt body is resolved via the CapabilityResolver (if set).
+// Input is appended as YAML under an "## Input" section.
+func (e *Engine) executeSubagentStep(ctx context.Context, step PipelineStep, vars map[string]any) (any, error) {
+	if e.subagentSpawner == nil {
+		return nil, fmt.Errorf("type:subagent: subagent spawner not configured (call SetSubagentSpawner)")
+	}
+
+	// Resolve agent name using new {{var}} syntax
+	agentName, err := renderNewTemplate(step.Agent, vars)
+	if err != nil {
+		return nil, fmt.Errorf("type:subagent: agent name template failed: %w", err)
+	}
+	if agentName == "" {
+		return nil, fmt.Errorf("type:subagent: agent field is required")
+	}
+
+	// Look up capability prompt from registry
+	systemPrompt := ""
+	if e.capabilityResolver != nil {
+		if body, ok := e.capabilityResolver.ResolveCapability(agentName); ok {
+			systemPrompt = body
+		}
+	}
+
+	// Serialize current vars as YAML and append as input section
+	task := agentName
+	inputVars := make(map[string]any)
+	for k, v := range vars {
+		if !strings.HasPrefix(k, "__") { // skip internal vars
+			inputVars[k] = v
+		}
+	}
+	// Build a simple YAML-like summary for the subagent input
+	if len(inputVars) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n\n## Input\n```yaml\n")
+		for k, v := range inputVars {
+			sb.WriteString(fmt.Sprintf("%s: %v\n", k, v))
+		}
+		sb.WriteString("```\n")
+		task = agentName + sb.String()
+	}
+
+	output, err := e.subagentSpawner.SpawnSync(ctx, systemPrompt, task)
+	if err != nil {
+		return nil, fmt.Errorf("type:subagent %s failed: %w", agentName, err)
+	}
+	return output, nil
+}
+
+// executeInvokeStep synchronously invokes another workflow/reflex by name.
+// The workflow: field supports {{var}} template expressions (dispatcher pattern).
+func (e *Engine) executeInvokeStep(ctx context.Context, step PipelineStep, vars map[string]any) (any, error) {
+	// Render workflow name using new {{var}} syntax
+	workflowName, err := renderNewTemplate(step.Workflow, vars)
+	if err != nil {
+		return nil, fmt.Errorf("type:invoke: workflow name template failed: %w", err)
+	}
+	if workflowName == "" {
+		return nil, fmt.Errorf("type:invoke: workflow field is required")
+	}
+
+	// Guard against infinite recursion
+	depth := 0
+	if d, ok := vars["__depth"].(int); ok {
+		depth = d
+	}
+	if depth >= 5 {
+		return nil, fmt.Errorf("type:invoke: max recursion depth (5) exceeded at %q", workflowName)
+	}
+
+	// Look up target workflow
+	e.mu.RLock()
+	target, ok := e.reflexes[workflowName]
+	e.mu.RUnlock()
+
+	if !ok {
+		// on_missing is read from the inline Params map to avoid yaml field conflict
+		// with existing invoke_reflex action usage.
+		onMissing, _ := step.Params["on_missing"].(string)
+		switch onMissing {
+		case "escalate":
+			return nil, ErrEscalate
+		default: // "stop" or ""
+			return nil, fmt.Errorf("type:invoke: workflow %q not found", workflowName)
+		}
+	}
+
+	// Build sub-invocation vars: inherit current context, then overlay step params
+	subData := make(map[string]any, len(vars)+len(step.StepParams)+1)
+	for k, v := range vars {
+		subData[k] = v
+	}
+	for k, v := range step.StepParams {
+		// Render string param values using new template syntax
+		if str, ok := v.(string); ok {
+			if rendered, rerr := renderNewTemplate(str, vars); rerr == nil {
+				subData[k] = rendered
+				continue
+			}
+		}
+		subData[k] = v
+	}
+	subData["__depth"] = depth + 1
+
+	result, _ := e.Execute(ctx, target, nil, subData)
+	if result == nil {
+		return nil, fmt.Errorf("type:invoke: workflow %q returned nil result", workflowName)
+	}
+	if result.Escalate {
+		return nil, ErrEscalate
+	}
+	if !result.Success {
+		if result.Error != nil {
+			return nil, fmt.Errorf("type:invoke: workflow %q failed: %w", workflowName, result.Error)
+		}
+		return nil, fmt.Errorf("type:invoke: workflow %q failed", workflowName)
+	}
+
+	// Return the sub-workflow's result (respects its returns: field via vars["_"])
+	return result.Output["_"], nil
+}
+
+// applyWorkflowParams validates required params and applies defaults.
+func (e *Engine) applyWorkflowParams(reflex *Reflex, vars map[string]any) error {
+	for name, param := range reflex.Params {
+		if _, exists := vars[name]; !exists {
+			if param.Required {
+				return fmt.Errorf("required param %q not provided", name)
+			}
+			if param.Default != nil {
+				vars[name] = param.Default
+			}
+		}
+	}
+	return nil
+}
+
+// acquireExtSem acquires the semaphore for the named extension.
+// Returns (true, release) on success, (false, nil) on timeout.
+func (e *Engine) acquireExtSem(name string, timeout time.Duration) (bool, func()) {
+	semI, _ := e.extSems.LoadOrStore(name, make(chan struct{}, 1))
+	sem := semI.(chan struct{})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case sem <- struct{}{}:
+		return true, func() { <-sem }
+	case <-timer.C:
+		return false, nil
+	}
+}
+
+// setStepOutput stores a step result into either the named output var or implicit pipe.
+func setStepOutput(vars map[string]any, step PipelineStep, val any) {
+	if step.Output != "" {
+		vars[step.Output] = val
+	} else {
+		vars["_"] = val
+	}
+}
+
+// stepLabel returns a human-readable label for error messages.
+func stepLabel(step PipelineStep) string {
+	if step.Type != "" {
+		if step.Type == "invoke" && step.Workflow != "" {
+			return step.Type + ":" + step.Workflow
+		}
+		if step.Type == "subagent" && step.Agent != "" {
+			return step.Type + ":" + step.Agent
+		}
+		if step.Type == "direct" && step.Tool != "" {
+			return step.Type + ":" + step.Tool
+		}
+		return step.Type
+	}
+	return step.Action
 }
 
 // reflexStats holds stats for all reflexes, stored separately from config
@@ -474,7 +820,7 @@ func (e *Engine) saveReflexStats(reflex *Reflex) {
 func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
 	message := ""
 	if m, ok := step.Params["message"].(string); ok {
-		rendered, err := renderTemplate(m, vars)
+		rendered, err := renderNewTemplate(m, vars)
 		if err != nil {
 			return err
 		}
@@ -933,9 +1279,9 @@ func (e *Engine) createCallToolAction() {
 					continue
 				}
 			}
-			// Render template strings ({{.varname}} syntax)
+			// Render template strings ({{varname}} syntax)
 			if str, ok := v.(string); ok && strings.Contains(str, "{{") {
-				rendered, err := renderTemplate(str, vars)
+				rendered, err := renderNewTemplate(str, vars)
 				if err == nil {
 					args[k] = rendered
 					continue
@@ -1013,8 +1359,33 @@ func (e *Engine) createGTDThingsActions() {
 	}))
 }
 
+// createCompleteBudTaskAction registers the complete_bud_task action, which marks
+// a Bud task as completed in Things 3. It is a thin wrapper over things_update_todo
+// that accepts task_id (the Things todo ID) and sets completed=true.
+func (e *Engine) createCompleteBudTaskAction() {
+	e.actions.Register("complete_bud_task", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
+		if e.toolCaller == nil {
+			return nil, fmt.Errorf("complete_bud_task: tool caller not configured — Things MCP not available")
+		}
+
+		taskID, _ := params["task_id"].(string)
+		if taskID == "" {
+			return nil, fmt.Errorf("complete_bud_task: task_id is required")
+		}
+
+		result, err := e.toolCaller.Call("things_update_todo", map[string]any{
+			"id":        taskID,
+			"completed": true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("complete_bud_task: things_update_todo failed: %w", err)
+		}
+		return result, nil
+	}))
+}
+
 // createInvokeReflexAction registers the invoke_reflex action, which lets a pipeline
-// call a named sub-reflex by name (supporting template interpolation like "gtd-{{.intent}}").
+// call a named sub-reflex by name (supporting template interpolation like "gtd-{{intent}}").
 // The on_missing param controls behavior when the named reflex doesn't exist:
 //   - "fail" (default): return an error
 //   - "continue": pass through current $_ and keep going
@@ -1026,8 +1397,8 @@ func (e *Engine) createInvokeReflexAction() {
 			return nil, fmt.Errorf("invoke_reflex: name is required")
 		}
 
-		// Render the name (supports "gtd-{{.intent}}" style templates)
-		name, err := renderTemplate(nameTemplate, vars)
+		// Render the name (supports "gtd-{{intent}}" template expressions)
+		name, err := renderNewTemplate(nameTemplate, vars)
 		if err != nil {
 			return nil, fmt.Errorf("invoke_reflex: name template failed: %w", err)
 		}

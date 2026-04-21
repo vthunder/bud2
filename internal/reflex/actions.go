@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
-	"text/template"
 	"time"
 )
 
@@ -133,7 +133,7 @@ func actionOllamaPrompt(ctx context.Context, params map[string]any, vars map[str
 	}
 
 	// Resolve template with variables
-	prompt, err := renderTemplate(promptTemplate, vars)
+	prompt, err := renderNewTemplate(promptTemplate, vars)
 	if err != nil {
 		return nil, fmt.Errorf("template failed: %w", err)
 	}
@@ -212,7 +212,7 @@ func actionTemplate(ctx context.Context, params map[string]any, vars map[string]
 		return nil, fmt.Errorf("template is required")
 	}
 
-	return renderTemplate(tmplStr, vars)
+	return renderNewTemplate(tmplStr, vars)
 }
 
 func actionLog(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
@@ -243,13 +243,13 @@ func actionGate(ctx context.Context, params map[string]any, vars map[string]any)
 	}
 
 	// Render the condition template
-	rendered, err := renderTemplate(condition, vars)
+	rendered, err := renderNewTemplate(condition, vars)
 	if err != nil {
 		return nil, fmt.Errorf("gate condition template failed: %w", err)
 	}
 
 	// Evaluate condition (simple string equality check)
-	// Format: "{{.intent}} == not_gtd" renders to "not_gtd == not_gtd"
+	// Format: "{{intent}} == not_gtd" renders to "not_gtd == not_gtd"
 	parts := strings.Split(rendered, "==")
 	if len(parts) == 2 {
 		left := strings.TrimSpace(parts[0])
@@ -290,37 +290,70 @@ func resolveVar(params map[string]any, vars map[string]any, paramNames ...string
 	return ""
 }
 
-func renderTemplate(tmplStr string, vars map[string]any) (string, error) {
-	funcMap := template.FuncMap{
-		"trimSpace":   strings.TrimSpace,
-		"trimPrefix":  strings.TrimPrefix,
-		"trimSuffix":  strings.TrimSuffix,
-		"toLower":     strings.ToLower,
-		"toUpper":     strings.ToUpper,
-		"hasPrefix":   strings.HasPrefix,
-		"hasSuffix":   strings.HasSuffix,
-		"contains":    strings.Contains,
-		// extractTask strips common command prefixes ("add ", "capture ", etc.)
-		// preserving original case of the remainder
-		"extractTask": func(s string) string {
-			lower := strings.ToLower(s)
-			for _, prefix := range []string{"add ", "capture ", "remember to ", "remember "} {
-				if strings.HasPrefix(lower, prefix) {
-					return strings.TrimSpace(s[len(prefix):])
-				}
+// newTemplateVarRe matches {{identifier}} and {{namespace.key}} patterns.
+var newTemplateVarRe = regexp.MustCompile(`\{\{(\w+(?:\.\w+)*)\}\}`)
+
+// renderNewTemplate resolves {{var}} and {{namespace.key}} expressions.
+// Supported namespaces: params.*, settings.*, state.*, system.{time,hour,weekday,uptime_minutes}.
+// Named step outputs and {{_}} / {{_error}} are resolved from the flat vars map.
+// Returns an error for any undefined variable (fail-fast on undefined).
+func renderNewTemplate(tmplStr string, vars map[string]any) (string, error) {
+	if !strings.Contains(tmplStr, "{{") {
+		return tmplStr, nil
+	}
+	var firstErr error
+	result := newTemplateVarRe.ReplaceAllStringFunc(tmplStr, func(match string) string {
+		inner := match[2 : len(match)-2]
+		val, ok := resolveVarPath(inner, vars)
+		if !ok {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("undefined variable: %s", inner)
 			}
-			return strings.TrimSpace(s)
-		},
-	}
-	tmpl, err := template.New("reflex").Funcs(funcMap).Parse(tmplStr)
-	if err != nil {
-		return "", err
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, vars); err != nil {
-		return "", err
-	}
-
-	return buf.String(), nil
+			return ""
+		}
+		return fmt.Sprintf("%v", val)
+	})
+	return result, firstErr
 }
+
+// resolveVarPath resolves a dotted path like "params.key" or "system.hour" from vars.
+func resolveVarPath(path string, vars map[string]any) (any, bool) {
+	parts := strings.SplitN(path, ".", 2)
+	ns := parts[0]
+	switch ns {
+	case "system":
+		if len(parts) < 2 {
+			return nil, false
+		}
+		return resolveSystemVar(parts[1])
+	case "params", "settings", "state":
+		if len(parts) < 2 {
+			return nil, false
+		}
+		if nsMap, ok := vars[ns].(map[string]any); ok {
+			val, found := nsMap[parts[1]]
+			return val, found
+		}
+		return nil, false
+	default:
+		val, ok := vars[path]
+		return val, ok
+	}
+}
+
+// resolveSystemVar returns runtime system variables.
+func resolveSystemVar(name string) (any, bool) {
+	now := time.Now()
+	switch name {
+	case "time":
+		return now.Format("15:04"), true
+	case "hour":
+		return now.Hour(), true
+	case "weekday":
+		return now.Weekday().String(), true
+	case "uptime_minutes":
+		return 0, true // placeholder; wired up by caller if needed
+	}
+	return nil, false
+}
+

@@ -1,0 +1,12 @@
+name: daily-agenda
+description: Forward daily calendar agenda to Discord without waking executive
+type: workflow
+callable_from: direct
+trigger:
+  pattern: "^Daily agenda for"
+  source: "impulse:daily_agenda"
+  type: daily_agenda
+  classifier: none
+pipeline:
+  - action: reply
+    message: "{{content}}"

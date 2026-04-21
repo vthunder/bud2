@@ -1,0 +1,19 @@
+name: research
+description: Research-first planning
+type: workflow
+callable_from: both
+params:
+  input:
+    type: string
+    description: Topic or question to research and plan
+    required: true
+# NOTE: context_template rendering from legacy workflow format is not yet fully
+# wired through the new engine. Steps spawn agents with params passed via context.
+# Full context_template → subagent prompt translation is a follow-up for M8.
+pipeline:
+  - type: subagent
+    agent: researcher
+    output: research_results
+  - type: subagent
+    agent: "autopilot-strategy:planner"
+    output: strategy

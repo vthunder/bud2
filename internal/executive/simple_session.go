@@ -106,7 +106,7 @@ func scanLocalPlugins(statePath string) []string {
 // pluginManifest is the structure of state/system/extensions.yaml
 // (formerly plugins.yaml — see extensionsManifestPath for the fallback logic).
 type pluginManifest struct {
-	Plugins []pluginManifestEntry `yaml:"plugins"`
+	Sources []pluginManifestEntry `yaml:"sources"`
 	Skills  []skillManifestEntry  `yaml:"skills"`
 }
 
@@ -306,7 +306,7 @@ func loadManifestPlugins(statePath string) []string {
 	pluginCacheDir := filepath.Join(cacheBase, "bud", "plugins")
 
 	var paths []string
-	for _, e := range manifest.Plugins {
+	for _, e := range manifest.Sources {
 		if e.owner == "" {
 			// Local path entry — no git ops needed.
 			if e.localPath != "" {
@@ -402,7 +402,7 @@ func resolvedManifestPluginDirs(statePath string) []pluginDir {
 	pluginCacheDir := filepath.Join(cacheBase, "bud", "plugins")
 
 	var dirs []pluginDir
-	for _, e := range manifest.Plugins {
+	for _, e := range manifest.Sources {
 		var localPath string
 		if e.owner != "" {
 			repoDir := filepath.Join(pluginCacheDir, e.owner, e.repo)
@@ -467,36 +467,6 @@ func allPluginDirs(statePath string) []string {
 				for _, e := range slugEntries {
 					if e.IsDir() {
 						dirs = append(dirs, filepath.Join(skillsDir, e.Name()))
-					}
-				}
-			}
-		}
-	}
-	return dirs
-}
-
-// allPluginDirsForAgents returns all plugin directories with their associated
-// tool grants. Local plugins and skill dirs have no grants; manifest plugins
-// carry their grants from plugins.yaml tool_grants entries.
-func allPluginDirsForAgents(statePath string) []pluginDir {
-	var dirs []pluginDir
-	for _, p := range scanLocalPlugins(statePath) {
-		dirs = append(dirs, pluginDir{Path: p})
-	}
-	dirs = append(dirs, resolvedManifestPluginDirs(statePath)...)
-	for _, p := range resolvedManifestSkillDirs(statePath) {
-		dirs = append(dirs, pluginDir{Path: p})
-	}
-	if cacheBase, err := os.UserCacheDir(); err == nil {
-		chDir := clawhubSkillsDir(cacheBase)
-		skillsDir := filepath.Join(chDir, "skills")
-		if _, err := os.Stat(skillsDir); err == nil {
-			dirs = append(dirs, pluginDir{Path: chDir})
-			// Enumerate per-slug subdirs so hooks/bud/ inside each skill is discovered.
-			if slugEntries, err := os.ReadDir(skillsDir); err == nil {
-				for _, e := range slugEntries {
-					if e.IsDir() {
-						dirs = append(dirs, pluginDir{Path: filepath.Join(skillsDir, e.Name())})
 					}
 				}
 			}

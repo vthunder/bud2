@@ -1,7 +1,8 @@
 ---
 name: coder
 description: Software development tasks with full file access
-level: execution
+type: agent
+callable_from: both
 tools:
   - Read
   - Write

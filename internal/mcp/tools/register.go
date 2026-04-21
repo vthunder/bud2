@@ -62,6 +62,9 @@ func RegisterAll(server *mcp.Server, deps *Dependencies) {
 	registerVMBrowserTools(server, deps)
 	registerImageGenTools(server, deps)
 	registerProjectTools(server, deps)
+	if deps.ExtensionRegistry != nil {
+		registerWorkflowTools(server, deps)
+	}
 }
 
 func registerCommunicationTools(server *mcp.Server, deps *Dependencies) {
@@ -1516,7 +1519,7 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		Properties: map[string]mcp.PropDef{
 			"task":                 {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
 			"constraints":          {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
-			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'bud:researcher', 'bud:coder', 'bud:reviewer'). Expands tool access and injects behavioral guidance from state/system/plugins/. Omit to use the default restricted tool set."},
+			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'bud:researcher', 'bud:coder', 'bud:reviewer'). Expands tool access and injects behavioral guidance from the extension registry. Omit to use the default restricted tool set."},
 			"agent":                {Type: "string", Description: "Alias for profile. If agent is set and profile is not, agent value is used."},
 			"domain":               {Type: "string", Description: `Optional GK domain for this subagent. "/" = root state knowledge graph (default), "/projects/foo" = project-specific graph. The subagent's gk_* tool calls will default to this domain.`},
 			"job":                  {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},

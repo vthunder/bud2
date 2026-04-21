@@ -1,5 +1,8 @@
-name: gtd-handler
-description: Handle GTD queries via /gtd slash command using Things 3 via MCP
+name: gtd-dispatcher
+description: |
+  Classify a GTD request via Ollama, then invoke the matching sub-workflow.
+  Demonstrates type:invoke with a template expression in the workflow: field
+  (dispatcher pattern). Replaces the monolithic gtd-handler pipeline.
 priority: 10
 trigger:
   source: discord
@@ -19,8 +22,23 @@ trigger:
     - gtd_add_inbox: User wants to add an item to inbox (e.g., "add buy milk", "capture call doctor", "remember to...")
 
     Answer with ONE intent name only, no explanation.
+
+# Workflow-level params declaration
+params:
+  content:
+    type: string
+    description: The user's message content
+    required: false
+
 pipeline:
-  - action: gtd_dispatch_things
+  # Step 1: Invoke the sub-workflow named after the classified intent.
+  # {{intent}} is set by the Ollama classifier; if the sub-workflow doesn't
+  # exist, escalate to the executive rather than failing silently.
+  - type: invoke
+    workflow: "{{intent}}"
+    on_missing: escalate
     output: response
+
+  # Step 2: Reply with the sub-workflow's output.
   - action: reply
     message: "{{response}}"

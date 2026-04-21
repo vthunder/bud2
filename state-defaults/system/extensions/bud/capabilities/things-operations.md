@@ -5,6 +5,8 @@ description: >-
   tracker — creating issues, querying for ready/unblocked work, claiming tasks,
   updating status, or reading issue details. Provides Things 3 tool names,
   field mappings, and workflow patterns.
+type: skill
+callable_from: direct
 ---
 
 # Issue Operations (Things 3)

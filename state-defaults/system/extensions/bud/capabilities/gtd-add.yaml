@@ -1,0 +1,10 @@
+name: gtd-add
+description: Add item to GTD inbox via Things 3
+type: workflow
+callable_from: both
+pipeline:
+  - action: call_tool
+    tool: things_add_todo
+    title: "{{content}}"
+  - action: reply
+    message: "✅ Added to inbox: {{content}}"

@@ -5,6 +5,7 @@ import (
 	"github.com/vthunder/bud2/internal/activity"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/eval"
+	"github.com/vthunder/bud2/internal/extensions"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/reflex"
@@ -94,4 +95,9 @@ type Dependencies struct {
 	// VMControlURL is the base URL for the vm-control-server REST API.
 	// Defaults to http://127.0.0.1:3099 if empty.
 	VMControlURL string
+
+	// ExtensionRegistry provides access to loaded extensions for skill/workflow/agent
+	// discovery via the invoke_workflow and Skill MCP tools. Optional — when nil,
+	// those tools are not registered.
+	ExtensionRegistry *extensions.Registry
 }

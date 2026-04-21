@@ -21,6 +21,7 @@ import (
 	"github.com/vthunder/bud2/internal/config"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/executive/provider"
+	"github.com/vthunder/bud2/internal/extensions"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/paths"
@@ -39,6 +40,9 @@ type ExecutiveV2 struct {
 	// Provider session for non-claude-code providers. When set, processItem
 	// delegates to this session instead of SimpleSession.SendPromptWithCfg.
 	providerSession provider.Session
+
+	// Extension registry for agent/skill/workflow discovery.
+	extensionRegistry *extensions.Registry
 
 	// Focus-based attention
 	attention *focus.Attention
@@ -140,6 +144,9 @@ type ExecutiveV2Config struct {
 	// DefaultChannelID is the primary Discord channel ID, used to fetch recent
 	// conversation context for autonomous wake prompts.
 	DefaultChannelID string
+
+	// ExtensionRegistry is the loaded extension registry for agent/skill/workflow discovery.
+	ExtensionRegistry *extensions.Registry
 }
 
 // NewExecutiveV2 creates a new v2 executive
@@ -154,14 +161,15 @@ func NewExecutiveV2(
 	}
 	sess.LoadSessionFromDisk()
 	exec := &ExecutiveV2{
-		session:        sess,
-		attention:      focus.New(),
-		queue:          focus.NewQueue(filepath.Join(statePath, "system"), 100),
-		memory:         memory,
-		subagents:      NewSubagentManager(statePath),
-		mcpToolCalled:  make(map[string]bool),
-		debugListeners: make(map[string]func(DebugEvent)),
-		config:         cfg,
+		session:           sess,
+		attention:         focus.New(),
+		queue:             focus.NewQueue(filepath.Join(statePath, "system"), 100),
+		memory:            memory,
+		subagents:         NewSubagentManager(statePath),
+		mcpToolCalled:     make(map[string]bool),
+		debugListeners:    make(map[string]func(DebugEvent)),
+		config:            cfg,
+		extensionRegistry: cfg.ExtensionRegistry,
 	}
 
 	// If a non-claude-code provider is configured, create a provider session
@@ -226,15 +234,15 @@ func (e *ExecutiveV2) SetKnownMCPTools(tools []string) {
 	e.knownMCPTools = tools
 }
 
-// loadAgentDefs loads programmatic agent definitions fresh from plugins on each call,
-// so changes to state/system/plugins/ take effect without restarting Bud.
+// loadAgentDefs returns programmatic agent definitions for the current session.
+// Definitions are sourced from extension capabilities (type:agent, callable_from: both|model).
+// Returns nil if no extension registry is configured.
 func (e *ExecutiveV2) loadAgentDefs() map[string]claudecode.AgentDefinition {
-	defs, err := LoadAllAgents(e.session.statePath, e.knownMCPTools)
-	if err != nil {
-		log.Printf("[executive-v2] Warning: failed to load agent definitions: %v", err)
+	if e.extensionRegistry == nil {
+		log.Printf("[executive-v2] Warning: no extension registry configured; agent definitions unavailable")
 		return nil
 	}
-	return defs
+	return LoadAgentDefsFromRegistry(e.extensionRegistry, e.knownMCPTools)
 }
 
 // SetTypingCallbacks sets the typing indicator callbacks
@@ -264,21 +272,23 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		allowedTools := subagentBaseTools
 		promptAppend := systemPromptAppend
 
-		// Resolve profile: merge tools + load skill content
-		if profile != "" {
-			mergedTools, skillPrompt, err := ResolveSubagentConfig(e.session.statePath, profile, subagentBaseTools)
+		// Resolve profile via extension registry: merge tools + load agent body.
+		if profile != "" && e.extensionRegistry != nil {
+			mergedTools, skillPrompt, err := ResolveSubagentConfigFromRegistry(e.extensionRegistry, profile, subagentBaseTools)
 			if err != nil {
-				log.Printf("[executive-v2] Warning: failed to load agent %q: %v", profile, err)
+				log.Printf("[executive-v2] Warning: failed to resolve agent %q from registry: %v", profile, err)
 				// Fall through with defaults rather than failing the spawn
 			} else {
 				allowedTools = mergedTools
-				// Combine skill prompt with any caller-provided constraints
+				// Combine agent prompt with any caller-provided constraints
 				if skillPrompt != "" && promptAppend != "" {
 					promptAppend = skillPrompt + "\n\n" + promptAppend
 				} else if skillPrompt != "" {
 					promptAppend = skillPrompt
 				}
 			}
+		} else if profile != "" {
+			log.Printf("[executive-v2] Warning: no extension registry; cannot resolve agent profile %q", profile)
 		}
 
 		// Use provided mcpURL (tokenized for domain routing) or fall back to base URL.
