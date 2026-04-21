@@ -1,0 +1,28 @@
+name: gtd-text-dispatcher
+description: |
+  Handle /gtd commands typed as regular Discord messages (not slash commands).
+  Classifies via Ollama and dispatches to the matching sub-workflow.
+priority: 10
+trigger:
+  source: inbox
+  pattern: "^/gtd(?:\\s+(.*))?$"
+  classifier: ollama
+  model: qwen2.5:7b
+  intents:
+    - today
+    - inbox
+    - add
+  prompt: |
+    Classify this GTD task management request.
+
+    Intents:
+    - today: User wants to see today's tasks (e.g., "today", "/gtd today", "what's on my list", "tasks", "show", "list")
+    - inbox: User wants to see inbox items (e.g., "inbox", "/gtd inbox", "what's waiting", "captured", "unsorted")
+    - add: User wants to add an item to inbox (e.g., "add buy milk", "/gtd add call doctor", "capture...", "remember to...")
+
+    Answer with ONE intent name only, no explanation.
+
+pipeline:
+  - type: invoke
+    workflow: "gtd-{{intent}}"
+    on_missing: escalate
