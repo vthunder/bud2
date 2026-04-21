@@ -891,17 +891,12 @@ func (e *Engine) executeReply(step PipelineStep, vars map[string]any) error {
 		return fmt.Errorf("message required for reply")
 	}
 
-	// Check if this is a slash command - use interaction followup response
-	// (We already sent a deferred response, so need to edit it)
-	if token, ok := vars["interaction_token"].(string); ok && token != "" {
-		appID, _ := vars["app_id"].(string)
-		if e.onInteractionReply != nil && appID != "" {
-			return e.onInteractionReply(token, appID, message)
-		}
-		// Fall through to regular reply if no interaction callback
-	}
-
-	// Regular message reply
+	// All replies — including slash command interaction followups — go through onReply.
+	// The Discord effector checks for a pending interaction token (stored at slash command
+	// receipt) and edits the deferred response if one exists. Going through onReply ensures
+	// the pending interaction is consumed (one-time use), so subsequent messages (e.g.
+	// executive fallbacks for follow-up messages on the same channel) don't inadvertently
+	// edit the same interaction response and overwrite the reflex's reply.
 	if e.onReply == nil {
 		return fmt.Errorf("reply callback not configured")
 	}
