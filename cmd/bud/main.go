@@ -482,6 +482,30 @@ func main() {
 		}
 	}
 
+	// Initialize the Dispatcher to fire extension behaviors (schedule, slash_command, pattern_match, etc).
+	// Must be declared here so processPercept (closure) and slash command registration can capture it.
+	var dispatcher *extensions.Dispatcher
+	if extensionRegistry != nil {
+		runner := &extWorkflowRunner{engine: reflexEngine, registry: extensionRegistry}
+		eventBus := extensions.NewEventBus()
+		dispatcher = extensions.NewDispatcher(extensionRegistry, eventBus, runner)
+		dispatcher.SetTalkToUser(&dispatcherTalker{
+			send: func(msg string) error {
+				if mcpSendMessage != nil {
+					return mcpSendMessage(discordChannel, msg)
+				}
+				return nil
+			},
+		})
+		dispatcher.SetSaveThought(&dispatcherLogger{
+			log: func(msg string) {
+				activityLog.LogAction(msg, "dispatcher", "", "")
+			},
+		})
+		dispatcher.RegisterAll(context.Background())
+		log.Printf("[main] Dispatcher registered behaviors for %d extension(s)", extensionRegistry.Len())
+	}
+
 	// Declare variable for executive (will be initialized after MCP deps are set up)
 	var exec *executive.ExecutiveV2
 
@@ -922,6 +946,11 @@ func main() {
 			handled, results = reflexEngine.Process(ctx, percept.Source, percept.Type, content, percept.Data)
 		}()
 
+		// Also fire extension pattern_match triggers via the Dispatcher.
+		if dispatcher != nil {
+			dispatcher.FirePercept(percept.Source, percept.Type, content, percept.Data)
+		}
+
 		// If a reflex escalated, forward its accumulated context into percept.Data
 		// so the executive receives pre-fetched vars rather than starting blind.
 		for _, r := range results {
@@ -1319,6 +1348,14 @@ func main() {
 		extDiscordCmds[i] = senses.SlashCommandInfo{
 			Command:     rc.Command,
 			Description: rc.Description,
+		}
+	}
+	if dispatcher != nil {
+		for _, dc := range dispatcher.ListSlashCommands() {
+			extDiscordCmds = append(extDiscordCmds, senses.SlashCommandInfo{
+				Command:     dc.Command,
+				Description: dc.Description,
+			})
 		}
 	}
 	if err := discordSense.RegisterSlashCommands(discordGuildID, extDiscordCmds); err != nil {

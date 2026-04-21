@@ -232,6 +232,12 @@ func (e *Engine) CheckForUpdates() int {
 	return reloaded
 }
 
+// LoadFile loads and parses a single reflex YAML file without registering it.
+// Use this when you have a path but the reflex has not been loaded into the engine.
+func (e *Engine) LoadFile(path string) (*Reflex, error) {
+	return e.loadReflexFile(path)
+}
+
 func (e *Engine) loadReflexFile(path string) (*Reflex, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

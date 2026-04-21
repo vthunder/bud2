@@ -335,6 +335,37 @@ func (d *Dispatcher) FirePercept(source, typ, content string, extra map[string]a
 	d.bus.Publish(Event{Topic: "percept:message:received", Payload: payload})
 }
 
+// DispatcherSlashCommandInfo describes a slash command behavior from an extension.
+type DispatcherSlashCommandInfo struct {
+	Command     string
+	Description string
+}
+
+// ListSlashCommands returns the slash command names registered across all enabled extensions.
+func (d *Dispatcher) ListSlashCommands() []DispatcherSlashCommandInfo {
+	var cmds []DispatcherSlashCommandInfo
+	for _, ext := range d.registry.All() {
+		if !ext.Enabled() {
+			continue
+		}
+		for _, beh := range ext.Manifest.Behaviors {
+			typ, val := parseTriggerType(beh.Trigger)
+			if typ != "slash_command" {
+				continue
+			}
+			cmdName, _ := val.(string)
+			if cmdName == "" {
+				cmdName = ext.Manifest.Name + "-" + beh.Name
+			}
+			cmds = append(cmds, DispatcherSlashCommandInfo{
+				Command:     cmdName,
+				Description: beh.Workflow,
+			})
+		}
+	}
+	return cmds
+}
+
 // --- on_result handler ---
 
 // OnResultConfig is the parsed on_result block from a behavior or capability definition.
