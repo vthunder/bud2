@@ -512,13 +512,23 @@ func main() {
 			if !ok {
 				cap, ext, ok = extensionRegistry.FindCapabilityByName(name)
 			}
-			if !ok || cap.Type != "workflow" {
+			if !ok {
+				log.Printf("[main] workflowFallback: capability %q not found in registry", name)
+				return nil, nil
+			}
+			if cap.Type != "workflow" {
+				log.Printf("[main] workflowFallback: capability %q has type %q, not workflow", name, cap.Type)
 				return nil, nil
 			}
 			idx := strings.LastIndex(name, ":")
 			capName := name[idx+1:]
 			yamlPath := filepath.Join(ext.Dir, "capabilities", capName+".yaml")
-			return reflexEngine.LoadFile(yamlPath)
+			log.Printf("[main] workflowFallback: loading %q from %s", name, yamlPath)
+			r, err := reflexEngine.LoadFile(yamlPath)
+			if err != nil {
+				log.Printf("[main] workflowFallback: LoadFile %s failed: %v", yamlPath, err)
+			}
+			return r, err
 		})
 	}
 

@@ -550,6 +550,12 @@ func (e *Engine) executeActionStep(ctx context.Context, stepIdx int, step Pipeli
 	for k, v := range step.Params {
 		params[k] = v
 	}
+	// step.Tool is a named struct field (yaml:"tool") shared with type:direct steps.
+	// When used with action: call_tool, the yaml parser puts it in step.Tool rather
+	// than step.Params, so we propagate it here so call_tool can find it.
+	if step.Tool != "" {
+		params["tool"] = step.Tool
+	}
 	if step.Input != "" {
 		params["input"] = step.Input
 	}
