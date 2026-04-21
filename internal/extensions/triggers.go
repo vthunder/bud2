@@ -105,6 +105,11 @@ func (d *Dispatcher) RegisterExtension(ctx context.Context, ext *Extension) erro
 		case "schedule":
 			cronExpr, _ := triggerVal.(string)
 			if cronExpr == "" {
+				if m, ok := triggerVal.(map[string]any); ok {
+					cronExpr, _ = m["cron"].(string)
+				}
+			}
+			if cronExpr == "" {
 				log.Printf("[triggers] %s/%s: schedule trigger missing cron expression", extName, beh.Name)
 				continue
 			}
@@ -130,6 +135,11 @@ func (d *Dispatcher) RegisterExtension(ctx context.Context, ext *Extension) erro
 		case "slash_command":
 			cmdName, _ := triggerVal.(string)
 			if cmdName == "" {
+				if m, ok := triggerVal.(map[string]any); ok {
+					cmdName, _ = m["name"].(string)
+				}
+			}
+			if cmdName == "" {
 				// Default: <ext>-<behavior>
 				cmdName = extName + "-" + beh.Name
 			}
@@ -146,6 +156,11 @@ func (d *Dispatcher) RegisterExtension(ctx context.Context, ext *Extension) erro
 
 		case "event":
 			topic, _ := triggerVal.(string)
+			if topic == "" {
+				if m, ok := triggerVal.(map[string]any); ok {
+					topic, _ = m["topic"].(string)
+				}
+			}
 			if topic == "" {
 				log.Printf("[triggers] %s/%s: event trigger missing topic", extName, beh.Name)
 				continue
@@ -355,6 +370,11 @@ func (d *Dispatcher) ListSlashCommands() []DispatcherSlashCommandInfo {
 			}
 			cmdName, _ := val.(string)
 			if cmdName == "" {
+				if m, ok := val.(map[string]any); ok {
+					cmdName, _ = m["name"].(string)
+				}
+			}
+			if cmdName == "" {
 				cmdName = ext.Manifest.Name + "-" + beh.Name
 			}
 			cmds = append(cmds, DispatcherSlashCommandInfo{
@@ -529,10 +549,18 @@ var onResultVarRe = regexp.MustCompile(`\{\{[^}]+\}\}`)
 
 // --- helpers ---
 
-// parseTriggerType extracts the trigger type key and its value from a raw trigger map.
+// parseTriggerType extracts the trigger type and its value from a raw trigger map.
+// Supports two formats:
+//   - New style: {type: "slash_command", name: "gtd", ...} — val is the whole trigger map.
+//   - Legacy style: {slash_command: "gtd"} or {pattern_match: {...}} — val is the key's value.
+//
 // Returns ("", nil) for an empty or unrecognised map.
 func parseTriggerType(trigger map[string]any) (typ string, val any) {
-	// Recognised trigger type keys in preference order.
+	// New style: trigger type is the value of the "type" key.
+	if t, ok := trigger["type"].(string); ok {
+		return t, trigger
+	}
+	// Legacy style: trigger type is a recognised key in the map.
 	for _, k := range []string{"schedule", "slash_command", "event", "condition", "pattern_match", "manual", "webhook"} {
 		if v, ok := trigger[k]; ok {
 			return k, v
