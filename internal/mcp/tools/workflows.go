@@ -130,15 +130,19 @@ func invokeWorkflow(deps *Dependencies, name string, params map[string]any) (str
 	}
 
 	// Look up the workflow in the reflex engine by capability name.
+	// Fall back to loading directly from the capability YAML if not pre-loaded.
 	r := deps.ReflexEngine.Get(capName)
 	if r == nil {
-		// Workflow capability exists in registry but isn't loaded in the engine yet.
-		log.Printf("[invoke_workflow] workflow %q found in registry but not in reflex engine", name)
-		paramsJSON, _ := json.MarshalIndent(params, "", "  ")
-		return fmt.Sprintf(
-			"Workflow %q is defined in the extension registry but not yet loaded in the workflow engine.\nRequested params: %s",
-			name, string(paramsJSON),
-		), nil
+		loaded, loadErr := deps.ReflexEngine.LoadFile(yamlPath)
+		if loadErr != nil {
+			log.Printf("[invoke_workflow] workflow %q not in engine and failed to load from %s: %v", name, yamlPath, loadErr)
+			paramsJSON, _ := json.MarshalIndent(params, "", "  ")
+			return fmt.Sprintf(
+				"Workflow %q could not be loaded: %v\nRequested params: %s",
+				name, loadErr, string(paramsJSON),
+			), nil
+		}
+		r = loaded
 	}
 
 	// Convert params to string-keyed extracted map for the engine.
