@@ -692,6 +692,51 @@ func main() {
 		}()
 	}
 
+	// Start MCP proxy servers declared by extensions (mcp_servers field in extension.yaml)
+	if extensionRegistry != nil {
+		for _, ext := range extensionRegistry.All() {
+			for srvName, srv := range ext.Manifest.MCPServers {
+				if srv.Command == "" {
+					continue
+				}
+				// Resolve relative args against the extension directory
+				args := make([]string, len(srv.Args))
+				for i, a := range srv.Args {
+					if !filepath.IsAbs(a) {
+						a = filepath.Join(ext.Dir, a)
+					}
+					args[i] = a
+				}
+				log.Printf("[main] Starting extension MCP server %s from %s", srvName, ext.Manifest.Name)
+				proxy, proxyErr := mcp.StartProxy(mcp.ExternalServerConfig{
+					Name:    srvName,
+					Command: srv.Command,
+					Args:    args,
+					Env:     srv.Env,
+				})
+				if proxyErr != nil {
+					log.Printf("[main] Warning: failed to start extension MCP server %s: %v", srvName, proxyErr)
+					continue
+				}
+				extTools, toolErr := proxy.DiscoverTools()
+				if toolErr != nil {
+					log.Printf("[main] Warning: extension MCP server %s tool discovery failed: %v", srvName, toolErr)
+					proxy.Close()
+					continue
+				}
+				log.Printf("[main] Extension MCP server %s: %d tools", srvName, len(extTools))
+				for _, def := range extTools {
+					toolName := def.Name
+					proxyRef := proxy
+					mcpServer.RegisterTool(toolName, def, func(ctx any, args map[string]any) (string, error) {
+						return proxyRef.CallTool(toolName, args)
+					})
+				}
+				defer proxy.Close()
+			}
+		}
+	}
+
 	// Wire the MCP server as the tool caller for the reflex engine
 	// This lets call_tool pipeline actions invoke any registered MCP tool
 	reflexEngine.SetToolCaller(mcpServer)

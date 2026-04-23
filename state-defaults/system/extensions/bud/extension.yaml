@@ -19,22 +19,12 @@ capabilities:
     callable_from: direct
   start-workflow:
     callable_from: direct
-  things-operations:
-    callable_from: direct
 
   # Workflow capabilities (from system/reflexes/)
   calendar-handler:
     callable_from: direct
   daily-agenda:
     callable_from: direct
-  gtd-add:
-    callable_from: both
-  gtd-dispatcher:
-    callable_from: direct
-  gtd-inbox:
-    callable_from: both
-  gtd-today:
-    callable_from: both
   meeting-reminder:
     callable_from: direct
   state-sync:
@@ -69,15 +59,6 @@ behaviors:
       event_type: daily_agenda
       pattern: "^Daily agenda for"
     workflow: bud:daily-agenda
-
-  - name: gtd-dispatcher
-    trigger:
-      type: slash_command
-      name: gtd
-      source: inbox
-      classifier: ollama
-      model: "qwen2.5:7b"
-    workflow: bud:gtd-dispatcher
 
   - name: meeting-reminder
     trigger:

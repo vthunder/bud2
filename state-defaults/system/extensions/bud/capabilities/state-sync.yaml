@@ -13,5 +13,3 @@ pipeline:
     output: result
   - action: log
     message: "State sync: {{result}}"
-  - action: complete_bud_task
-    task_id: "task-state-sync"

@@ -76,8 +76,6 @@ func NewEngine(statePath string) *Engine {
 		fileModTime: make(map[string]time.Time),
 	}
 	e.createCallToolAction()
-	e.createGTDThingsActions()
-	e.createCompleteBudTaskAction()
 	e.createInvokeReflexAction()
 	e.createJSONQueryAction()
 	return e
@@ -1348,92 +1346,6 @@ func (e *Engine) createCallToolAction() {
 		result, err := e.toolCaller.Call(toolName, args)
 		if err != nil {
 			return nil, fmt.Errorf("tool %s failed: %w", toolName, err)
-		}
-		return result, nil
-	}))
-}
-
-// createGTDThingsActions registers gtd_dispatch_things, which handles GTD intents
-// via Things 3 using the MCP tool caller. This replaces the old gtd_dispatch action
-// which used the JSON-file GTD store.
-func (e *Engine) createGTDThingsActions() {
-	e.actions.Register("gtd_dispatch_things", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.toolCaller == nil {
-			return nil, fmt.Errorf("tool caller not configured — Things MCP not available")
-		}
-
-		intent, _ := vars["intent"].(string)
-		content, _ := vars["content"].(string)
-
-		switch intent {
-		case "gtd_show_today":
-			result, err := e.toolCaller.Call("things_get_today", map[string]any{})
-			if err != nil {
-				return nil, fmt.Errorf("things_get_today failed: %w", err)
-			}
-			return result, nil
-
-		case "gtd_show_inbox":
-			result, err := e.toolCaller.Call("things_get_list", map[string]any{
-				"list": "inbox",
-			})
-			if err != nil {
-				return nil, fmt.Errorf("things_get_list(inbox) failed: %w", err)
-			}
-			return result, nil
-
-		case "gtd_add_inbox":
-			// Extract what to add from content
-			item := content
-			for _, prefix := range []string{"add ", "capture ", "remember to ", "remember "} {
-				if idx := strings.Index(strings.ToLower(item), prefix); idx == 0 {
-					item = item[len(prefix):]
-					break
-				}
-			}
-			item = strings.TrimSpace(item)
-			if item == "" {
-				return nil, fmt.Errorf("couldn't extract item to add from: %q", content)
-			}
-
-			result, err := e.toolCaller.Call("things_add_todo", map[string]any{
-				"title": item,
-				"list":  "Bud",
-			})
-			if err != nil {
-				return nil, fmt.Errorf("things_add_todo failed: %w", err)
-			}
-			if result == "" {
-				return fmt.Sprintf("Added '%s' to inbox", item), nil
-			}
-			return result, nil
-
-		default:
-			return nil, fmt.Errorf("unknown GTD intent: %q", intent)
-		}
-	}))
-}
-
-// createCompleteBudTaskAction registers the complete_bud_task action, which marks
-// a Bud task as completed in Things 3. It is a thin wrapper over things_update_todo
-// that accepts task_id (the Things todo ID) and sets completed=true.
-func (e *Engine) createCompleteBudTaskAction() {
-	e.actions.Register("complete_bud_task", ActionFunc(func(ctx context.Context, params map[string]any, vars map[string]any) (any, error) {
-		if e.toolCaller == nil {
-			return nil, fmt.Errorf("complete_bud_task: tool caller not configured — Things MCP not available")
-		}
-
-		taskID, _ := params["task_id"].(string)
-		if taskID == "" {
-			return nil, fmt.Errorf("complete_bud_task: task_id is required")
-		}
-
-		result, err := e.toolCaller.Call("things_update_todo", map[string]any{
-			"id":        taskID,
-			"completed": true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("complete_bud_task: things_update_todo failed: %w", err)
 		}
 		return result, nil
 	}))

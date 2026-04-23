@@ -57,8 +57,8 @@ Multi-step work belongs in subagents, not in the executive session:
 Consult these only when relevant to the current task. Guides are in state/system/guides/:
 - projects.md: Project folders in state/projects/, notes.md files, Notion doc syncing
 - systems.md: Task queue (Things Bud area) and ideas backlog formats
-- gtd.md: Task management for both Bud and the owner via Things 3 (things_* tools)
-- things-mcp.md: Things 3 integration for both Bud and user tasks
+- extensions/things-tasks/guides/gtd.md: Task management for both Bud and the owner via Things 3 (things_* tools)
+- extensions/things-tasks/guides/things-mcp.md: Things 3 integration for both Bud and user tasks
 - integrations.md: Query patterns for external systems (Notion, Calendar, GitHub)
 - reflexes.md: Automated responses that handle simple queries without waking executive
 - observability.md: Activity logging and answering "what did you do today?"
