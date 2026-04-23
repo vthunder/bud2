@@ -293,14 +293,35 @@ func resolveVar(params map[string]any, vars map[string]any, paramNames ...string
 // newTemplateVarRe matches {{identifier}} and {{namespace.key}} patterns.
 var newTemplateVarRe = regexp.MustCompile(`\{\{(\w+(?:\.\w+)*)\}\}`)
 
+// ifBlockRe matches {{if var}}...{{end}} conditional blocks (including newlines in body).
+var ifBlockRe = regexp.MustCompile(`(?s)\{\{if (\w+(?:\.\w+)*)\}\}(.*?)\{\{end\}\}`)
+
 // renderNewTemplate resolves {{var}} and {{namespace.key}} expressions.
 // Supported namespaces: params.*, settings.*, state.*, system.{time,hour,weekday,uptime_minutes}.
 // Named step outputs and {{_}} / {{_error}} are resolved from the flat vars map.
+// Conditional blocks {{if var}}...{{end}} are included only when var is non-empty/non-zero/non-false.
 // Returns an error for any undefined variable (fail-fast on undefined).
 func renderNewTemplate(tmplStr string, vars map[string]any) (string, error) {
 	if !strings.Contains(tmplStr, "{{") {
 		return tmplStr, nil
 	}
+	// First pass: resolve {{if var}}...{{end}} conditional blocks.
+	// Undefined vars are treated as falsy (block omitted), not an error.
+	tmplStr = ifBlockRe.ReplaceAllStringFunc(tmplStr, func(match string) string {
+		m := ifBlockRe.FindStringSubmatch(match)
+		if m == nil {
+			return match
+		}
+		val, ok := resolveVarPath(m[1], vars)
+		if !ok || !isTruthyVal(val) {
+			return ""
+		}
+		return m[2]
+	})
+	if !strings.Contains(tmplStr, "{{") {
+		return tmplStr, nil
+	}
+	// Second pass: resolve {{var}} substitutions.
 	var firstErr error
 	result := newTemplateVarRe.ReplaceAllStringFunc(tmplStr, func(match string) string {
 		inner := match[2 : len(match)-2]
@@ -314,6 +335,26 @@ func renderNewTemplate(tmplStr string, vars map[string]any) (string, error) {
 		return fmt.Sprintf("%v", val)
 	})
 	return result, firstErr
+}
+
+// isTruthyVal returns false for nil, empty string, false, and numeric zero.
+func isTruthyVal(val any) bool {
+	if val == nil {
+		return false
+	}
+	switch v := val.(type) {
+	case string:
+		return v != ""
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return true
 }
 
 // resolveVarPath resolves a dotted path like "params.key" or "system.hour" from vars.

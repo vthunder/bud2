@@ -648,8 +648,43 @@ func TestRenderNewTemplate(t *testing.T) {
 		{"{{params.key}}", "param-value", false},
 		{"no template here", "no template here", false},
 		{"{{undefined_var}}", "", true}, // fail-fast on undefined
+		// {{if var}}...{{end}} conditional blocks
+		{"before{{if content}} mid {{end}}after", "before mid after", false},
+		{"before{{if missing_var}} mid {{end}}after", "beforeafter", false},
+		{"Reminder.{{if meet_link}}\n{{meet_link}}{{end}}", "Reminder.", false},
 	}
-
+	// Test with meet_link set to a non-empty value
+	varsWithMeet := map[string]any{
+		"intent":    "capture",
+		"content":   "buy milk",
+		"_":         "pipe-value",
+		"_error":    "some error",
+		"meet_link": "https://meet.example.com/abc",
+		"params":    map[string]any{"key": "param-value"},
+	}
+	conditionalTests := []struct {
+		tmpl    string
+		want    string
+		wantErr bool
+	}{
+		{"Reminder.{{if meet_link}}\n{{meet_link}}{{end}}", "Reminder.\nhttps://meet.example.com/abc", false},
+		{"A{{if content}} {{content}}{{end}}B", "A buy milkB", false},
+	}
+	for _, tc := range conditionalTests {
+		got, err := renderNewTemplate(tc.tmpl, varsWithMeet)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("template %q (with meet): expected error, got %q", tc.tmpl, got)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("template %q (with meet): unexpected error: %v", tc.tmpl, err)
+			}
+			if got != tc.want {
+				t.Errorf("template %q (with meet): want %q, got %q", tc.tmpl, tc.want, got)
+			}
+		}
+	}
 	for _, tc := range tests {
 		got, err := renderNewTemplate(tc.tmpl, vars)
 		if tc.wantErr {
