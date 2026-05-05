@@ -1,4 +1,4 @@
-package extensions
+package plugins
 
 import (
 	"fmt"
@@ -8,27 +8,27 @@ import (
 	"strings"
 )
 
-// Registry holds all successfully loaded extensions, ordered by dependency.
+// Registry holds all successfully loaded plugins, ordered by dependency.
 type Registry struct {
-	byName map[string]*Extension
+	byName map[string]*Plugin
 	order  []string // topological load order (dependencies before dependents)
 }
 
-// LoadAll loads extensions from each of the given dirs in order.
-// Later dirs override earlier ones when the same extension name appears in multiple dirs.
+// LoadAll loads plugins from each of the given dirs in order.
+// Later dirs override earlier ones when the same plugin name appears in multiple dirs.
 //
-// Extensions are ordered by their declared requires.extensions dependency graph.
-// If a cycle is detected, the cycled extensions are excluded from the Registry.
+// Plugins are ordered by their declared requires.plugins dependency graph.
+// If a cycle is detected, the cycled plugins are excluded from the Registry.
 //
 // Empty strings in dirs are silently skipped.
 func LoadAll(dirs ...string) (*Registry, error) {
-	exts := make(map[string]*Extension)
+	exts := make(map[string]*Plugin)
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
 		if err := loadDir(dir, exts); err != nil {
-			return nil, fmt.Errorf("extensions: loading dir %s: %w", dir, err)
+			return nil, fmt.Errorf("plugins: loading dir %s: %w", dir, err)
 		}
 	}
 
@@ -38,13 +38,13 @@ func LoadAll(dirs ...string) (*Registry, error) {
 		return nil, err
 	}
 
-	// Remove cycled extensions from the registry.
+	// Remove cycled plugins from the registry.
 	for _, name := range cycled {
-		log.Printf("extensions: %s: excluded from registry due to dependency cycle", name)
+		log.Printf("plugins: %s: excluded from registry due to dependency cycle", name)
 		delete(exts, name)
 	}
 
-	// Filter order to exclude cycled extensions.
+	// Filter order to exclude cycled plugins.
 	filtered := order[:0]
 	for _, name := range order {
 		if _, ok := exts[name]; ok {
@@ -55,10 +55,10 @@ func LoadAll(dirs ...string) (*Registry, error) {
 	return &Registry{byName: exts, order: filtered}, nil
 }
 
-// loadDir scans dir for subdirectories and attempts to load each as an extension.
-// Subdirs without extension.yaml are silently skipped (they may be plugin dirs, not extensions).
-// Successfully loaded extensions are added to exts (overwriting existing entries with the same name).
-func loadDir(dir string, exts map[string]*Extension) error {
+// loadDir scans dir for subdirectories and attempts to load each as a plugin.
+// Subdirs without plugin.yaml are silently skipped (they may be non-plugin dirs).
+// Successfully loaded plugins are added to exts (overwriting existing entries with the same name).
+func loadDir(dir string, exts map[string]*Plugin) error {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
@@ -72,32 +72,32 @@ func loadDir(dir string, exts map[string]*Extension) error {
 		}
 		extDir := dir + "/" + e.Name()
 		// Silently skip dirs without .bud-plugin/extension.yaml — they're not extensions.
-		if _, statErr := os.Stat(filepath.Join(extDir, ".bud-plugin", "extension.yaml")); statErr != nil {
+		if _, statErr := os.Stat(filepath.Join(extDir, ".bud-plugin", "plugin.yaml")); statErr != nil {
 			continue
 		}
-		ext, err := LoadExtension(extDir)
+		ext, err := LoadPlugin(extDir)
 		if err != nil {
-			log.Printf("extensions: skipping %s: %v", extDir, err)
+			log.Printf("plugins: skipping %s: %v", extDir, err)
 			continue
 		}
 		if existing, ok := exts[ext.Manifest.Name]; ok {
-			log.Printf("extensions: %s: overriding extension loaded from %s", ext.Manifest.Name, existing.Dir)
+			log.Printf("plugins: %s: overriding plugin loaded from %s", ext.Manifest.Name, existing.Dir)
 		}
 		exts[ext.Manifest.Name] = ext
 	}
 	return nil
 }
 
-// topoSort computes a topological ordering of extensions based on their
-// requires.extensions dependency declarations. It uses DFS to detect cycles.
+// topoSort computes a topological ordering of plugins based on their
+// requires.plugins dependency declarations. It uses DFS to detect cycles.
 //
 // Returns:
 //   - order: names in dependency-first order (safe to iterate for initialization)
-//   - cycled: names of extensions that participate in at least one cycle
+//   - cycled: names of plugins that participate in at least one cycle
 //   - err: non-nil only for structural problems (missing declared deps, etc.)
 //
-// Cycled extensions are reported via the log and excluded by the caller.
-func topoSort(exts map[string]*Extension) (order []string, cycled []string, err error) {
+// Cycled plugins are reported via the log and excluded by the caller.
+func topoSort(exts map[string]*Plugin) (order []string, cycled []string, err error) {
 	const (
 		unvisited = 0
 		visiting  = 1
@@ -131,16 +131,16 @@ func topoSort(exts map[string]*Extension) (order []string, cycled []string, err 
 			} else {
 				cyclePath = []string{name, name}
 			}
-			log.Printf("extensions: dependency cycle detected: %s", strings.Join(cyclePath, " → "))
+			log.Printf("plugins: dependency cycle detected: %s", strings.Join(cyclePath, " → "))
 			for _, n := range cyclePath[:len(cyclePath)-1] {
 				cycledSet[n] = true
 			}
 			return false
 		}
 
-		// Extension not found in loaded set — skip with warning.
+		// Plugin not found in loaded set — skip with warning.
 		if _, ok := exts[name]; !ok {
-			log.Printf("extensions: %s: required extension not found (skipping)", name)
+			log.Printf("plugins: %s: required plugin not found (skipping)", name)
 			state[name] = visited
 			return true
 		}
@@ -149,7 +149,7 @@ func topoSort(exts map[string]*Extension) (order []string, cycled []string, err 
 		stack = append(stack, name)
 
 		ok := true
-		for _, dep := range exts[name].Manifest.Requires.Extensions {
+		for _, dep := range exts[name].Manifest.Requires.Plugins {
 			if !dfs(dep) {
 				ok = false
 			}
@@ -177,14 +177,14 @@ func topoSort(exts map[string]*Extension) (order []string, cycled []string, err 
 	return result, cycledList, nil
 }
 
-// Get returns the Extension with the given name, or nil if not found.
-func (r *Registry) Get(name string) *Extension {
+// Get returns the Plugin with the given name, or nil if not found.
+func (r *Registry) Get(name string) *Plugin {
 	return r.byName[name]
 }
 
-// All returns all extensions in topological dependency order.
-func (r *Registry) All() []*Extension {
-	out := make([]*Extension, 0, len(r.order))
+// All returns all plugins in topological dependency order.
+func (r *Registry) All() []*Plugin {
+	out := make([]*Plugin, 0, len(r.order))
 	for _, name := range r.order {
 		if ext, ok := r.byName[name]; ok {
 			out = append(out, ext)
@@ -193,8 +193,8 @@ func (r *Registry) All() []*Extension {
 	return out
 }
 
-// Capabilities returns the names of all capabilities across all loaded extensions.
-// Names are in the form "<extension-name>:<capability-name>".
+// Capabilities returns the names of all capabilities across all loaded plugins.
+// Names are in the form "<plugin-name>:<capability-name>".
 func (r *Registry) Capabilities() []string {
 	var names []string
 	for _, ext := range r.All() {
@@ -205,14 +205,14 @@ func (r *Registry) Capabilities() []string {
 	return names
 }
 
-// Len returns the number of extensions in the registry.
+// Len returns the number of plugins in the registry.
 func (r *Registry) Len() int {
 	return len(r.byName)
 }
 
-// GetCapabilityByFullName looks up a capability by its "extname:capname" full name.
-// Returns (capability, extension, true) on success, or (nil, nil, false) if not found.
-func (r *Registry) GetCapabilityByFullName(fullName string) (*Capability, *Extension, bool) {
+// GetCapabilityByFullName looks up a capability by its "pluginname:capname" full name.
+// Returns (capability, plugin, true) on success, or (nil, nil, false) if not found.
+func (r *Registry) GetCapabilityByFullName(fullName string) (*Capability, *Plugin, bool) {
 	idx := strings.LastIndex(fullName, ":")
 	if idx < 0 {
 		return nil, nil, false
@@ -230,10 +230,10 @@ func (r *Registry) GetCapabilityByFullName(fullName string) (*Capability, *Exten
 	return cap, ext, true
 }
 
-// FindCapabilityByName searches all extensions for a capability with the given short name.
-// If multiple extensions define a capability with the same name, returns the first match.
+// FindCapabilityByName searches all plugins for a capability with the given short name.
+// If multiple plugins define a capability with the same name, returns the first match.
 // Returns (nil, nil, false) if not found.
-func (r *Registry) FindCapabilityByName(name string) (*Capability, *Extension, bool) {
+func (r *Registry) FindCapabilityByName(name string) (*Capability, *Plugin, bool) {
 	for _, ext := range r.All() {
 		if cap, ok := ext.Capabilities[name]; ok {
 			return cap, ext, true
@@ -242,18 +242,18 @@ func (r *Registry) FindCapabilityByName(name string) (*Capability, *Extension, b
 	return nil, nil, false
 }
 
-// CapabilitiesOfType returns all capabilities across all extensions with the given type
+// CapabilitiesOfType returns all capabilities across all plugins with the given type
 // and a callable_from value that includes model invocation ("model" or "both").
-// Each entry is a (fullName, capability, extension) triple.
+// Each entry is a (fullName, capability, plugin) triple.
 func (r *Registry) CapabilitiesOfType(capType string) []struct {
 	FullName  string
 	Cap      *Capability
-	Ext      *Extension
+	Ext      *Plugin
 } {
 	var results []struct {
 		FullName string
 		Cap      *Capability
-		Ext      *Extension
+		Ext      *Plugin
 	}
 	for _, ext := range r.All() {
 		for capName, cap := range ext.Capabilities {
@@ -266,7 +266,7 @@ func (r *Registry) CapabilitiesOfType(capType string) []struct {
 			results = append(results, struct {
 				FullName string
 				Cap      *Capability
-				Ext      *Extension
+				Ext      *Plugin
 			}{
 				FullName: ext.Manifest.Name + ":" + capName,
 				Cap:      cap,

@@ -30,7 +30,7 @@ import (
 	"github.com/vthunder/bud2/internal/eval"
 	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/executive/provider"
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
@@ -469,28 +469,28 @@ func main() {
 
 	// Load extension registry from system (state-defaults), user (statePath), and manifest-listed dirs.
 	// Extensions missing from any dir are silently skipped. A failed load is non-fatal.
-	var extensionRegistry *extensions.Registry
+	var pluginRegistry *plugins.Registry
 	{
-		sysExtDir := filepath.Join(paths.DefaultsDir, "system", "extensions")
-		userExtDir := filepath.Join(statePath, "system", "extensions")
-		manifestDirs := executive.ManifestExtensionDirs(statePath)
+		sysExtDir := filepath.Join(paths.DefaultsDir, "system", "plugins")
+		userExtDir := filepath.Join(statePath, "system", "plugins")
+		manifestDirs := executive.ManifestPluginDirs(statePath)
 		allDirs := append([]string{sysExtDir, userExtDir}, manifestDirs...)
-		reg, regErr := extensions.LoadAll(allDirs...)
+		reg, regErr := plugins.LoadAll(allDirs...)
 		if regErr != nil {
-			log.Printf("[main] Warning: failed to load extension registry: %v", regErr)
+			log.Printf("[main] Warning: failed to load plugin registry: %v", regErr)
 		} else {
-			extensionRegistry = reg
-			log.Printf("[main] Extension registry loaded: %d extension(s)", reg.Len())
+			pluginRegistry = reg
+			log.Printf("[main] Plugin registry loaded: %d plugin(s)", reg.Len())
 		}
 	}
 
 	// Initialize the Dispatcher to fire extension behaviors (schedule, slash_command, pattern_match, etc).
 	// Must be declared here so processPercept (closure) and slash command registration can capture it.
-	var dispatcher *extensions.Dispatcher
-	if extensionRegistry != nil {
-		runner := &extWorkflowRunner{engine: reflexEngine, registry: extensionRegistry}
-		eventBus := extensions.NewEventBus()
-		dispatcher = extensions.NewDispatcher(extensionRegistry, eventBus, runner)
+	var dispatcher *plugins.Dispatcher
+	if pluginRegistry != nil {
+		runner := &extWorkflowRunner{engine: reflexEngine, registry: pluginRegistry}
+		eventBus := plugins.NewEventBus()
+		dispatcher = plugins.NewDispatcher(pluginRegistry, eventBus, runner)
 		dispatcher.SetTalkToUser(&dispatcherTalker{
 			send: func(msg string) error {
 				if mcpSendMessage != nil {
@@ -505,14 +505,14 @@ func main() {
 			},
 		})
 		dispatcher.RegisterAll(context.Background())
-		log.Printf("[main] Dispatcher registered behaviors for %d extension(s)", extensionRegistry.Len())
+		log.Printf("[main] Dispatcher registered behaviors for %d plugin(s)", pluginRegistry.Len())
 
 		// Wire a workflow fallback so type:invoke steps in reflexes can resolve
 		// extension capability workflows (e.g. gtd-today, gtd-inbox, gtd-add).
 		reflexEngine.SetWorkflowFallback(func(name string) (*reflex.Reflex, error) {
-			cap, ext, ok := extensionRegistry.GetCapabilityByFullName(name)
+			cap, ext, ok := pluginRegistry.GetCapabilityByFullName(name)
 			if !ok {
-				cap, ext, ok = extensionRegistry.FindCapabilityByName(name)
+				cap, ext, ok = pluginRegistry.FindCapabilityByName(name)
 			}
 			if !ok {
 				log.Printf("[main] workflowFallback: capability %q not found in registry", name)
@@ -550,7 +550,7 @@ func main() {
 		CalendarClient: calendarClient,
 		GitHubClient:   githubClient,
 		VMControlURL:      os.Getenv("VM_CONTROL_URL"), // defaults to http://127.0.0.1:3099 in vm_browser.go
-		ExtensionRegistry: extensionRegistry,
+		PluginRegistry: pluginRegistry,
 		GKCallTool: func() func(domain, toolName string, args map[string]any) (string, error) {
 			if gkPool == nil {
 				return nil
@@ -695,8 +695,8 @@ func main() {
 	}
 
 	// Start MCP proxy servers declared by extensions (mcp_servers field in extension.yaml)
-	if extensionRegistry != nil {
-		for _, ext := range extensionRegistry.All() {
+	if pluginRegistry != nil {
+		for _, ext := range pluginRegistry.All() {
 			for srvName, srv := range ext.Manifest.MCPServers {
 				if srv.Command == "" {
 					continue
@@ -709,7 +709,7 @@ func main() {
 					}
 					args[i] = a
 				}
-				log.Printf("[main] Starting extension MCP server %s from %s", srvName, ext.Manifest.Name)
+				log.Printf("[main] Starting plugin MCP server %s from %s", srvName, ext.Manifest.Name)
 				proxy, proxyErr := mcp.StartProxy(mcp.ExternalServerConfig{
 					Name:    srvName,
 					Command: srv.Command,
@@ -717,16 +717,16 @@ func main() {
 					Env:     srv.Env,
 				})
 				if proxyErr != nil {
-					log.Printf("[main] Warning: failed to start extension MCP server %s: %v", srvName, proxyErr)
+					log.Printf("[main] Warning: failed to start plugin MCP server %s: %v", srvName, proxyErr)
 					continue
 				}
 				extTools, toolErr := proxy.DiscoverTools()
 				if toolErr != nil {
-					log.Printf("[main] Warning: extension MCP server %s tool discovery failed: %v", srvName, toolErr)
+					log.Printf("[main] Warning: plugin MCP server %s tool discovery failed: %v", srvName, toolErr)
 					proxy.Close()
 					continue
 				}
-				log.Printf("[main] Extension MCP server %s: %d tools", srvName, len(extTools))
+				log.Printf("[main] Plugin MCP server %s: %d tools", srvName, len(extTools))
 				for _, def := range extTools {
 					toolName := def.Name
 					proxyRef := proxy
@@ -775,7 +775,7 @@ func main() {
 			StartupInstructions:          startupInstructions,
 			DefaultChannelID:             discordChannel,
 			MaxAutonomousSessionDuration: autonomousSessionCap,
-			ExtensionRegistry:            extensionRegistry,
+			PluginRegistry:            pluginRegistry,
 			SendMessageFallback: func(channelID, message string) error {
 				if fallbackSendMessage != nil {
 					return fallbackSendMessage(channelID, message)

@@ -5,16 +5,16 @@ import (
 	"strings"
 
 	claudecode "github.com/severity1/claude-agent-sdk-go"
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 )
 
-// LoadAgentDefsFromRegistry builds an AgentDefinition map from the extension registry.
+// LoadAgentDefsFromRegistry builds an AgentDefinition map from the plugin registry.
 // It returns definitions for all agent-type capabilities with callable_from "both" or "model".
-// Keys follow the "extname:capname" format (e.g. "bud:coder").
+// Keys follow the "pluginname:capname" format (e.g. "bud:coder").
 //
 // knownTools is the list of MCP tool names (with mcp__<server>__ prefix) used to
-// expand wildcard patterns in extension requires.tools (e.g. "mcp__bud2__gk_*").
-func LoadAgentDefsFromRegistry(reg *extensions.Registry, knownTools []string) map[string]claudecode.AgentDefinition {
+// expand wildcard patterns in plugin requires.tools (e.g. "mcp__bud2__gk_*").
+func LoadAgentDefsFromRegistry(reg *plugins.Registry, knownTools []string) map[string]claudecode.AgentDefinition {
 	defs := make(map[string]claudecode.AgentDefinition)
 	for _, entry := range reg.CapabilitiesOfType("agent") {
 		cap := entry.Cap
@@ -25,7 +25,7 @@ func LoadAgentDefsFromRegistry(reg *extensions.Registry, knownTools []string) ma
 			prompt = "## Agent Behavioral Guide\n\n" + cap.Body
 		}
 
-		// Build tools list: per-capability tools first, then extension-level requires.tools.
+		// Build tools list: per-capability tools first, then plugin-level requires.tools.
 		toolSeen := make(map[string]bool)
 		var tools []string
 		for _, t := range cap.Tools {
@@ -59,27 +59,27 @@ func LoadAgentDefsFromRegistry(reg *extensions.Registry, knownTools []string) ma
 	return defs
 }
 
-// ResolveSubagentConfigFromRegistry is the extension-registry-based resolver for
+// ResolveSubagentConfigFromRegistry is the plugin-registry-based resolver for
 // on-demand subagent spawning. It looks up an agent capability by its "ext:cap" name
 // and returns:
 //   - mergedTools: baseTools merged with the capability's declared tools, comma-separated
 //   - systemPromptAppend: the capability body prepended with the agent guide header
 //
 // Returns an error if the capability is not found or is not of type "agent".
-func ResolveSubagentConfigFromRegistry(reg *extensions.Registry, agentName, baseTools string) (mergedTools, systemPromptAppend string, err error) {
+func ResolveSubagentConfigFromRegistry(reg *plugins.Registry, agentName, baseTools string) (mergedTools, systemPromptAppend string, err error) {
 	if agentName == "" {
 		return baseTools, "", nil
 	}
 
 	cap, ext, ok := reg.GetCapabilityByFullName(agentName)
 	if !ok {
-		return baseTools, "", fmt.Errorf("agent %q not found in extension registry", agentName)
+		return baseTools, "", fmt.Errorf("agent %q not found in plugin registry", agentName)
 	}
 	if cap.Type != "agent" {
 		return baseTools, "", fmt.Errorf("capability %q is not an agent (type: %s)", agentName, cap.Type)
 	}
 
-	// Merge tools: start with base, add capability-declared and extension-level tools.
+	// Merge tools: start with base, add capability-declared and plugin-level tools.
 	toolSet := make(map[string]bool)
 	var toolList []string
 	for _, t := range strings.Split(baseTools, ",") {

@@ -1,20 +1,20 @@
-// Package extensions implements the extension loader, registry, settings store,
+// Package plugins implements the plugin loader, registry, settings store,
 // and state store for the bud2 extensibility framework (WS2 + WS3).
-package extensions
+package plugins
 
 import "sync"
 
-// Extension is a fully-loaded extension ready for use by the runtime.
-type Extension struct {
+// Plugin is a fully-loaded plugin ready for use by the runtime.
+type Plugin struct {
 	Manifest     Manifest
 	Dir          string
 	Capabilities map[string]*Capability
 	Settings     map[string]any // current settings (loaded + schema defaults applied)
 	State        map[string]any // current state
-	mu           sync.Mutex    // serializes all file I/O for this extension
+	mu           sync.Mutex    // serializes all file I/O for this plugin
 }
 
-// Manifest is the parsed content of extension.yaml.
+// Manifest is the parsed content of plugin.yaml.
 type Manifest struct {
 	Name        string                   `yaml:"name"`
 	Version     string                   `yaml:"version,omitempty"`
@@ -33,7 +33,7 @@ type Manifest struct {
 	SettingsRequired []string              `yaml:"settings_required,omitempty"`
 }
 
-// CapabilityMeta is the per-capability entry in extension.yaml capabilities map.
+// CapabilityMeta is the per-capability entry in plugin.yaml capabilities map.
 type CapabilityMeta struct {
 	CallableFrom string `yaml:"callable_from"`
 }
@@ -64,7 +64,7 @@ type ParamDef struct {
 	Enum        []any  `yaml:"enum,omitempty"`        // allowed values
 }
 
-// Behavior is a trigger-to-workflow binding declared in extension.yaml.
+// Behavior is a trigger-to-workflow binding declared in plugin.yaml.
 // The trigger field is kept as a generic map so it can hold any trigger type
 // (schedule, slash_command, pattern_match, event, condition, manual) without
 // requiring schema changes as new trigger types are added in later workstreams.
@@ -74,11 +74,11 @@ type Behavior struct {
 	Workflow string         `yaml:"workflow,omitempty"`
 }
 
-// Requirements declares what an extension depends on from the runtime.
+// Requirements declares what a plugin depends on from the runtime.
 type Requirements struct {
-	// Extensions lists required extension names. LoadAll topologically sorts
+	// Plugins lists required plugin names. LoadAll topologically sorts
 	// based on this field and rejects cycles.
-	Extensions []string `yaml:"extensions,omitempty"`
+	Plugins    []string `yaml:"plugins,omitempty"`
 	Tools      []string `yaml:"tools,omitempty"`
 	MCPServers []string `yaml:"mcp_servers,omitempty"`
 }

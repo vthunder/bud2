@@ -21,7 +21,7 @@ import (
 	"github.com/vthunder/bud2/internal/config"
 	"github.com/vthunder/bud2/internal/engram"
 	"github.com/vthunder/bud2/internal/executive/provider"
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 	"github.com/vthunder/bud2/internal/focus"
 	"github.com/vthunder/bud2/internal/logging"
 	"github.com/vthunder/bud2/internal/paths"
@@ -41,8 +41,8 @@ type ExecutiveV2 struct {
 	// delegates to this session instead of SimpleSession.SendPromptWithCfg.
 	providerSession provider.Session
 
-	// Extension registry for agent/skill/workflow discovery.
-	extensionRegistry *extensions.Registry
+	// Plugin registry for agent/skill/workflow discovery.
+	pluginRegistry *plugins.Registry
 
 	// Focus-based attention
 	attention *focus.Attention
@@ -145,8 +145,8 @@ type ExecutiveV2Config struct {
 	// conversation context for autonomous wake prompts.
 	DefaultChannelID string
 
-	// ExtensionRegistry is the loaded extension registry for agent/skill/workflow discovery.
-	ExtensionRegistry *extensions.Registry
+	// PluginRegistry is the loaded plugin registry for agent/skill/workflow discovery.
+	PluginRegistry *plugins.Registry
 }
 
 // NewExecutiveV2 creates a new v2 executive
@@ -157,7 +157,7 @@ func NewExecutiveV2(
 ) *ExecutiveV2 {
 	sess := NewSimpleSession(statePath)
 	if cfg.ProviderConfig != nil {
-		sess.extensionsUpdateInterval = cfg.ProviderConfig.Extensions.ParsedUpdateInterval()
+		sess.pluginsUpdateInterval = cfg.ProviderConfig.Extensions.ParsedUpdateInterval()
 	}
 	sess.LoadSessionFromDisk()
 	exec := &ExecutiveV2{
@@ -169,7 +169,7 @@ func NewExecutiveV2(
 		mcpToolCalled:     make(map[string]bool),
 		debugListeners:    make(map[string]func(DebugEvent)),
 		config:            cfg,
-		extensionRegistry: cfg.ExtensionRegistry,
+		pluginRegistry: cfg.PluginRegistry,
 	}
 
 	// If a non-claude-code provider is configured, create a provider session
@@ -235,14 +235,14 @@ func (e *ExecutiveV2) SetKnownMCPTools(tools []string) {
 }
 
 // loadAgentDefs returns programmatic agent definitions for the current session.
-// Definitions are sourced from extension capabilities (type:agent, callable_from: both|model).
-// Returns nil if no extension registry is configured.
+// Definitions are sourced from plugin capabilities (type:agent, callable_from: both|model).
+// Returns nil if no plugin registry is configured.
 func (e *ExecutiveV2) loadAgentDefs() map[string]claudecode.AgentDefinition {
-	if e.extensionRegistry == nil {
+	if e.pluginRegistry == nil {
 		log.Printf("[executive-v2] Warning: no extension registry configured; agent definitions unavailable")
 		return nil
 	}
-	return LoadAgentDefsFromRegistry(e.extensionRegistry, e.knownMCPTools)
+	return LoadAgentDefsFromRegistry(e.pluginRegistry, e.knownMCPTools)
 }
 
 // SetTypingCallbacks sets the typing indicator callbacks
@@ -272,9 +272,9 @@ func (e *ExecutiveV2) SubagentCallbacks() (
 		allowedTools := subagentBaseTools
 		promptAppend := systemPromptAppend
 
-		// Resolve profile via extension registry: merge tools + load agent body.
-		if profile != "" && e.extensionRegistry != nil {
-			mergedTools, skillPrompt, err := ResolveSubagentConfigFromRegistry(e.extensionRegistry, profile, subagentBaseTools)
+		// Resolve profile via plugin registry: merge tools + load agent body.
+		if profile != "" && e.pluginRegistry != nil {
+			mergedTools, skillPrompt, err := ResolveSubagentConfigFromRegistry(e.pluginRegistry, profile, subagentBaseTools)
 			if err != nil {
 				log.Printf("[executive-v2] Warning: failed to resolve agent %q from registry: %v", profile, err)
 				// Fall through with defaults rather than failing the spawn

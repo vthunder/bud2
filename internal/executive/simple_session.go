@@ -103,14 +103,14 @@ func scanLocalPlugins(statePath string) []string {
 	return paths
 }
 
-// pluginManifest is the structure of state/system/extensions.yaml
-// (formerly plugins.yaml — see extensionsManifestPath for the fallback logic).
+// pluginManifest is the structure of state/system/plugins.yaml
+// (formerly extensions.yaml — see pluginsManifestPath for the fallback logic).
 type pluginManifest struct {
 	Sources []pluginManifestEntry `yaml:"sources"`
 	Skills  []skillManifestEntry  `yaml:"skills"`
 }
 
-// pluginManifestEntry is a single entry in the plugins: section of extensions.yaml.
+// pluginManifestEntry is a single entry in the plugins: section of plugins.yaml.
 // Supports both string form ("owner/repo[:dir][@ref]") and object form
 // (with repo/dir/ref/path/tool_grants fields).
 type pluginManifestEntry struct {
@@ -262,28 +262,28 @@ func resolvePluginPathsFromLocalPath(localPath string) []string {
 	return paths
 }
 
-// extensionsManifestPath returns the path to the extensions manifest file.
-// Checks for extensions.yaml first; falls back to the legacy plugins.yaml with
+// pluginsManifestPath returns the path to the plugins manifest file.
+// Checks for plugins.yaml first; falls back to the legacy extensions.yaml with
 // a one-time deprecation log if only the old file exists.
-func extensionsManifestPath(statePath string) string {
-	newPath := filepath.Join(statePath, "system", "extensions.yaml")
+func pluginsManifestPath(statePath string) string {
+	newPath := filepath.Join(statePath, "system", "plugins.yaml")
 	if _, err := os.Stat(newPath); err == nil {
 		return newPath
 	}
-	oldPath := filepath.Join(statePath, "system", "plugins.yaml")
+	oldPath := filepath.Join(statePath, "system", "extensions.yaml")
 	if _, err := os.Stat(oldPath); err == nil {
-		log.Printf("[extensions] DEPRECATED: plugins.yaml found; rename to extensions.yaml")
+		log.Printf("[plugins] DEPRECATED: extensions.yaml found; rename to plugins.yaml")
 		return oldPath
 	}
 	return newPath // caller handles not-exist gracefully
 }
 
-// loadManifestPlugins reads the plugins: section of extensions.yaml (or the
-// legacy plugins.yaml) and ensures each listed repo is cloned under
+// loadManifestPlugins reads the plugins: section of plugins.yaml (or the
+// legacy extensions.yaml) and ensures each listed repo is cloned under
 // ~/.cache/bud/plugins/. Returns the resolved local paths for --plugin-dir.
 // Errors are logged and the failing entry is skipped — startup continues.
 func loadManifestPlugins(statePath string) []string {
-	manifestPath := extensionsManifestPath(statePath)
+	manifestPath := pluginsManifestPath(statePath)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -384,7 +384,7 @@ func loadManifestPlugins(statePath string) []string {
 // operations — only returns dirs that already exist on disk. Expands monorepo
 // entries one level deep (see resolvePluginPathsFromLocalPath).
 func resolvedManifestPluginDirs(statePath string) []pluginDir {
-	manifestPath := extensionsManifestPath(statePath)
+	manifestPath := pluginsManifestPath(statePath)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil
@@ -445,14 +445,14 @@ func resolvedManifestPluginPaths(statePath string) []string {
 	return paths
 }
 
-// ManifestExtensionDirs returns the resolved source directories from extensions.yaml
-// that may contain extension subdirs. These are the pre-expansion parent dirs (e.g.
+// ManifestPluginDirs returns the resolved source directories from plugins.yaml
+// that may contain plugin subdirs. These are the pre-expansion parent dirs (e.g.
 // useful-plugins/, not useful-plugins/things-tasks/) — the registry's loadDir scans
-// one level deep itself, matching how system/user extension dirs work.
+// one level deep itself, matching how system/user plugin dirs work.
 //
 // No git operations — only returns dirs that already exist on disk.
-func ManifestExtensionDirs(statePath string) []string {
-	manifestPath := extensionsManifestPath(statePath)
+func ManifestPluginDirs(statePath string) []string {
+	manifestPath := pluginsManifestPath(statePath)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil
@@ -801,7 +801,7 @@ type SimpleSession struct {
 
 	// How often floating ClaWHub skills are re-fetched (0 = auto-update disabled).
 	// Set by NewExecutiveV2 from BudConfig.Extensions.ParsedUpdateInterval().
-	extensionsUpdateInterval time.Duration
+	pluginsUpdateInterval time.Duration
 }
 
 // NewSimpleSession creates a new simple session manager
@@ -823,7 +823,7 @@ func (s *SimpleSession) cachedPlugins() (localPlugins, manifestPlugins []string)
 	}
 	s.localPlugins = scanLocalPlugins(s.statePath)
 	s.manifestPlugins = loadManifestPlugins(s.statePath)
-	loadManifestSkills(s.statePath, s.extensionsUpdateInterval)
+	loadManifestSkills(s.statePath, s.pluginsUpdateInterval)
 	s.pluginsComputed = true
 	return s.localPlugins, s.manifestPlugins
 }

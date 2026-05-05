@@ -1,4 +1,4 @@
-package extensions
+package plugins
 
 import (
 	"context"
@@ -38,7 +38,7 @@ type SaveThought interface {
 	Log(message string) error
 }
 
-// Dispatcher registers and fires behaviors from all loaded extensions.
+// Dispatcher registers and fires behaviors from all loaded plugins.
 // It owns the EventBus and is the authority on trigger lifecycle.
 type Dispatcher struct {
 	registry *Registry
@@ -53,7 +53,7 @@ type Dispatcher struct {
 	wg          sync.WaitGroup
 }
 
-// NewDispatcher creates a Dispatcher. Call RegisterAll or RegisterExtension to wire
+// NewDispatcher creates a Dispatcher. Call RegisterAll or RegisterPlugin to wire
 // behaviors, then Start to begin condition-polling loops.
 func NewDispatcher(registry *Registry, bus *EventBus, runner WorkflowRunner) *Dispatcher {
 	return &Dispatcher{
@@ -71,22 +71,22 @@ func (d *Dispatcher) SetTalkToUser(t TalkToUser) { d.talker = t }
 // SetSaveThought wires the on_result:action=log callback.
 func (d *Dispatcher) SetSaveThought(s SaveThought) { d.logger = s }
 
-// RegisterAll registers behaviors for every extension currently in the registry.
+// RegisterAll registers behaviors for every plugin currently in the registry.
 // Call this once after initial load.
 func (d *Dispatcher) RegisterAll(ctx context.Context) {
 	for _, ext := range d.registry.All() {
-		if err := d.RegisterExtension(ctx, ext); err != nil {
+		if err := d.RegisterPlugin(ctx, ext); err != nil {
 			log.Printf("[triggers] %s: registration failed: %v", ext.Manifest.Name, err)
 		}
 	}
 }
 
-// RegisterExtension registers all behaviors declared in ext.Manifest.Behaviors.
-// Idempotent — existing registrations for the extension are removed first.
-func (d *Dispatcher) RegisterExtension(ctx context.Context, ext *Extension) error {
-	d.UnregisterExtension(ext.Manifest.Name)
+// RegisterPlugin registers all behaviors declared in ext.Manifest.Behaviors.
+// Idempotent — existing registrations for the plugin are removed first.
+func (d *Dispatcher) RegisterPlugin(ctx context.Context, ext *Plugin) error {
+	d.UnregisterPlugin(ext.Manifest.Name)
 
-	// Skip if extension is disabled.
+	// Skip if plugin is disabled.
 	if !ext.Enabled() {
 		log.Printf("[triggers] %s: disabled, skipping behavior registration", ext.Manifest.Name)
 		return nil
@@ -286,8 +286,8 @@ func (d *Dispatcher) RegisterExtension(ctx context.Context, ext *Extension) erro
 	return nil
 }
 
-// UnregisterExtension removes all trigger registrations for the named extension.
-func (d *Dispatcher) UnregisterExtension(name string) {
+// UnregisterPlugin removes all trigger registrations for the named plugin.
+func (d *Dispatcher) UnregisterPlugin(name string) {
 	d.mu.Lock()
 	cancels := d.cancelFuncs[name]
 	delete(d.cancelFuncs, name)
@@ -330,7 +330,7 @@ func (d *Dispatcher) EmitCapabilityEvent(phase, extName, capName string, payload
 }
 
 // FireSlashCommand manually fires a slash_command event (called by the runtime when
-// a Discord slash command arrives that should route through the extension system).
+// a Discord slash command arrives that should route through the plugin system).
 func (d *Dispatcher) FireSlashCommand(name string, data map[string]any) {
 	d.bus.Publish(Event{
 		Topic:   "slash_command:" + name + ":invoke",
@@ -350,13 +350,13 @@ func (d *Dispatcher) FirePercept(source, typ, content string, extra map[string]a
 	d.bus.Publish(Event{Topic: "percept:message:received", Payload: payload})
 }
 
-// DispatcherSlashCommandInfo describes a slash command behavior from an extension.
+// DispatcherSlashCommandInfo describes a slash command behavior from a plugin.
 type DispatcherSlashCommandInfo struct {
 	Command     string
 	Description string
 }
 
-// ListSlashCommands returns the slash command names registered across all enabled extensions.
+// ListSlashCommands returns the slash command names registered across all enabled plugins.
 func (d *Dispatcher) ListSlashCommands() []DispatcherSlashCommandInfo {
 	var cmds []DispatcherSlashCommandInfo
 	for _, ext := range d.registry.All() {

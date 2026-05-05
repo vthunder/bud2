@@ -62,7 +62,7 @@ func RegisterAll(server *mcp.Server, deps *Dependencies) {
 	registerVMBrowserTools(server, deps)
 	registerImageGenTools(server, deps)
 	registerProjectTools(server, deps)
-	if deps.ExtensionRegistry != nil {
+	if deps.PluginRegistry != nil {
 		registerWorkflowTools(server, deps)
 	}
 }

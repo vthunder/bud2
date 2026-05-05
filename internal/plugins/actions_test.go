@@ -1,4 +1,4 @@
-package extensions_test
+package plugins_test
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 	"github.com/vthunder/bud2/internal/mcp"
 )
 
@@ -53,23 +53,23 @@ printf '{"received":%s}' "$input"
 	return writeScript(t, extDir, "echo.sh", body)
 }
 
-// makeTestExtDir creates a temp extension directory with the given name,
-// a minimal extension.yaml, and returns the dir path.
-func makeTestExtDir(t *testing.T, extName string) string {
+// makeTestPluginDir creates a temp plugin directory with the given name,
+// a minimal plugin.yaml, and returns the dir path.
+func makeTestPluginDir(t *testing.T, extName string) string {
 	t.Helper()
 	dir := t.TempDir()
-	writeExtensionYAML(t, dir, map[string]any{
+	writePluginYAML(t, dir, map[string]any{
 		"name":         extName,
-		"description":  extName + " test extension",
+		"description":  extName + " test plugin",
 		"behaviors":    []any{},
 		"capabilities": map[string]any{},
 	})
 	return dir
 }
 
-// makeSystemRegistry places an extension directory at <systemDir>/<extName>/
-// and returns a loaded Registry. extDir must already contain a valid extension.yaml.
-func makeSystemRegistry(t *testing.T, extDir string) *extensions.Registry {
+// makeSystemRegistry places a plugin directory at <systemDir>/<extName>/
+// and returns a loaded Registry. extDir must already contain a valid plugin.yaml.
+func makeSystemRegistry(t *testing.T, extDir string) *plugins.Registry {
 	t.Helper()
 	systemDir := t.TempDir()
 	// Determine ext name from the directory.
@@ -77,20 +77,20 @@ func makeSystemRegistry(t *testing.T, extDir string) *extensions.Registry {
 	if err != nil {
 		t.Fatalf("ReadDir %s: %v", extDir, err)
 	}
-	// Find extension.yaml to get name (reuse LoadExtension for this).
-	ext, err := extensions.LoadExtension(extDir)
+	// Find plugin.yaml to get name (reuse LoadPlugin for this).
+	ext, err := plugins.LoadPlugin(extDir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 	_ = entries
 
 	linkDir := filepath.Join(systemDir, ext.Manifest.Name)
-	// Copy the extension dir contents into the system dir.
+	// Copy the plugin dir contents into the system dir.
 	if err := copyDir(t, extDir, linkDir); err != nil {
 		t.Fatalf("copyDir: %v", err)
 	}
 
-	reg, err := extensions.LoadAll(systemDir, "")
+	reg, err := plugins.LoadAll(systemDir, "")
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
@@ -120,9 +120,9 @@ func copyDir(t *testing.T, src, dst string) error {
 // --- TestActionProxy_LoadYAMLCapability ---
 
 // TestActionProxy_LoadYAMLCapability verifies that a .yaml capability file is
-// parsed by LoadExtension and exposes the correct Capability fields.
+// parsed by LoadPlugin and exposes the correct Capability fields.
 func TestActionProxy_LoadYAMLCapability(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 
 	capYAML := `name: fetch-price
 description: Fetch the current price
@@ -140,9 +140,9 @@ params:
 `
 	writeCapabilityYAMLRaw(t, dir, "fetch-price", []byte(capYAML))
 
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
 	cap, ok := ext.Capabilities["fetch-price"]
@@ -191,7 +191,7 @@ params:
 // TestActionProxy_RegisterMCPTools_Both verifies that an action with
 // callable_from:both is registered as an MCP tool named "<ext>:<cap>".
 func TestActionProxy_RegisterMCPTools_Both(t *testing.T) {
-	dir := makeTestExtDir(t, "price-tracker")
+	dir := makeTestPluginDir(t, "price-tracker")
 	scriptRelPath := makeEchoScript(t, dir)
 
 	capYAML := fmt.Sprintf(`name: fetch-price
@@ -207,7 +207,7 @@ params:
 	writeCapabilityYAMLRaw(t, dir, "fetch-price", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 	server := mcp.NewServer()
 	proxy.RegisterMCPTools(server)
 
@@ -229,7 +229,7 @@ params:
 // TestActionProxy_RegisterMCPTools_DirectNotRegistered verifies that an action with
 // callable_from:direct is NOT registered as an MCP tool.
 func TestActionProxy_RegisterMCPTools_DirectNotRegistered(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 	scriptRelPath := makeEchoScript(t, dir)
 
 	capYAML := fmt.Sprintf(`name: internal-action
@@ -242,7 +242,7 @@ params: {}
 	writeCapabilityYAMLRaw(t, dir, "internal-action", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 	server := mcp.NewServer()
 	proxy.RegisterMCPTools(server)
 
@@ -258,7 +258,7 @@ params: {}
 // TestActionProxy_Call_PassesParamsAsJSON verifies that the action proxy passes
 // params as JSON on stdin and returns stdout as the result.
 func TestActionProxy_Call_PassesParamsAsJSON(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 
 	// Script reads JSON from stdin and echoes it back wrapped in {"received":...}.
 	scriptRelPath := makeEchoScript(t, dir)
@@ -276,7 +276,7 @@ params:
 	writeCapabilityYAMLRaw(t, dir, "echo-action", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 
 	result, err := proxy.Call("test-ext:echo-action", map[string]any{"symbol": "AAPL"})
 	if err != nil {
@@ -301,7 +301,7 @@ params:
 // TestActionProxy_Call_RequiredParamMissing verifies that a missing required param
 // returns an error before the script is invoked.
 func TestActionProxy_Call_RequiredParamMissing(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 	scriptRelPath := makeEchoScript(t, dir)
 
 	capYAML := fmt.Sprintf(`name: strict-action
@@ -317,7 +317,7 @@ params:
 	writeCapabilityYAMLRaw(t, dir, "strict-action", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 
 	_, err := proxy.Call("test-ext:strict-action", map[string]any{})
 	if err == nil {
@@ -334,11 +334,11 @@ params:
 // returns an error.
 func TestActionProxy_Call_UnknownAction(t *testing.T) {
 	systemDir := t.TempDir()
-	reg, err := extensions.LoadAll(systemDir, "")
+	reg, err := plugins.LoadAll(systemDir, "")
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 
 	_, err = proxy.Call("no-such-ext:no-such-action", map[string]any{})
 	if err == nil {
@@ -351,7 +351,7 @@ func TestActionProxy_Call_UnknownAction(t *testing.T) {
 // TestActionProxy_DirectCallableFromDirect verifies that a callable_from:direct action
 // is reachable via Call even though it is NOT registered as an MCP tool.
 func TestActionProxy_DirectCallableFromDirect(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 
 	scriptBody := `#!/bin/sh
 echo "ok"
@@ -367,7 +367,7 @@ params: {}
 	writeCapabilityYAMLRaw(t, dir, "direct-only", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 
 	// Verify NOT registered as MCP tool.
 	server := mcp.NewServer()
@@ -393,7 +393,7 @@ params: {}
 // TestActionProxy_MCPToolCallsScript verifies that calling the registered MCP tool
 // routes through the shell script end-to-end (via server.Call).
 func TestActionProxy_MCPToolCallsScript(t *testing.T) {
-	dir := makeTestExtDir(t, "price-tracker")
+	dir := makeTestPluginDir(t, "price-tracker")
 
 	// Script extracts "symbol" from JSON stdin and echoes it.
 	scriptBody := `#!/bin/sh
@@ -417,7 +417,7 @@ params:
 	writeCapabilityYAMLRaw(t, dir, "fetch-price", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 	server := mcp.NewServer()
 	proxy.RegisterMCPTools(server)
 
@@ -435,13 +435,13 @@ params:
 
 // TestActionProxy_HasAction verifies the HasAction helper.
 func TestActionProxy_HasAction(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 	scriptRelPath := makeEchoScript(t, dir)
 	capYAML := fmt.Sprintf("name: my-action\ndescription: d\ntype: action\ncallable_from: both\nrun: %s\nparams: {}\n", scriptRelPath)
 	writeCapabilityYAMLRaw(t, dir, "my-action", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 
 	if !proxy.HasAction("test-ext:my-action") {
 		t.Error("HasAction('test-ext:my-action') should be true")
@@ -456,7 +456,7 @@ func TestActionProxy_HasAction(t *testing.T) {
 // TestActionProxy_ModelCallableFrom verifies that callable_from:model is registered
 // as an MCP tool (same behavior as callable_from:both for MCP registration).
 func TestActionProxy_ModelCallableFrom(t *testing.T) {
-	dir := makeTestExtDir(t, "test-ext")
+	dir := makeTestPluginDir(t, "test-ext")
 	scriptRelPath := makeEchoScript(t, dir)
 	capYAML := fmt.Sprintf(`name: model-action
 description: Model-only action
@@ -468,7 +468,7 @@ params: {}
 	writeCapabilityYAMLRaw(t, dir, "model-action", []byte(capYAML))
 
 	reg := makeSystemRegistry(t, dir)
-	proxy := extensions.NewActionProxy(reg)
+	proxy := plugins.NewActionProxy(reg)
 	server := mcp.NewServer()
 	proxy.RegisterMCPTools(server)
 

@@ -1,8 +1,8 @@
-package extensions
+package plugins
 
-// Package extensions: WS6 Action Proxy Layer.
+// Package plugins: WS6 Action Proxy Layer.
 //
-// ActionProxy exposes extension-declared shell actions to the trigger/step pipeline.
+// ActionProxy exposes plugin-declared shell actions to the trigger/step pipeline.
 // Shell actions have a `run:` field pointing to a script. When callable_from is
 // "both" or "model", the action is also registered as an MCP tool named "<ext>:<cap>".
 // Actions with callable_from: "direct" are reachable only from workflow type:direct steps.
@@ -23,7 +23,7 @@ import (
 	"github.com/vthunder/bud2/internal/mcp"
 )
 
-// ActionProxy exposes extension-declared shell actions to the MCP server and to
+// ActionProxy exposes plugin-declared shell actions to the MCP server and to
 // workflow type:direct steps. It implements mcp.ToolCaller so it can be set as
 // the reflex engine's action caller.
 type ActionProxy struct {
@@ -31,14 +31,14 @@ type ActionProxy struct {
 	actions map[string]*actionEntry // "<ext>:<cap>" → entry
 }
 
-// actionEntry holds a shell action's extension context and capability definition.
+// actionEntry holds a shell action's plugin context and capability definition.
 type actionEntry struct {
-	ext *Extension
+	ext *Plugin
 	cap *Capability
 }
 
 // NewActionProxy builds an ActionProxy from the loaded registry.
-// All extension capabilities with type=="action" and a non-empty run: field
+// All plugin capabilities with type=="action" and a non-empty run: field
 // are indexed. Call RegisterMCPTools to wire callable_from:both|model actions
 // onto an MCP server.
 func NewActionProxy(registry *Registry) *ActionProxy {
@@ -122,7 +122,7 @@ func (p *ActionProxy) runShell(entry *actionEntry, params map[string]any) (strin
 		}
 	}
 
-	// Resolve the script path relative to the extension directory.
+	// Resolve the script path relative to the plugin directory.
 	scriptPath := filepath.Join(entry.ext.Dir, entry.cap.Run)
 	if _, err := os.Stat(scriptPath); err != nil {
 		return "", fmt.Errorf("action %s: script not found at %s: %w", entry.cap.Name, scriptPath, err)
@@ -134,7 +134,7 @@ func (p *ActionProxy) runShell(entry *actionEntry, params map[string]any) (strin
 		return "", fmt.Errorf("action %s: marshaling params: %w", entry.cap.Name, err)
 	}
 
-	cmd := exec.Command(scriptPath) // #nosec G204 — path is from trusted extension manifest
+	cmd := exec.Command(scriptPath) // #nosec G204 — path is from trusted plugin manifest
 	cmd.Stdin = bytes.NewReader(input)
 	out, err := cmd.Output()
 	if err != nil {

@@ -1,4 +1,4 @@
-package extensions
+package plugins
 
 import (
 	"bytes"
@@ -12,31 +12,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadExtension reads one extension from dir, validates the manifest, loads all
+// LoadPlugin reads one plugin from dir, validates the manifest, loads all
 // capabilities, applies settings schema defaults, and loads any existing state.
 // Soft failures (unknown schema keywords, missing-but-defaultable settings, etc.)
 // emit log warnings rather than returning errors.
-func LoadExtension(dir string) (*Extension, error) {
-	manifestPath := filepath.Join(dir, ".bud-plugin", "extension.yaml")
+func LoadPlugin(dir string) (*Plugin, error) {
+	manifestPath := filepath.Join(dir, ".bud-plugin", "plugin.yaml")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("extensions: reading manifest %s: %w", manifestPath, err)
+		return nil, fmt.Errorf("plugins: reading manifest %s: %w", manifestPath, err)
 	}
 
 	var m Manifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("extensions: parsing manifest %s: %w", manifestPath, err)
+		return nil, fmt.Errorf("plugins: parsing manifest %s: %w", manifestPath, err)
 	}
 
 	if m.Name == "" {
-		return nil, fmt.Errorf("extensions: manifest %s: missing required field 'name'", manifestPath)
+		return nil, fmt.Errorf("plugins: manifest %s: missing required field 'name'", manifestPath)
 	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
-		log.Printf("extensions: %s: .mcp.json found — bud does not support direct MCP connections from plugins; use mcp_servers: in .bud-plugin/extension.yaml instead", m.Name)
+		log.Printf("plugins: %s: .mcp.json found — bud does not support direct MCP connections from plugins; use mcp_servers: in .bud-plugin/plugin.yaml instead", m.Name)
 	}
 
-	ext := &Extension{
+	ext := &Plugin{
 		Manifest: m,
 		Dir:      dir,
 	}
@@ -44,25 +44,25 @@ func LoadExtension(dir string) (*Extension, error) {
 	// Load capabilities from capabilities/ subdirectory.
 	caps, err := loadCapabilities(dir)
 	if err != nil {
-		return nil, fmt.Errorf("extensions: loading capabilities for %s: %w", m.Name, err)
+		return nil, fmt.Errorf("plugins: loading capabilities for %s: %w", m.Name, err)
 	}
 	ext.Capabilities = caps
 
 	// Warn about capabilities declared in the manifest but missing as files.
 	for name := range m.Capabilities {
 		if _, ok := caps[name]; !ok {
-			log.Printf("extensions: %s: capability %q declared in manifest but no file found in skills/ or agents/", m.Name, name)
+			log.Printf("plugins: %s: capability %q declared in manifest but no file found in skills/ or agents/", m.Name, name)
 		}
 	}
 
 	// Load settings.json (or create with defaults if absent).
 	if err := initSettings(ext); err != nil {
-		return nil, fmt.Errorf("extensions: loading settings for %s: %w", m.Name, err)
+		return nil, fmt.Errorf("plugins: loading settings for %s: %w", m.Name, err)
 	}
 
 	// Load state.json (optional).
 	if err := initState(ext); err != nil {
-		return nil, fmt.Errorf("extensions: loading state for %s: %w", m.Name, err)
+		return nil, fmt.Errorf("plugins: loading state for %s: %w", m.Name, err)
 	}
 
 	return ext, nil
@@ -312,7 +312,7 @@ func stringField(m map[string]any, key, fallback string) string {
 // initSettings loads <ext-dir>/settings.json into ext.Settings, applies
 // schema defaults for missing keys, and writes the file back if defaults were
 // added. Warns (never errors) on missing required settings or type mismatches.
-func initSettings(ext *Extension) error {
+func initSettings(ext *Plugin) error {
 	path := filepath.Join(ext.Dir, ".bud-plugin", "settings.json")
 	settings, err := readJSONFile(path)
 	if err != nil {
@@ -326,13 +326,13 @@ func initSettings(ext *Extension) error {
 	var warns []string
 	settings, warns = applyDefaults(settings, ext.Manifest.Settings)
 	for _, w := range warns {
-		log.Printf("extensions: %s: %s", ext.Manifest.Name, w)
+		log.Printf("plugins: %s: %s", ext.Manifest.Name, w)
 	}
 
 	// Warn about declared required settings that are still absent after defaults.
 	for _, req := range ext.Manifest.SettingsRequired {
 		if _, ok := settings[req]; !ok {
-			log.Printf("extensions: %s: required setting %q is missing (no default provided)", ext.Manifest.Name, req)
+			log.Printf("plugins: %s: required setting %q is missing (no default provided)", ext.Manifest.Name, req)
 		}
 	}
 
@@ -341,7 +341,7 @@ func initSettings(ext *Extension) error {
 		if val, ok := settings[key]; ok {
 			warns := validateLenient(val, node, key)
 			for _, w := range warns {
-				log.Printf("extensions: %s: settings: %s", ext.Manifest.Name, w)
+				log.Printf("plugins: %s: settings: %s", ext.Manifest.Name, w)
 			}
 		}
 	}
@@ -351,9 +351,9 @@ func initSettings(ext *Extension) error {
 	// If we added any defaults, persist the updated settings.json.
 	if len(ext.Manifest.Settings) > 0 {
 		if err := os.MkdirAll(filepath.Join(ext.Dir, ".bud-plugin"), 0o755); err != nil {
-			log.Printf("extensions: %s: could not create .bud-plugin dir: %v", ext.Manifest.Name, err)
+			log.Printf("plugins: %s: could not create .bud-plugin dir: %v", ext.Manifest.Name, err)
 		} else if err := writeJSONFile(path, settings); err != nil {
-			log.Printf("extensions: %s: could not persist settings defaults: %v", ext.Manifest.Name, err)
+			log.Printf("plugins: %s: could not persist settings defaults: %v", ext.Manifest.Name, err)
 		}
 	}
 
@@ -362,7 +362,7 @@ func initSettings(ext *Extension) error {
 
 // initState loads <ext-dir>/state.json into ext.State.
 // A missing file is treated as empty state (not an error).
-func initState(ext *Extension) error {
+func initState(ext *Plugin) error {
 	path := filepath.Join(ext.Dir, ".bud-plugin", "state.json")
 	state, err := readJSONFile(path)
 	if err != nil {

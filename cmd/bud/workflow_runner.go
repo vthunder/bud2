@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 	"github.com/vthunder/bud2/internal/reflex"
 )
 
-// extWorkflowRunner adapts *reflex.Engine + *extensions.Registry to the WorkflowRunner
-// interface expected by extensions.Dispatcher.
+// extWorkflowRunner adapts *reflex.Engine + *plugins.Registry to the WorkflowRunner
+// interface expected by plugins.Dispatcher.
 type extWorkflowRunner struct {
 	engine   *reflex.Engine
-	registry *extensions.Registry
+	registry *plugins.Registry
 }
 
 func (r *extWorkflowRunner) RunWorkflow(ctx context.Context, name string, params map[string]any) (any, error) {
@@ -24,7 +24,7 @@ func (r *extWorkflowRunner) RunWorkflow(ctx context.Context, name string, params
 		cap, ext, ok = r.registry.FindCapabilityByName(name)
 	}
 	if !ok {
-		return nil, fmt.Errorf("workflow %q not found in extension registry", name)
+		return nil, fmt.Errorf("workflow %q not found in plugin registry", name)
 	}
 	if cap.Type != "workflow" {
 		return nil, fmt.Errorf("capability %q has type %q, not \"workflow\"", name, cap.Type)
@@ -57,7 +57,7 @@ func (r *extWorkflowRunner) RunWorkflow(ctx context.Context, name string, params
 	return result.Output, nil
 }
 
-// dispatcherTalker implements extensions.TalkToUser using a send function captured from main.
+// dispatcherTalker implements plugins.TalkToUser using a send function captured from main.
 type dispatcherTalker struct {
 	send func(msg string) error
 }
@@ -69,7 +69,7 @@ func (t *dispatcherTalker) Notify(message string) error {
 	return t.send(message)
 }
 
-// dispatcherLogger implements extensions.SaveThought using a log function captured from main.
+// dispatcherLogger implements plugins.SaveThought using a log function captured from main.
 type dispatcherLogger struct {
 	log func(msg string)
 }

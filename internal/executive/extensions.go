@@ -22,7 +22,7 @@ import (
 // Discovered by reverse-engineering the ClaWHub frontend bundle.
 const clawhubDownloadBase = "https://wry-manatee-359.convex.site/api/v1/download"
 
-// skillManifestEntry is a single entry in the skills: section of extensions.yaml.
+// skillManifestEntry is a single entry in the skills: section of plugins.yaml.
 // Supports three source types via explicit prefix:
 //
 //	clawhub:slug[@version]                        — ClaWHub registry
@@ -164,7 +164,7 @@ func clawhubSkillsDir(cacheBase string) string {
 	return filepath.Join(cacheBase, "bud", "skills-clawhub")
 }
 
-// loadManifestSkills reads the skills: section of extensions.yaml and ensures
+// loadManifestSkills reads the skills: section of plugins.yaml and ensures
 // all remote skills are downloaded/cloned into the local cache. Called once per
 // process from cachedPlugins().
 //
@@ -172,7 +172,7 @@ func clawhubSkillsDir(cacheBase string) string {
 // ClaWHub floating skills: re-fetched if the cached _meta.json is older than updateInterval.
 // Git skills: cloned once (with sparse checkout if dir is set); updated on existing clones.
 func loadManifestSkills(statePath string, updateInterval time.Duration) {
-	manifestPath := extensionsManifestPath(statePath)
+	manifestPath := pluginsManifestPath(statePath)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -209,10 +209,10 @@ func loadManifestSkills(statePath string, updateInterval time.Duration) {
 }
 
 // resolvedManifestSkillDirs returns the already-on-disk directories for git and
-// local skill entries in extensions.yaml. No git operations — only returns dirs
+// local skill entries in plugins.yaml. No git operations — only returns dirs
 // that exist. ClaWHub skills are served via clawhubSkillsDir, not per-entry dirs.
 func resolvedManifestSkillDirs(statePath string) []string {
-	manifestPath := extensionsManifestPath(statePath)
+	manifestPath := pluginsManifestPath(statePath)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil

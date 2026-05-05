@@ -1,4 +1,4 @@
-package extensions_test
+package plugins_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 )
 
 // --- fakeRunner ---
@@ -49,15 +49,15 @@ func (r *fakeRunner) last() (fakeCall, bool) {
 // --- EventBus tests ---
 
 func TestEventBus_ExactMatch(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 
-	var received []extensions.Event
-	unsub := bus.Subscribe("bud-core:fetch:after", func(e extensions.Event) {
+	var received []plugins.Event
+	unsub := bus.Subscribe("bud-core:fetch:after", func(e plugins.Event) {
 		received = append(received, e)
 	})
 	defer unsub()
 
-	bus.Publish(extensions.Event{Topic: "bud-core:fetch:after", Payload: map[string]any{"k": "v"}})
+	bus.Publish(plugins.Event{Topic: "bud-core:fetch:after", Payload: map[string]any{"k": "v"}})
 	if len(received) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(received))
 	}
@@ -67,21 +67,21 @@ func TestEventBus_ExactMatch(t *testing.T) {
 }
 
 func TestEventBus_WildcardCapability(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 
-	var received []extensions.Event
-	unsub := bus.Subscribe("test-ext:*:after", func(e extensions.Event) {
+	var received []plugins.Event
+	unsub := bus.Subscribe("test-ext:*:after", func(e plugins.Event) {
 		received = append(received, e)
 	})
 	defer unsub()
 
 	// Should match
-	bus.Publish(extensions.Event{Topic: "test-ext:fetch:after", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "test-ext:store:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "test-ext:fetch:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "test-ext:store:after", Payload: nil})
 	// Should NOT match (wrong ext)
-	bus.Publish(extensions.Event{Topic: "other-ext:fetch:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "other-ext:fetch:after", Payload: nil})
 	// Should NOT match (wrong phase)
-	bus.Publish(extensions.Event{Topic: "test-ext:fetch:before", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "test-ext:fetch:before", Payload: nil})
 
 	if len(received) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(received))
@@ -89,17 +89,17 @@ func TestEventBus_WildcardCapability(t *testing.T) {
 }
 
 func TestEventBus_WildcardAll(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 
 	var count int
-	unsub := bus.Subscribe("*:*:after", func(e extensions.Event) {
+	unsub := bus.Subscribe("*:*:after", func(e plugins.Event) {
 		count++
 	})
 	defer unsub()
 
-	bus.Publish(extensions.Event{Topic: "a:b:after", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "x:y:after", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "a:b:before", Payload: nil}) // should NOT match
+	bus.Publish(plugins.Event{Topic: "a:b:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "x:y:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "a:b:before", Payload: nil}) // should NOT match
 
 	if count != 2 {
 		t.Errorf("expected 2 events, got %d", count)
@@ -107,14 +107,14 @@ func TestEventBus_WildcardAll(t *testing.T) {
 }
 
 func TestEventBus_Unsubscribe(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 
 	var count int
-	unsub := bus.Subscribe("a:b:c", func(e extensions.Event) { count++ })
+	unsub := bus.Subscribe("a:b:c", func(e plugins.Event) { count++ })
 
-	bus.Publish(extensions.Event{Topic: "a:b:c", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "a:b:c", Payload: nil})
 	unsub()
-	bus.Publish(extensions.Event{Topic: "a:b:c", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "a:b:c", Payload: nil})
 
 	if count != 1 {
 		t.Errorf("expected 1 event after unsubscribe, got %d", count)
@@ -122,14 +122,14 @@ func TestEventBus_Unsubscribe(t *testing.T) {
 }
 
 func TestEventBus_MalformedTopic(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 
 	var count int
-	bus.Subscribe("a:b:c", func(e extensions.Event) { count++ })
+	bus.Subscribe("a:b:c", func(e plugins.Event) { count++ })
 
 	// Malformed topics should be silently dropped.
-	bus.Publish(extensions.Event{Topic: "no-colons", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "one:colon", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "no-colons", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "one:colon", Payload: nil})
 
 	if count != 0 {
 		t.Errorf("malformed topic should not match, got %d", count)
@@ -138,24 +138,24 @@ func TestEventBus_MalformedTopic(t *testing.T) {
 
 // --- TriggerDispatcher tests ---
 
-func makeTestExtension(t *testing.T, behaviors []extensions.Behavior) *extensions.Extension {
+func makeTestPlugin(t *testing.T, behaviors []plugins.Behavior) *plugins.Plugin {
 	t.Helper()
 	dir := t.TempDir()
-	writeExtensionYAML(t, dir, map[string]any{
+	writePluginYAML(t, dir, map[string]any{
 		"name":         "test-ext",
-		"description":  "trigger test extension",
+		"description":  "trigger test plugin",
 		"capabilities": map[string]any{},
 		"behaviors":    behaviorsToAny(behaviors),
 	})
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 	return ext
 }
 
-// behaviorsToAny converts []Behavior to []any for YAML serialisation via writeExtensionYAML.
-func behaviorsToAny(behaviors []extensions.Behavior) []any {
+// behaviorsToAny converts []Behavior to []any for YAML serialisation via writePluginYAML.
+func behaviorsToAny(behaviors []plugins.Behavior) []any {
 	out := make([]any, len(behaviors))
 	for i, b := range behaviors {
 		out[i] = map[string]any{
@@ -168,13 +168,13 @@ func behaviorsToAny(behaviors []extensions.Behavior) []any {
 }
 
 func TestDispatcher_SlashCommand(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "check",
 			Trigger: map[string]any{"slash_command": "test-ext-check"},
@@ -182,8 +182,8 @@ func TestDispatcher_SlashCommand(t *testing.T) {
 		},
 	})
 
-	if err := d.RegisterExtension(ctx, ext); err != nil {
-		t.Fatalf("RegisterExtension: %v", err)
+	if err := d.RegisterPlugin(ctx, ext); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
 	}
 
 	// Fire the slash command.
@@ -199,13 +199,13 @@ func TestDispatcher_SlashCommand(t *testing.T) {
 }
 
 func TestDispatcher_SlashCommand_DefaultName(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "check",
 			Trigger: map[string]any{"slash_command": ""},
@@ -213,7 +213,7 @@ func TestDispatcher_SlashCommand_DefaultName(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
 	// Default name is <ext>-<behavior> = "test-ext-check".
 	d.FireSlashCommand("test-ext-check", nil)
@@ -224,13 +224,13 @@ func TestDispatcher_SlashCommand_DefaultName(t *testing.T) {
 }
 
 func TestDispatcher_EventTrigger(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "on-fetch-after",
 			Trigger: map[string]any{"event": "test-ext:fetch:after"},
@@ -238,9 +238,9 @@ func TestDispatcher_EventTrigger(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
-	bus.Publish(extensions.Event{Topic: "test-ext:fetch:after", Payload: map[string]any{"result": "data"}})
+	bus.Publish(plugins.Event{Topic: "test-ext:fetch:after", Payload: map[string]any{"result": "data"}})
 
 	if runner.count() != 1 {
 		t.Fatalf("expected 1 workflow call, got %d", runner.count())
@@ -252,13 +252,13 @@ func TestDispatcher_EventTrigger(t *testing.T) {
 }
 
 func TestDispatcher_WildcardEventTrigger(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "on-any-after",
 			Trigger: map[string]any{"event": "test-ext:*:after"},
@@ -266,11 +266,11 @@ func TestDispatcher_WildcardEventTrigger(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
-	bus.Publish(extensions.Event{Topic: "test-ext:fetch:after", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "test-ext:store:after", Payload: nil})
-	bus.Publish(extensions.Event{Topic: "test-ext:fetch:before", Payload: nil}) // should NOT fire
+	bus.Publish(plugins.Event{Topic: "test-ext:fetch:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "test-ext:store:after", Payload: nil})
+	bus.Publish(plugins.Event{Topic: "test-ext:fetch:before", Payload: nil}) // should NOT fire
 
 	if runner.count() != 2 {
 		t.Errorf("expected 2 workflow calls for wildcard event, got %d", runner.count())
@@ -278,13 +278,13 @@ func TestDispatcher_WildcardEventTrigger(t *testing.T) {
 }
 
 func TestDispatcher_EmitCapabilityEvent(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "on-after",
 			Trigger: map[string]any{"event": "my-ext:my-cap:after"},
@@ -292,7 +292,7 @@ func TestDispatcher_EmitCapabilityEvent(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
 	// Before events are fire-and-forget (goroutine); after events are synchronous.
 	d.EmitCapabilityEvent("before", "my-ext", "my-cap", map[string]any{"input": "x"})
@@ -306,14 +306,14 @@ func TestDispatcher_EmitCapabilityEvent(t *testing.T) {
 	}
 }
 
-func TestDispatcher_UnregisterExtension(t *testing.T) {
-	bus := extensions.NewEventBus()
+func TestDispatcher_UnregisterPlugin(t *testing.T) {
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "check",
 			Trigger: map[string]any{"slash_command": "test-ext-check"},
@@ -321,7 +321,7 @@ func TestDispatcher_UnregisterExtension(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
 	// Fire once — should work.
 	d.FireSlashCommand("test-ext-check", nil)
@@ -330,24 +330,24 @@ func TestDispatcher_UnregisterExtension(t *testing.T) {
 	}
 
 	// Unregister and fire again — should NOT fire.
-	d.UnregisterExtension("test-ext")
+	d.UnregisterPlugin("test-ext")
 	d.FireSlashCommand("test-ext-check", nil)
 	if runner.count() != 1 {
 		t.Errorf("expected no additional calls after unregister, got %d", runner.count())
 	}
 }
 
-func TestDispatcher_DisabledExtension(t *testing.T) {
-	bus := extensions.NewEventBus()
+func TestDispatcher_DisabledPlugin(t *testing.T) {
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
 	dir := t.TempDir()
-	writeExtensionYAML(t, dir, map[string]any{
+	writePluginYAML(t, dir, map[string]any{
 		"name":         "disabled-ext",
-		"description":  "disabled extension",
+		"description":  "disabled plugin",
 		"capabilities": map[string]any{},
 		"behaviors": []any{
 			map[string]any{
@@ -358,19 +358,19 @@ func TestDispatcher_DisabledExtension(t *testing.T) {
 		},
 	})
 
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
-	// Disable the extension.
+	// Disable the plugin.
 	ext.StateSet("_enabled", false) //nolint
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
 	// Firing the slash command should not invoke the workflow.
 	d.FireSlashCommand("disabled-check", nil)
 	if runner.count() != 0 {
-		t.Errorf("disabled extension: expected 0 calls, got %d", runner.count())
+		t.Errorf("disabled plugin: expected 0 calls, got %d", runner.count())
 	}
 }
 
@@ -394,12 +394,12 @@ func TestCronParsing(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		sched, err := extensions.ParseCron(tt.expr)
+		sched, err := plugins.ParseCron(tt.expr)
 		if err != nil {
 			t.Errorf("parseCron(%q): %v", tt.expr, err)
 			continue
 		}
-		got := extensions.CronMatches(sched, tt.t)
+		got := plugins.CronMatches(sched, tt.t)
 		if got != tt.want {
 			t.Errorf("parseCron(%q).matches(%v) = %v, want %v", tt.expr, tt.t, got, tt.want)
 		}
@@ -408,13 +408,13 @@ func TestCronParsing(t *testing.T) {
 
 // TestDispatcher_PatternMatch verifies the pattern_match trigger fires on matching content.
 func TestDispatcher_PatternMatch(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name: "on-hello",
 			Trigger: map[string]any{
@@ -426,7 +426,7 @@ func TestDispatcher_PatternMatch(t *testing.T) {
 		},
 	})
 
-	d.RegisterExtension(ctx, ext) //nolint
+	d.RegisterPlugin(ctx, ext) //nolint
 
 	d.FirePercept("discord", "message", "hello world", nil)
 	d.FirePercept("discord", "message", "bye world", nil) // should not match
@@ -442,13 +442,13 @@ func TestDispatcher_PatternMatch(t *testing.T) {
 
 // TestOnResult_ParseJsonCondition verifies on_result with parse=json and a condition.
 func TestOnResult_ParseJsonCondition(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	cfg := extensions.OnResultConfig{
+	cfg := plugins.OnResultConfig{
 		Parse:     "json",
 		Condition: `result["status"] == "ok"`,
 		Action:    "invoke",
@@ -456,61 +456,61 @@ func TestOnResult_ParseJsonCondition(t *testing.T) {
 	}
 
 	// Should fire — condition is true.
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, `{"status":"ok","value":42}`, nil)
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, `{"status":"ok","value":42}`, nil)
 	if runner.count() != 1 {
 		t.Errorf("expected 1 invoke for true condition, got %d", runner.count())
 	}
 
 	// Should NOT fire — condition is false.
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, `{"status":"error"}`, nil)
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, `{"status":"error"}`, nil)
 	if runner.count() != 1 {
 		t.Errorf("expected no additional invoke for false condition, got %d", runner.count())
 	}
 }
 
 func TestOnResult_ParseJsonFails(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	cfg := extensions.OnResultConfig{
+	cfg := plugins.OnResultConfig{
 		Parse:    "json",
 		Action:   "invoke",
 		Workflow: "on-success",
 	}
 
 	// Non-JSON string — should skip the handler without error.
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, "not json at all", nil)
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, "not json at all", nil)
 	if runner.count() != 0 {
 		t.Errorf("expected 0 invokes when json parse fails, got %d", runner.count())
 	}
 }
 
 func TestOnResult_NoCondition(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	cfg := extensions.OnResultConfig{
+	cfg := plugins.OnResultConfig{
 		Action:   "invoke",
 		Workflow: "always-run",
 	}
 
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, "any result", nil)
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, "any result", nil)
 	if runner.count() != 1 {
 		t.Errorf("expected 1 invoke when no condition, got %d", runner.count())
 	}
 }
 
 func TestOnResult_Notify(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 
 	var notified []string
 	d.SetTalkToUser(&fakeTalker{fn: func(msg string) error {
@@ -520,12 +520,12 @@ func TestOnResult_Notify(t *testing.T) {
 
 	ctx := context.Background()
 
-	cfg := extensions.OnResultConfig{
+	cfg := plugins.OnResultConfig{
 		Action:  "notify",
 		Message: "done: {{result}}",
 	}
 
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, "success", map[string]any{})
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, "success", map[string]any{})
 
 	if len(notified) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(notified))
@@ -536,10 +536,10 @@ func TestOnResult_Notify(t *testing.T) {
 }
 
 func TestOnResult_Log(t *testing.T) {
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 
 	var logged []string
 	d.SetSaveThought(&fakeLogger{fn: func(msg string) error {
@@ -549,12 +549,12 @@ func TestOnResult_Log(t *testing.T) {
 
 	ctx := context.Background()
 
-	cfg := extensions.OnResultConfig{
+	cfg := plugins.OnResultConfig{
 		Action:  "log",
 		Message: "logged: {{result}}",
 	}
 
-	d.HandleOnResult(ctx, []extensions.OnResultConfig{cfg}, "my-result", map[string]any{})
+	d.HandleOnResult(ctx, []plugins.OnResultConfig{cfg}, "my-result", map[string]any{})
 
 	if len(logged) != 1 {
 		t.Fatalf("expected 1 log entry, got %d", len(logged))
@@ -573,14 +573,14 @@ func TestDispatcher_ScheduleFires(t *testing.T) {
 		t.Skip("skipping schedule integration test in short mode")
 	}
 
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name:    "every-minute",
 			Trigger: map[string]any{"schedule": "* * * * *"},
@@ -588,8 +588,8 @@ func TestDispatcher_ScheduleFires(t *testing.T) {
 		},
 	})
 
-	if err := d.RegisterExtension(ctx, ext); err != nil {
-		t.Fatalf("RegisterExtension: %v", err)
+	if err := d.RegisterPlugin(ctx, ext); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
 	}
 
 	// Wait for at least one firing within 90s.
@@ -615,21 +615,21 @@ func TestDispatcher_Condition(t *testing.T) {
 		t.Skip("skipping condition integration test in short mode")
 	}
 
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	reg := newMinimalRegistry(t)
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 
 	var fired int64
 
 	// Override runner to count directly.
 	countRunner := &countingRunner{fn: func(name string) { atomic.AddInt64(&fired, 1) }}
 
-	d2 := extensions.NewDispatcher(reg, bus, countRunner)
+	d2 := plugins.NewDispatcher(reg, bus, countRunner)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ext := makeTestExtension(t, []extensions.Behavior{
+	ext := makeTestPlugin(t, []plugins.Behavior{
 		{
 			Name: "always-true",
 			Trigger: map[string]any{
@@ -643,8 +643,8 @@ func TestDispatcher_Condition(t *testing.T) {
 	})
 
 	_ = d // d is unused here; d2 is used
-	if err := d2.RegisterExtension(ctx, ext); err != nil {
-		t.Fatalf("RegisterExtension: %v", err)
+	if err := d2.RegisterPlugin(ctx, ext); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
 	}
 
 	// Wait for at least one fire.
@@ -680,10 +680,10 @@ func (r *countingRunner) RunWorkflow(_ context.Context, name string, _ map[strin
 }
 
 // newMinimalRegistry creates an empty registry for tests that need one.
-func newMinimalRegistry(t *testing.T) *extensions.Registry {
+func newMinimalRegistry(t *testing.T) *plugins.Registry {
 	t.Helper()
 	dir := t.TempDir()
-	reg, err := extensions.LoadAll(dir, "")
+	reg, err := plugins.LoadAll(dir, "")
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
@@ -702,24 +702,24 @@ func TestBudOps_TriggerDispatcher(t *testing.T) {
 	outDir := t.TempDir()
 	runMigratePlugin(t, budOpsPlugin, outDir)
 
-	ext, err := extensions.LoadExtension(outDir)
+	ext, err := plugins.LoadPlugin(outDir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	bus := extensions.NewEventBus()
+	bus := plugins.NewEventBus()
 	runner := &fakeRunner{}
 	systemDir := t.TempDir()
-	reg, err := extensions.LoadAll(systemDir, "")
+	reg, err := plugins.LoadAll(systemDir, "")
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
 
-	d := extensions.NewDispatcher(reg, bus, runner)
+	d := plugins.NewDispatcher(reg, bus, runner)
 	ctx := context.Background()
 
-	if err := d.RegisterExtension(ctx, ext); err != nil {
-		t.Fatalf("RegisterExtension for bud-ops: %v", err)
+	if err := d.RegisterPlugin(ctx, ext); err != nil {
+		t.Fatalf("RegisterPlugin for bud-ops: %v", err)
 	}
 
 	// bud-ops has no behaviors, so no triggers should be registered.

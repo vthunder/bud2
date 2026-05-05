@@ -1,18 +1,18 @@
-package extensions_test
+package plugins_test
 
 import (
 	"testing"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 )
 
-func TestBudExtension_LoadsWithTools(t *testing.T) {
+func TestBudPlugin_LoadsWithTools(t *testing.T) {
 	root := repoRoot(t)
-	extDir := root + "/state-defaults/system/extensions/bud"
+	extDir := root + "/state-defaults/system/plugins/bud"
 
-	ext, err := extensions.LoadExtension(extDir)
+	ext, err := plugins.LoadPlugin(extDir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 	if ext.Manifest.Name != "bud" {
 		t.Errorf("Name = %q, want %q", ext.Manifest.Name, "bud")

@@ -1,23 +1,23 @@
-package extensions_test
+package plugins_test
 
 import (
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 )
 
 func TestWorkflowFallback(t *testing.T) {
 	root := repoRoot(t)
-	sysExtDir := filepath.Join(root, "state-defaults", "system", "extensions")
-	userExtDir := filepath.Join(root, "state", "system", "extensions")
+	sysExtDir := filepath.Join(root, "state-defaults", "system", "plugins")
+	userExtDir := filepath.Join(root, "state", "system", "plugins")
 
-	reg, err := extensions.LoadAll(sysExtDir, userExtDir)
+	reg, err := plugins.LoadAll(sysExtDir, userExtDir)
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	t.Logf("Registry: %d extensions", reg.Len())
+	t.Logf("Registry: %d plugins", reg.Len())
 
 	for _, name := range []string{"gtd-today", "gtd-inbox", "gtd-add"} {
 		cap, ext, ok := reg.FindCapabilityByName(name)

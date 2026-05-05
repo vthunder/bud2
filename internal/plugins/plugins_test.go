@@ -1,4 +1,4 @@
-package extensions_test
+package plugins_test
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 )
 
 // repoRoot returns the root of the bud2 repository by locating go.mod above
@@ -38,7 +38,7 @@ func repoRoot(t *testing.T) string {
 }
 
 // runMigratePlugin runs the migrate-plugin command (via go run) to convert a
-// legacy plugin directory into an extension directory.
+// legacy plugin directory into a plugin directory.
 func runMigratePlugin(t *testing.T, inDir, outDir string) {
 	t.Helper()
 	root := repoRoot(t)
@@ -55,12 +55,12 @@ func runMigratePlugin(t *testing.T, inDir, outDir string) {
 	}
 }
 
-// --- TestLoadExtension_BudOps ---
+// --- TestLoadPlugin_BudOps ---
 
-// TestLoadExtension_BudOps converts the bud-ops plugin using the M1 migration
-// script and verifies that the resulting extension loads without error and
+// TestLoadPlugin_BudOps converts the bud-ops plugin using the M1 migration
+// script and verifies that the resulting plugin loads without error and
 // exposes the expected capabilities.
-func TestLoadExtension_BudOps(t *testing.T) {
+func TestLoadPlugin_BudOps(t *testing.T) {
 	root := repoRoot(t)
 	budOpsPlugin := filepath.Join(root, "state-defaults", "system", "plugins", "bud-ops")
 	if _, err := os.Stat(budOpsPlugin); err != nil {
@@ -70,9 +70,9 @@ func TestLoadExtension_BudOps(t *testing.T) {
 	outDir := t.TempDir()
 	runMigratePlugin(t, budOpsPlugin, outDir)
 
-	ext, err := extensions.LoadExtension(outDir)
+	ext, err := plugins.LoadPlugin(outDir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
 	// Manifest fields.
@@ -102,7 +102,7 @@ func TestLoadExtension_BudOps(t *testing.T) {
 
 // --- TestRegistry_LoadAll ---
 
-// TestRegistry_LoadAll verifies that LoadAll loads extensions from a directory
+// TestRegistry_LoadAll verifies that LoadAll loads plugins from a directory
 // and that Registry.Capabilities returns the expected fully-qualified names.
 func TestRegistry_LoadAll(t *testing.T) {
 	root := repoRoot(t)
@@ -111,7 +111,7 @@ func TestRegistry_LoadAll(t *testing.T) {
 		t.Skipf("bud-ops plugin not found: %v", err)
 	}
 
-	// Build a fake system dir containing the migrated bud-ops extension.
+	// Build a fake system dir containing the migrated bud-ops plugin.
 	systemDir := t.TempDir()
 	extDir := filepath.Join(systemDir, "bud-ops")
 	if err := os.MkdirAll(extDir, 0o755); err != nil {
@@ -119,7 +119,7 @@ func TestRegistry_LoadAll(t *testing.T) {
 	}
 	runMigratePlugin(t, budOpsPlugin, extDir)
 
-	reg, err := extensions.LoadAll(systemDir, "")
+	reg, err := plugins.LoadAll(systemDir, "")
 	if err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
@@ -145,9 +145,9 @@ func TestRegistry_LoadAll(t *testing.T) {
 
 // --- TestDependencyCycle ---
 
-// TestDependencyCycle verifies that two extensions requiring each other are
+// TestDependencyCycle verifies that two plugins requiring each other are
 // both excluded from the Registry (not silently loaded) and that an appropriate
-// cycle error is logged. The cycle must prevent both extensions from appearing
+// cycle error is logged. The cycle must prevent both plugins from appearing
 // in Registry.All().
 func TestDependencyCycle(t *testing.T) {
 	dir := t.TempDir()
@@ -162,25 +162,25 @@ func TestDependencyCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeExtensionYAML(t, alphaDir, map[string]any{
+	writePluginYAML(t, alphaDir, map[string]any{
 		"name":        "ext-alpha",
-		"description": "alpha test extension",
-		"requires":    map[string]any{"extensions": []string{"ext-beta"}},
+		"description": "alpha test plugin",
+		"requires":    map[string]any{"plugins": []string{"ext-beta"}},
 		"behaviors":   []any{},
 		"capabilities": map[string]any{},
 	})
-	writeExtensionYAML(t, betaDir, map[string]any{
+	writePluginYAML(t, betaDir, map[string]any{
 		"name":        "ext-beta",
-		"description": "beta test extension",
-		"requires":    map[string]any{"extensions": []string{"ext-alpha"}},
+		"description": "beta test plugin",
+		"requires":    map[string]any{"plugins": []string{"ext-alpha"}},
 		"behaviors":   []any{},
 		"capabilities": map[string]any{},
 	})
 
-	reg, err := extensions.LoadAll(dir, "")
+	reg, err := plugins.LoadAll(dir, "")
 	// LoadAll may return nil error even when cycles are detected (cycles are
 	// excluded from the registry rather than aborting the entire load). Verify
-	// that neither cycled extension appears in the registry.
+	// that neither cycled plugin appears in the registry.
 	if err != nil {
 		// An error is also acceptable — the important thing is neither ext loads.
 		t.Logf("LoadAll returned error (acceptable for cycle case): %v", err)
@@ -207,10 +207,10 @@ func TestDependencyCycle(t *testing.T) {
 func TestSettings(t *testing.T) {
 	dir := t.TempDir()
 
-	// Write a minimal extension with a settings schema.
-	writeExtensionYAML(t, dir, map[string]any{
+	// Write a minimal plugin with a settings schema.
+	writePluginYAML(t, dir, map[string]any{
 		"name":        "test-ext",
-		"description": "settings test extension",
+		"description": "settings test plugin",
 		"behaviors":   []any{},
 		"capabilities": map[string]any{},
 		"settings": map[string]any{
@@ -228,9 +228,9 @@ func TestSettings(t *testing.T) {
 	})
 
 	// Load without any settings.json — defaults should be applied.
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
 	// Default for "port" should be populated.
@@ -300,11 +300,11 @@ func TestSettings(t *testing.T) {
 // --- TestSettingsDefaultsRequired ---
 
 // TestSettingsDefaultsRequired verifies that missing required settings produce
-// warnings during load but do NOT prevent the extension from loading.
+// warnings during load but do NOT prevent the plugin from loading.
 func TestSettingsDefaultsRequired(t *testing.T) {
 	dir := t.TempDir()
 
-	writeExtensionYAML(t, dir, map[string]any{
+	writePluginYAML(t, dir, map[string]any{
 		"name":        "req-ext",
 		"description": "required settings test",
 		"behaviors":   []any{},
@@ -319,9 +319,9 @@ func TestSettingsDefaultsRequired(t *testing.T) {
 	})
 
 	// Should load successfully even though "token" is not set and has no default.
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension with missing required setting: %v (want no error)", err)
+		t.Fatalf("LoadPlugin with missing required setting: %v (want no error)", err)
 	}
 	// The required key must be absent (no default was provided).
 	if v := ext.SettingsGet("token"); v != nil {
@@ -335,16 +335,16 @@ func TestSettingsDefaultsRequired(t *testing.T) {
 func TestState(t *testing.T) {
 	dir := t.TempDir()
 
-	writeExtensionYAML(t, dir, map[string]any{
+	writePluginYAML(t, dir, map[string]any{
 		"name":        "state-ext",
-		"description": "state test extension",
+		"description": "state test plugin",
 		"behaviors":   []any{},
 		"capabilities": map[string]any{},
 	})
 
-	ext, err := extensions.LoadExtension(dir)
+	ext, err := plugins.LoadPlugin(dir)
 	if err != nil {
-		t.Fatalf("LoadExtension: %v", err)
+		t.Fatalf("LoadPlugin: %v", err)
 	}
 
 	// StateGet nonexistent returns nil.
@@ -376,8 +376,8 @@ func TestState(t *testing.T) {
 
 // --- helpers ---
 
-// writeExtensionYAML writes an extension.yaml file from a generic map.
-func writeExtensionYAML(t *testing.T, dir string, data map[string]any) {
+// writePluginYAML writes an plugin.yaml file from a generic map.
+func writePluginYAML(t *testing.T, dir string, data map[string]any) {
 	t.Helper()
 	budPluginDir := filepath.Join(dir, ".bud-plugin")
 	if err := os.MkdirAll(budPluginDir, 0o755); err != nil {
@@ -385,9 +385,9 @@ func writeExtensionYAML(t *testing.T, dir string, data map[string]any) {
 	}
 	b, err := yaml.Marshal(data)
 	if err != nil {
-		t.Fatalf("marshaling extension.yaml: %v", err)
+		t.Fatalf("marshaling plugin.yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(budPluginDir, "extension.yaml"), b, 0o644); err != nil {
-		t.Fatalf("writing .bud-plugin/extension.yaml: %v", err)
+	if err := os.WriteFile(filepath.Join(budPluginDir, "plugin.yaml"), b, 0o644); err != nil {
+		t.Fatalf("writing .bud-plugin/plugin.yaml: %v", err)
 	}
 }

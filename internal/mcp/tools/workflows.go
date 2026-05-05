@@ -10,23 +10,23 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vthunder/bud2/internal/extensions"
+	"github.com/vthunder/bud2/internal/plugins"
 	"github.com/vthunder/bud2/internal/mcp"
 )
 
 // registerWorkflowTools registers the invoke_workflow and Skill MCP tools.
-// These tools surface extension-based capabilities to the model for discovery and invocation.
-// Both tools require deps.ExtensionRegistry to be set; if nil, a clear error is returned.
+// These tools surface plugin-based capabilities to the model for discovery and invocation.
+// Both tools require deps.PluginRegistry to be set; if nil, a clear error is returned.
 func registerWorkflowTools(server *mcp.Server, deps *Dependencies) {
 	registerInvokeWorkflow(server, deps)
 	registerSkillTool(server, deps)
 }
 
 // registerInvokeWorkflow registers the invoke_workflow MCP tool.
-// It lists and invokes workflow-type capabilities from the extension registry.
+// It lists and invokes workflow-type capabilities from the plugin registry.
 func registerInvokeWorkflow(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("invoke_workflow", mcp.ToolDef{
-		Description: "List or invoke a named workflow from the extension registry. Workflows are reusable automation sequences defined in extensions. Use action=list to discover available workflows; use action=invoke with a workflow name to run one.",
+		Description: "List or invoke a named workflow from the plugin registry. Workflows are reusable automation sequences defined in plugins. Use action=list to discover available workflows; use action=invoke with a workflow name to run one.",
 		Properties: map[string]mcp.PropDef{
 			"action": {
 				Type:        "string",
@@ -43,14 +43,14 @@ func registerInvokeWorkflow(server *mcp.Server, deps *Dependencies) {
 		},
 		Required: []string{"action"},
 	}, func(_ any, args map[string]any) (string, error) {
-		if deps.ExtensionRegistry == nil {
-			return "", fmt.Errorf("extension registry not configured")
+		if deps.PluginRegistry == nil {
+			return "", fmt.Errorf("plugin registry not configured")
 		}
 
 		action, _ := args["action"].(string)
 		switch action {
 		case "list":
-			return listWorkflows(deps.ExtensionRegistry)
+			return listWorkflows(deps.PluginRegistry)
 		case "invoke":
 			name, _ := args["name"].(string)
 			if name == "" {
@@ -68,32 +68,32 @@ func registerInvokeWorkflow(server *mcp.Server, deps *Dependencies) {
 }
 
 // listWorkflows returns a JSON-marshalled list of available workflows from the registry.
-func listWorkflows(reg *extensions.Registry) (string, error) {
+func listWorkflows(reg *plugins.Registry) (string, error) {
 	type workflowEntry struct {
 		Name         string `json:"name"`
 		Description  string `json:"description"`
 		CallableFrom string `json:"callable_from"`
-		Extension    string `json:"extension"`
+		Plugin       string `json:"plugin"`
 	}
 
 	var entries []workflowEntry
 	for _, item := range reg.CapabilitiesOfType("workflow") {
 		parts := strings.SplitN(item.FullName, ":", 2)
-		extName := ""
+		pluginName := ""
 		if len(parts) == 2 {
-			extName = parts[0]
+			pluginName = parts[0]
 		}
 		entries = append(entries, workflowEntry{
 			Name:         item.FullName,
 			Description:  item.Cap.Description,
 			CallableFrom: item.Cap.CallableFrom,
-			Extension:    extName,
+			Plugin:       pluginName,
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	if len(entries) == 0 {
-		return `{"workflows": [], "note": "No callable workflows found in extension registry"}`, nil
+		return `{"workflows": [], "note": "No callable workflows found in plugin registry"}`, nil
 	}
 
 	result := map[string]any{"workflows": entries}
@@ -104,12 +104,12 @@ func listWorkflows(reg *extensions.Registry) (string, error) {
 	return string(data), nil
 }
 
-// invokeWorkflow loads a workflow capability YAML from the extension directory and
+// invokeWorkflow loads a workflow capability YAML from the plugin directory and
 // executes it through the reflex engine. Returns the workflow result as a string.
 func invokeWorkflow(deps *Dependencies, name string, params map[string]any) (string, error) {
-	cap, ext, ok := deps.ExtensionRegistry.GetCapabilityByFullName(name)
+	cap, ext, ok := deps.PluginRegistry.GetCapabilityByFullName(name)
 	if !ok {
-		return "", fmt.Errorf("workflow %q not found in extension registry", name)
+		return "", fmt.Errorf("workflow %q not found in plugin registry", name)
 	}
 	if cap.Type != "workflow" {
 		return "", fmt.Errorf("capability %q has type %q, not \"workflow\"", name, cap.Type)
@@ -119,7 +119,7 @@ func invokeWorkflow(deps *Dependencies, name string, params map[string]any) (str
 	idx := strings.LastIndex(name, ":")
 	capName := name[idx+1:]
 
-	// Verify the workflow file exists in the extension's capabilities directory.
+	// Verify the workflow file exists in the plugin's capabilities directory.
 	yamlPath := filepath.Join(ext.Dir, "capabilities", capName+".yaml")
 	if _, err := os.Stat(yamlPath); err != nil {
 		return "", fmt.Errorf("workflow file not found at %s: %w", yamlPath, err)
@@ -162,16 +162,16 @@ func invokeWorkflow(deps *Dependencies, name string, params map[string]any) (str
 	return fmt.Sprintf("Workflow %q result: %s", name, string(outJSON)), nil
 }
 
-// registerSkillTool registers the Skill MCP tool that reads from the extension registry.
+// registerSkillTool registers the Skill MCP tool that reads from the plugin registry.
 // When invoked without a name, it lists available skills. When invoked with a name,
 // it returns the skill's prompt body for injection into the current session.
 //
 // Note: This coexists with Claude Code's built-in Skill tool (which reads from --plugin-dir).
-// The extension-based Skill tool is accessible as mcp__bud2__Skill and surfaces
-// capabilities from the extension registry with type:skill and callable_from: both|model.
+// The plugin-based Skill tool is accessible as mcp__bud2__Skill and surfaces
+// capabilities from the plugin registry with type:skill and callable_from: both|model.
 func registerSkillTool(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("Skill", mcp.ToolDef{
-		Description: "List or invoke a skill from the extension registry. Skills provide behavioral guidance injected into the current session. Omit name to discover available skills; provide a name to load its prompt content.",
+		Description: "List or invoke a skill from the plugin registry. Skills provide behavioral guidance injected into the current session. Omit name to discover available skills; provide a name to load its prompt content.",
 		Properties: map[string]mcp.PropDef{
 			"name": {
 				Type:        "string",
@@ -179,20 +179,20 @@ func registerSkillTool(server *mcp.Server, deps *Dependencies) {
 			},
 		},
 	}, func(_ any, args map[string]any) (string, error) {
-		if deps.ExtensionRegistry == nil {
-			return "", fmt.Errorf("extension registry not configured")
+		if deps.PluginRegistry == nil {
+			return "", fmt.Errorf("plugin registry not configured")
 		}
 
 		name, _ := args["name"].(string)
 		if name == "" {
-			return listSkills(deps.ExtensionRegistry)
+			return listSkills(deps.PluginRegistry)
 		}
-		return invokeSkill(deps.ExtensionRegistry, name)
+		return invokeSkill(deps.PluginRegistry, name)
 	})
 }
 
 // listSkills returns a JSON-encoded list of skills callable from the model.
-func listSkills(reg *extensions.Registry) (string, error) {
+func listSkills(reg *plugins.Registry) (string, error) {
 	type skillEntry struct {
 		Name         string `json:"name"`
 		Description  string `json:"description"`
@@ -210,7 +210,7 @@ func listSkills(reg *extensions.Registry) (string, error) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	if len(entries) == 0 {
-		return `{"skills": [], "note": "No callable skills found in extension registry"}`, nil
+		return `{"skills": [], "note": "No callable skills found in plugin registry"}`, nil
 	}
 
 	result := map[string]any{"skills": entries}
@@ -222,10 +222,10 @@ func listSkills(reg *extensions.Registry) (string, error) {
 }
 
 // invokeSkill looks up a skill by full name and returns its body for prompt injection.
-func invokeSkill(reg *extensions.Registry, name string) (string, error) {
+func invokeSkill(reg *plugins.Registry, name string) (string, error) {
 	cap, _, ok := reg.GetCapabilityByFullName(name)
 	if !ok {
-		return "", fmt.Errorf("skill %q not found in extension registry", name)
+		return "", fmt.Errorf("skill %q not found in plugin registry", name)
 	}
 	if cap.Type != "skill" {
 		return "", fmt.Errorf("capability %q has type %q, not \"skill\"", name, cap.Type)
