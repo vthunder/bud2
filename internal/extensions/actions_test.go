@@ -14,14 +14,14 @@ import (
 
 // --- test helpers specific to action tests ---
 
-// writeCapabilityYAMLRaw writes raw YAML bytes as a capability file in <extDir>/capabilities/.
+// writeCapabilityYAMLRaw writes raw YAML bytes as a capability file in <extDir>/skills/.
 func writeCapabilityYAMLRaw(t *testing.T, extDir, name string, content []byte) {
 	t.Helper()
-	capsDir := filepath.Join(extDir, "capabilities")
-	if err := os.MkdirAll(capsDir, 0o755); err != nil {
-		t.Fatalf("creating capabilities dir: %v", err)
+	skillsDir := filepath.Join(extDir, "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("creating skills dir: %v", err)
 	}
-	path := filepath.Join(capsDir, name+".yaml")
+	path := filepath.Join(skillsDir, name+".yaml")
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("writing %s: %v", path, err)
 	}

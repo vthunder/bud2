@@ -71,8 +71,8 @@ func loadDir(dir string, exts map[string]*Extension) error {
 			continue
 		}
 		extDir := dir + "/" + e.Name()
-		// Silently skip dirs without extension.yaml — they're plugin dirs, not extensions.
-		if _, statErr := os.Stat(filepath.Join(extDir, "extension.yaml")); statErr != nil {
+		// Silently skip dirs without .bud-plugin/extension.yaml — they're not extensions.
+		if _, statErr := os.Stat(filepath.Join(extDir, ".bud-plugin", "extension.yaml")); statErr != nil {
 			continue
 		}
 		ext, err := LoadExtension(extDir)

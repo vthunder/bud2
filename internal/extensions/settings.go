@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -33,5 +34,8 @@ func (e *Extension) SettingsSet(key string, value any) error {
 	}
 	e.Settings[key] = value
 
-	return writeJSONFile(filepath.Join(e.Dir, "settings.json"), e.Settings)
+	if err := os.MkdirAll(filepath.Join(e.Dir, ".bud-plugin"), 0o755); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(e.Dir, ".bud-plugin", "settings.json"), e.Settings)
 }

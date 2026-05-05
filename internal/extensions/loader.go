@@ -17,7 +17,7 @@ import (
 // Soft failures (unknown schema keywords, missing-but-defaultable settings, etc.)
 // emit log warnings rather than returning errors.
 func LoadExtension(dir string) (*Extension, error) {
-	manifestPath := filepath.Join(dir, "extension.yaml")
+	manifestPath := filepath.Join(dir, ".bud-plugin", "extension.yaml")
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("extensions: reading manifest %s: %w", manifestPath, err)
@@ -32,6 +32,10 @@ func LoadExtension(dir string) (*Extension, error) {
 		return nil, fmt.Errorf("extensions: manifest %s: missing required field 'name'", manifestPath)
 	}
 
+	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err == nil {
+		log.Printf("extensions: %s: .mcp.json found — bud does not support direct MCP connections from plugins; use mcp_servers: in .bud-plugin/extension.yaml instead", m.Name)
+	}
+
 	ext := &Extension{
 		Manifest: m,
 		Dir:      dir,
@@ -44,10 +48,10 @@ func LoadExtension(dir string) (*Extension, error) {
 	}
 	ext.Capabilities = caps
 
-	// Warn about capabilities declared in the manifest but missing as .md files.
+	// Warn about capabilities declared in the manifest but missing as files.
 	for name := range m.Capabilities {
 		if _, ok := caps[name]; !ok {
-			log.Printf("extensions: %s: capability %q declared in manifest but no .md file found", m.Name, name)
+			log.Printf("extensions: %s: capability %q declared in manifest but no file found in skills/ or agents/", m.Name, name)
 		}
 	}
 
@@ -64,58 +68,77 @@ func LoadExtension(dir string) (*Extension, error) {
 	return ext, nil
 }
 
-// loadCapabilities walks the capabilities/ subdirectory of extDir and returns
-// a map from capability name (filename without extension) to parsed Capability.
-// Both .md (skill/agent/workflow) and .yaml (action) files are supported.
-// If a name exists as both .md and .yaml, the .md file takes precedence.
+// loadCapabilities scans skills/ and agents/ subdirectories of extDir and
+// returns a map from capability name (filename without extension) to parsed
+// Capability. Both .md and .yaml files are supported; .md overrides .yaml
+// when both exist for the same name within a directory.
 func loadCapabilities(extDir string) (map[string]*Capability, error) {
-	capsDir := filepath.Join(extDir, "capabilities")
-	entries, err := os.ReadDir(capsDir)
+	caps := make(map[string]*Capability)
+
+	// Load from skills/ directory — default type: "skill"
+	if err := loadCapabilityDir(filepath.Join(extDir, "skills"), "skill", caps); err != nil {
+		return nil, fmt.Errorf("loading skills: %w", err)
+	}
+
+	// Load from agents/ directory — default type: "agent"
+	if err := loadCapabilityDir(filepath.Join(extDir, "agents"), "agent", caps); err != nil {
+		return nil, fmt.Errorf("loading agents: %w", err)
+	}
+
+	return caps, nil
+}
+
+// loadCapabilityDir loads .md and .yaml capability files from dir into caps.
+// defaultType is applied to any capability whose type is unset after parsing.
+// Missing directory is silently ignored.
+func loadCapabilityDir(dir, defaultType string, caps map[string]*Capability) error {
+	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return map[string]*Capability{}, nil
+		return nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading capabilities dir %s: %w", capsDir, err)
+		return fmt.Errorf("reading %s: %w", dir, err)
 	}
 
-	caps := make(map[string]*Capability, len(entries))
-
-	// First pass: load .yaml action capabilities.
+	// First pass: .yaml files
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".yaml")
-		path := filepath.Join(capsDir, e.Name())
-
+		path := filepath.Join(dir, e.Name())
 		cap, err := parseCapabilityYAML(name, path)
 		if err != nil {
-			return nil, fmt.Errorf("parsing capability %s: %w", path, err)
+			return fmt.Errorf("parsing capability %s: %w", path, err)
+		}
+		if cap.Type == "" {
+			cap.Type = defaultType
 		}
 		caps[name] = cap
 	}
 
-	// Second pass: load .md capabilities. .md files override .yaml if both exist.
+	// Second pass: .md files (override .yaml if both exist)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".md")
-		path := filepath.Join(capsDir, e.Name())
-
+		path := filepath.Join(dir, e.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("reading capability file %s: %w", path, err)
+			return fmt.Errorf("reading capability file %s: %w", path, err)
 		}
-
 		cap, err := parseCapabilityMD(name, data)
 		if err != nil {
-			return nil, fmt.Errorf("parsing capability %s: %w", path, err)
+			return fmt.Errorf("parsing capability %s: %w", path, err)
+		}
+		if cap.Type == "" {
+			cap.Type = defaultType
 		}
 		caps[name] = cap
 	}
 
-	return caps, nil
+	return nil
 }
 
 // parseCapabilityYAML parses a YAML capability file (action capabilities).
@@ -251,7 +274,7 @@ func stringField(m map[string]any, key, fallback string) string {
 // schema defaults for missing keys, and writes the file back if defaults were
 // added. Warns (never errors) on missing required settings or type mismatches.
 func initSettings(ext *Extension) error {
-	path := filepath.Join(ext.Dir, "settings.json")
+	path := filepath.Join(ext.Dir, ".bud-plugin", "settings.json")
 	settings, err := readJSONFile(path)
 	if err != nil {
 		return err
@@ -288,7 +311,9 @@ func initSettings(ext *Extension) error {
 
 	// If we added any defaults, persist the updated settings.json.
 	if len(ext.Manifest.Settings) > 0 {
-		if err := writeJSONFile(path, settings); err != nil {
+		if err := os.MkdirAll(filepath.Join(ext.Dir, ".bud-plugin"), 0o755); err != nil {
+			log.Printf("extensions: %s: could not create .bud-plugin dir: %v", ext.Manifest.Name, err)
+		} else if err := writeJSONFile(path, settings); err != nil {
 			log.Printf("extensions: %s: could not persist settings defaults: %v", ext.Manifest.Name, err)
 		}
 	}
@@ -299,7 +324,7 @@ func initSettings(ext *Extension) error {
 // initState loads <ext-dir>/state.json into ext.State.
 // A missing file is treated as empty state (not an error).
 func initState(ext *Extension) error {
-	path := filepath.Join(ext.Dir, "state.json")
+	path := filepath.Join(ext.Dir, ".bud-plugin", "state.json")
 	state, err := readJSONFile(path)
 	if err != nil {
 		return err

@@ -1,6 +1,7 @@
 package extensions
 
 import (
+	"os"
 	"path/filepath"
 )
 
@@ -24,7 +25,10 @@ func (e *Extension) StateSet(key string, value any) error {
 	}
 	e.State[key] = value
 
-	return writeJSONFile(filepath.Join(e.Dir, "state.json"), e.State)
+	if err := os.MkdirAll(filepath.Join(e.Dir, ".bud-plugin"), 0o755); err != nil {
+		return err
+	}
+	return writeJSONFile(filepath.Join(e.Dir, ".bud-plugin", "state.json"), e.State)
 }
 
 // Enabled reports whether the extension is currently enabled.

@@ -272,7 +272,7 @@ func TestSettings(t *testing.T) {
 			t.Errorf("SettingsGet after set = %v, want %q", v, "my-secret")
 		}
 		// Verify persistence: re-read settings.json from disk.
-		data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+		data, err := os.ReadFile(filepath.Join(dir, ".bud-plugin", "settings.json"))
 		if err != nil {
 			t.Fatalf("reading settings.json: %v", err)
 		}
@@ -361,7 +361,7 @@ func TestState(t *testing.T) {
 	}
 
 	// Verify persistence.
-	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".bud-plugin", "state.json"))
 	if err != nil {
 		t.Fatalf("reading state.json: %v", err)
 	}
@@ -379,11 +379,15 @@ func TestState(t *testing.T) {
 // writeExtensionYAML writes an extension.yaml file from a generic map.
 func writeExtensionYAML(t *testing.T, dir string, data map[string]any) {
 	t.Helper()
+	budPluginDir := filepath.Join(dir, ".bud-plugin")
+	if err := os.MkdirAll(budPluginDir, 0o755); err != nil {
+		t.Fatalf("creating .bud-plugin dir: %v", err)
+	}
 	b, err := yaml.Marshal(data)
 	if err != nil {
 		t.Fatalf("marshaling extension.yaml: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "extension.yaml"), b, 0o644); err != nil {
-		t.Fatalf("writing extension.yaml: %v", err)
+	if err := os.WriteFile(filepath.Join(budPluginDir, "extension.yaml"), b, 0o644); err != nil {
+		t.Fatalf("writing .bud-plugin/extension.yaml: %v", err)
 	}
 }
