@@ -33,3 +33,5 @@ deploy/bud.service
 deploy/ner-sidecar.service
 sdk-harness
 sdk-verify
+ns-secrets.txt
+migrate-plugin
