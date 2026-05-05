@@ -88,7 +88,13 @@ func loadCapabilities(extDir string) (map[string]*Capability, error) {
 	return caps, nil
 }
 
-// loadCapabilityDir loads .md and .yaml capability files from dir into caps.
+// loadCapabilityDir loads capability files from dir into caps.
+// Supports three layouts:
+//   - <name>/SKILL.md or <name>/AGENT.md  — subdirectory convention (Claude Code compatible)
+//   - <name>.md                            — flat .md file
+//   - <name>.yaml                          — flat .yaml action capability (bud-specific)
+//
+// Subdirectory entries take precedence over flat files of the same name.
 // defaultType is applied to any capability whose type is unset after parsing.
 // Missing directory is silently ignored.
 func loadCapabilityDir(dir, defaultType string, caps map[string]*Capability) error {
@@ -100,7 +106,7 @@ func loadCapabilityDir(dir, defaultType string, caps map[string]*Capability) err
 		return fmt.Errorf("reading %s: %w", dir, err)
 	}
 
-	// First pass: .yaml files
+	// First pass: .yaml flat files (lowest precedence)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
@@ -117,7 +123,7 @@ func loadCapabilityDir(dir, defaultType string, caps map[string]*Capability) err
 		caps[name] = cap
 	}
 
-	// Second pass: .md files (override .yaml if both exist)
+	// Second pass: flat .md files (override .yaml)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
@@ -131,6 +137,39 @@ func loadCapabilityDir(dir, defaultType string, caps map[string]*Capability) err
 		cap, err := parseCapabilityMD(name, data)
 		if err != nil {
 			return fmt.Errorf("parsing capability %s: %w", path, err)
+		}
+		if cap.Type == "" {
+			cap.Type = defaultType
+		}
+		caps[name] = cap
+	}
+
+	// Third pass: subdirectory convention — <name>/SKILL.md or <name>/AGENT.md
+	// Takes precedence over flat files. Tries SKILL.md then AGENT.md then any .md.
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		subDir := filepath.Join(dir, name)
+		var capPath string
+		for _, candidate := range []string{"SKILL.md", "AGENT.md"} {
+			p := filepath.Join(subDir, candidate)
+			if _, statErr := os.Stat(p); statErr == nil {
+				capPath = p
+				break
+			}
+		}
+		if capPath == "" {
+			continue
+		}
+		data, err := os.ReadFile(capPath)
+		if err != nil {
+			return fmt.Errorf("reading capability file %s: %w", capPath, err)
+		}
+		cap, err := parseCapabilityMD(name, data)
+		if err != nil {
+			return fmt.Errorf("parsing capability %s: %w", capPath, err)
 		}
 		if cap.Type == "" {
 			cap.Type = defaultType
