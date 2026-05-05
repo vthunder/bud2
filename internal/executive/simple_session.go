@@ -445,6 +445,53 @@ func resolvedManifestPluginPaths(statePath string) []string {
 	return paths
 }
 
+// ManifestExtensionDirs returns the resolved source directories from extensions.yaml
+// that may contain extension subdirs. These are the pre-expansion parent dirs (e.g.
+// useful-plugins/, not useful-plugins/things-tasks/) — the registry's loadDir scans
+// one level deep itself, matching how system/user extension dirs work.
+//
+// No git operations — only returns dirs that already exist on disk.
+func ManifestExtensionDirs(statePath string) []string {
+	manifestPath := extensionsManifestPath(statePath)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+
+	var manifest pluginManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return nil
+	}
+
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		return nil
+	}
+	pluginCacheDir := filepath.Join(cacheBase, "bud", "plugins")
+
+	var dirs []string
+	for _, e := range manifest.Sources {
+		var localPath string
+		if e.owner != "" {
+			repoDir := filepath.Join(pluginCacheDir, e.owner, e.repo)
+			localPath = repoDir
+			if e.dir != "" {
+				localPath = filepath.Join(repoDir, e.dir)
+			}
+		} else {
+			localPath = e.localPath
+		}
+		if localPath == "" {
+			continue
+		}
+		if _, statErr := os.Stat(localPath); statErr != nil {
+			continue
+		}
+		dirs = append(dirs, localPath)
+	}
+	return dirs
+}
+
 // allPluginDirs returns all directories searched for skill content:
 //   - local plugins (state/system/plugins/)
 //   - manifest git-plugins (~/Library/Caches/bud/plugins/)

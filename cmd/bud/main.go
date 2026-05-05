@@ -467,13 +467,15 @@ func main() {
 		)
 	}
 
-	// Load extension registry from system (state-defaults) and user (statePath) extension dirs.
-	// Extensions missing from either dir are silently skipped. A failed load is non-fatal.
+	// Load extension registry from system (state-defaults), user (statePath), and manifest-listed dirs.
+	// Extensions missing from any dir are silently skipped. A failed load is non-fatal.
 	var extensionRegistry *extensions.Registry
 	{
 		sysExtDir := filepath.Join(paths.DefaultsDir, "system", "extensions")
 		userExtDir := filepath.Join(statePath, "system", "extensions")
-		reg, regErr := extensions.LoadAll(sysExtDir, userExtDir)
+		manifestDirs := executive.ManifestExtensionDirs(statePath)
+		allDirs := append([]string{sysExtDir, userExtDir}, manifestDirs...)
+		reg, regErr := extensions.LoadAll(allDirs...)
 		if regErr != nil {
 			log.Printf("[main] Warning: failed to load extension registry: %v", regErr)
 		} else {

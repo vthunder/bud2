@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -13,28 +14,21 @@ type Registry struct {
 	order  []string // topological load order (dependencies before dependents)
 }
 
-// LoadAll loads extensions from systemDir (first) and userDir (second).
-// If both dirs contain an extension with the same name, the user extension
-// replaces the system extension entirely.
+// LoadAll loads extensions from each of the given dirs in order.
+// Later dirs override earlier ones when the same extension name appears in multiple dirs.
 //
 // Extensions are ordered by their declared requires.extensions dependency graph.
-// If a cycle is detected, LoadAll returns an error naming the cycle; no extensions
-// involved in the cycle are added to the Registry.
+// If a cycle is detected, the cycled extensions are excluded from the Registry.
 //
-// Either systemDir or userDir may be empty; missing directories are silently skipped.
-func LoadAll(systemDir, userDir string) (*Registry, error) {
-	// Load system extensions.
+// Empty strings in dirs are silently skipped.
+func LoadAll(dirs ...string) (*Registry, error) {
 	exts := make(map[string]*Extension)
-	if systemDir != "" {
-		if err := loadDir(systemDir, exts); err != nil {
-			return nil, fmt.Errorf("extensions: loading system dir %s: %w", systemDir, err)
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
 		}
-	}
-
-	// Load user extensions; same-name entries override system ones.
-	if userDir != "" {
-		if err := loadDir(userDir, exts); err != nil {
-			return nil, fmt.Errorf("extensions: loading user dir %s: %w", userDir, err)
+		if err := loadDir(dir, exts); err != nil {
+			return nil, fmt.Errorf("extensions: loading dir %s: %w", dir, err)
 		}
 	}
 
@@ -62,8 +56,8 @@ func LoadAll(systemDir, userDir string) (*Registry, error) {
 }
 
 // loadDir scans dir for subdirectories and attempts to load each as an extension.
-// Successfully loaded extensions are added to exts (overwriting existing entries
-// with the same name, so user-dir calls override system-dir calls).
+// Subdirs without extension.yaml are silently skipped (they may be plugin dirs, not extensions).
+// Successfully loaded extensions are added to exts (overwriting existing entries with the same name).
 func loadDir(dir string, exts map[string]*Extension) error {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -77,6 +71,10 @@ func loadDir(dir string, exts map[string]*Extension) error {
 			continue
 		}
 		extDir := dir + "/" + e.Name()
+		// Silently skip dirs without extension.yaml — they're plugin dirs, not extensions.
+		if _, statErr := os.Stat(filepath.Join(extDir, "extension.yaml")); statErr != nil {
+			continue
+		}
 		ext, err := LoadExtension(extDir)
 		if err != nil {
 			log.Printf("extensions: skipping %s: %v", extDir, err)
