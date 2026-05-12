@@ -6,8 +6,8 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/itchyny/gojq v0.12.19
 	github.com/joho/godotenv v1.5.1
-	github.com/mark3labs/mcp-go v0.47.0
-	github.com/severity1/claude-agent-sdk-go v0.6.12
+	github.com/mark3labs/mcp-go v0.47.1
+	github.com/severity1/claude-agent-sdk-go v0.6.15
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/vthunder/efficient-notion-mcp v0.0.0-20260120161249-c4afc21ea562
 	gopkg.in/yaml.v3 v3.0.1
