@@ -1082,6 +1082,20 @@ func main() {
 				if ok, reason := thinkingBudget.CanDoAutonomousWork(); !ok {
 					activityLog.LogDecision("Skip autonomous work", reason, "budget check", "blocked")
 					logging.Debug("main", "Autonomous percept blocked: %s", reason)
+					// Alert owner if this is a high-priority impulse blocked by budget
+					if percept.Source == "impulse" && mcpSendMessage != nil {
+						impulseIntensity, _ := percept.Data["intensity"].(float64)
+						if impulseIntensity >= 0.8 {
+							desc, _ := percept.Data["description"].(string)
+							if desc == "" {
+								desc, _ = percept.Data["content"].(string)
+							}
+							msg := fmt.Sprintf("Heads up: I wanted to %s but I hit my daily thinking budget. Want me to proceed anyway?", desc)
+							if sendErr := mcpSendMessage(discordChannel, msg); sendErr != nil {
+								logging.Debug("main", "Failed to send budget-blocked alert: %v", sendErr)
+							}
+						}
+					}
 					return
 				}
 			} else {
