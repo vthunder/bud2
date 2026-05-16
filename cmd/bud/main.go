@@ -662,17 +662,6 @@ func main() {
 			_, _, _, _, _, _, _, _, listMemsFn := exec.SubagentCallbacks()
 			return listMemsFn(sessionID)
 		},
-		ListJobs: func(project string) ([]any, error) {
-			listings, err := executive.ListJobs(statePath, project)
-			if err != nil {
-				return nil, err
-			}
-			result := make([]any, len(listings))
-			for i, l := range listings {
-				result[i] = l
-			}
-			return result, nil
-		},
 	}
 
 	// Register all MCP tools

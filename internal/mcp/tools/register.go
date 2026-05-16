@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/vthunder/bud2/internal/activity"
-	"github.com/vthunder/bud2/internal/executive"
 	"github.com/vthunder/bud2/internal/integrations/calendar"
 	"github.com/vthunder/bud2/internal/integrations/github"
 	"github.com/vthunder/bud2/internal/mcp"
@@ -1517,13 +1516,11 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 	server.RegisterTool("Agent_spawn_async", mcp.ToolDef{
 		Description: "Spawn a new subagent session to work autonomously on a task. Unlike the built-in Agent tool (which runs sync in-context), Agent_spawn_async runs in an isolated background process and reports back via signal_done. Use this to delegate research, analysis, or implementation tasks that can run in the background. Returns a session_id for tracking.",
 		Properties: map[string]mcp.PropDef{
-			"task":                 {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect. Optional when job is set."},
+			"task":                 {Type: "string", Description: "Full task description for the subagent. Be specific about what to do and what output you expect."},
 			"constraints":          {Type: "string", Description: "Additional constraints or context for the subagent (optional). E.g., 'focus only on X', 'do not modify Y'."},
 			"profile":              {Type: "string", Description: "Optional agent to load (e.g. 'bud:researcher', 'bud:coder', 'bud:reviewer'). Expands tool access and injects behavioral guidance from the extension registry. Omit to use the default restricted tool set."},
 			"agent":                {Type: "string", Description: "Alias for profile. If agent is set and profile is not, agent value is used."},
 			"domain":               {Type: "string", Description: `Optional GK domain for this subagent. "/" = root state knowledge graph (default), "/projects/foo" = project-specific graph. The subagent's gk_* tool calls will default to this domain.`},
-			"job":                  {Type: "string", Description: "Optional job template reference. 'disk-cleanup' for global jobs, 'project/sandmill/disk-cleanup' for project jobs. When set, task is generated from the template. task field becomes optional."},
-			"params":               {Type: "object", Description: "Parameter values for the job template (map of string→string). Required params must be provided."},
 			"workflow_instance_id": {Type: "string", Description: "Optional workflow instance ID (e.g. 'wf_1711062766') when spawning as part of a multi-step workflow."},
 			"workflow_step":        {Type: "string", Description: "Optional workflow step ID (e.g. 'strategy') when spawning as part of a multi-step workflow."},
 		},
@@ -1538,40 +1535,11 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		if domain == "" {
 			domain = "/"
 		}
-		jobRef, _ := args["job"].(string)
 		workflowInstanceID, _ := args["workflow_instance_id"].(string)
 		workflowStep, _ := args["workflow_step"].(string)
 
-		if jobRef != "" {
-			// Load and render the job template.
-			rawParams, _ := args["params"].(map[string]any)
-			params := make(map[string]string, len(rawParams))
-			for k, v := range rawParams {
-				if s, ok := v.(string); ok {
-					params[k] = s
-				}
-			}
-			jobDef, body, err := executive.LoadJob(deps.StatePath, jobRef)
-			if err != nil {
-				return "", fmt.Errorf("load job %q: %w", jobRef, err)
-			}
-			rendered, err := executive.RenderJobTemplate(body, jobDef, params)
-			if err != nil {
-				return "", fmt.Errorf("render job %q: %w", jobRef, err)
-			}
-			if task == "" {
-				task = rendered
-			} else {
-				task = rendered + "\n\n" + task
-			}
-			// Use job's profile as default if not explicitly set.
-			if profile == "" && jobDef.Profile != "" {
-				profile = jobDef.Profile
-			}
-		}
-
 		if task == "" {
-			return "", fmt.Errorf("task is required (or provide a job)")
+			return "", fmt.Errorf("task is required")
 		}
 
 		// Generate a session token and build a tokenized MCP URL so the subagent's
@@ -1597,12 +1565,10 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 			logNote = fmt.Sprintf(" Log: %s", logPath)
 		}
 		msg := fmt.Sprintf("Async subagent started. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", sessionID, logNote)
-		if jobRef != "" {
-			msg = fmt.Sprintf("Async subagent started from job %q. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", jobRef, sessionID, logNote)
-		} else if profile != "" {
+		if profile != "" {
 			msg = fmt.Sprintf("Async subagent started with profile %q. Session ID: %s%s\n\nThe subagent is now running autonomously. Use list_subagents to check progress or get_subagent_status for details.", profile, sessionID, logNote)
 		}
-		log.Printf("Spawned subagent %s (job=%q profile=%q): %s", sessionID, jobRef, profile, truncate(task, 60))
+		log.Printf("Spawned subagent %s (profile=%q): %s", sessionID, profile, truncate(task, 60))
 		return msg, nil
 	})
 
@@ -1618,24 +1584,6 @@ func registerSubagentTools(server *mcp.Server, deps *Dependencies) {
 		data, _ := json.MarshalIndent(sessions, "", "  ")
 		return string(data), nil
 	})
-
-	// list_jobs — list available job templates
-	if deps.ListJobs != nil {
-		server.RegisterTool("list_jobs", mcp.ToolDef{
-			Description: "List available job templates. Without project, returns only global jobs. With project, returns global + project jobs combined. Use job refs with Agent_spawn_async's job param.",
-			Properties: map[string]mcp.PropDef{
-				"project": {Type: "string", Description: "Optional project name (e.g. 'sandmill') to include project-specific jobs alongside global ones."},
-			},
-		}, func(ctx any, args map[string]any) (string, error) {
-			project, _ := args["project"].(string)
-			listings, err := deps.ListJobs(project)
-			if err != nil {
-				return "", fmt.Errorf("list jobs: %w", err)
-			}
-			data, _ := json.MarshalIndent(listings, "", "  ")
-			return string(data), nil
-		})
-	}
 
 	// get_subagent_status — get detailed status for a session
 	server.RegisterTool("get_subagent_status", mcp.ToolDef{

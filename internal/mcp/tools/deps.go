@@ -89,8 +89,6 @@ type Dependencies struct {
 	PeekSubagentMemories func(sessionID string) int
 	// ListSubagentMemories returns the content of all staged memories for a session without draining.
 	ListSubagentMemories func(sessionID string) []string
-	// ListJobs returns available job templates. If project is empty, returns only global jobs.
-	ListJobs func(project string) ([]any, error)
 
 	// VMControlURL is the base URL for the vm-control-server REST API.
 	// Defaults to http://127.0.0.1:3099 if empty.
